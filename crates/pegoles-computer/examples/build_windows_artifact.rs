@@ -61,13 +61,13 @@ fn main() {
     let manifest = mgr
         .publish_derived_as(
             &work_vhdx,
-            DerivedManifestInput {
-                debian_version: "13".into(),
-                architecture: "amd64".into(),
-                guest_runtime_version: "pending-first-boot-provisioning".into(),
-                guest_protocol_version: GUEST_PROTOCOL_VERSION,
-                source_image_sha512: source.sha512.clone(),
-            },
+            DerivedManifestInput::v0_1(
+                "13".into(),
+                "amd64".into(),
+                "pending-first-boot-provisioning".into(),
+                GUEST_PROTOCOL_VERSION,
+                source.sha512.clone(),
+            ),
             "disk.vhdx",
             pegoles_computer::DiskFormat::Vhdx,
         )

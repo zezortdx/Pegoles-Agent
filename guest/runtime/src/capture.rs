@@ -27,7 +27,11 @@ pub fn display_socket_path() -> Option<String> {
         }
         return Some(format!("/run/user/1000/{explicit}"));
     }
-    for candidate in ["/run/user/1000/wayland-0", "/run/user/1001/wayland-0"] {
+    for candidate in [
+        "/run/pegoles/wayland-0",
+        "/run/user/1000/wayland-0",
+        "/run/user/1001/wayland-0",
+    ] {
         if std::path::Path::new(candidate).exists() {
             return Some(candidate.to_string());
         }

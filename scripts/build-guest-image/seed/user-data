@@ -1,10 +1,16 @@
 #cloud-config
-# Pegoles Base Image provisioning (BUILD TIME ONLY).
-# Runs once on first boot with this seed ISO attached. Installs the guest
-# runtime, enables its systemd unit, disables cloud-init for all later
-# boots, enables the hvc0 serial console, then powers off. The builder
-# snapshots the disk as images/pegoles-base-0.1; the normal lifecycle
-# never attaches a seed and never runs cloud-init.
+# Pegoles Guest Image v2 provisioning (BUILD TIME ONLY).
+# Runs once on first boot with this seed ISO attached:
+#  - guest runtime v2 + fixture binaries (offline, from seed ISO);
+#  - version-pinned weston/foot stack (offline .debs, from seed ISO);
+#  - udev rule + groups for uinput (narrow: input group only);
+#  - us(intl) keyboard layout matching the runtime dead-key tables;
+#  - weston.ini (1440x900, screenshooter-capable) + units;
+#  - fixture autostart (dev/test only);
+# then disables cloud-init and powers off for snapshot.
+# The builder seals the disk as a NEW versioned v2 image; v0.1 is
+# never mutated. The normal lifecycle never attaches a seed and never
+# runs cloud-init.
 hostname: pegoles
 manage_etc_hosts: true
 
@@ -13,6 +19,7 @@ users:
     system: true
     shell: /usr/sbin/nologin
     lock_passwd: true
+    groups: [input, video, render]
 
 write_files:
   - path: /etc/systemd/system/pegoles-guest-runtime.service
@@ -27,6 +34,9 @@ write_files:
       [Service]
       Type=simple
       User=pegoles
+      SupplementaryGroups=input
+      Environment=XDG_RUNTIME_DIR=/run/pegoles
+      Environment=WAYLAND_DISPLAY=wayland-0
       ExecStart=/usr/local/bin/pegoles-guest-runtime
       Restart=on-failure
       RestartSec=5s
@@ -46,14 +56,128 @@ write_files:
 
       [Install]
       WantedBy=multi-user.target
+  - path: /etc/udev/rules.d/99-pegoles-input.rules
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Pegoles input device access (Image v2).
+      # Narrow rule: the pegoles user (via the input group) may open the
+      # uinput misc device to create the single "Pegoles Agent Input"
+      # virtual device. No MODE=0666 anywhere.
+      KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660"
+  - path: /etc/xdg/weston/weston.ini
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Pegoles Guest Image v2 — Weston compositor configuration.
+      # --debug is REQUIRED: weston 14 only exposes the
+      # weston_screenshooter global with the debug protocol extension.
+      # Scope note: guest-local clients only; the guest is already
+      # untrusted and isolated, so this exposes nothing beyond the VM.
+      [core]
+      backend=drm-backend.so
+      shell=desktop-shell.so
+      xwayland=false
+      require-input=false
+
+      [shell]
+      locking=false
+      background-color=0x000000
+      panel-location=none
+
+      [output]
+      name=all
+      mode=1440x900
+
+      [keyboard]
+      # MUST match guest/runtime/src/input.rs dead-key tables.
+      keymap_layout=us
+      keymap_variant=intl
+
+      [libinput]
+      touchscreen_calibrator=false
+  - path: /etc/systemd/system/pegoles-weston.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Pegoles Weston compositor (Image v2 graphical session)
+      After=systemd-user-sessions.service seatd.service
+      Wants=seatd.service
+
+      [Service]
+      Type=simple
+      User=pegoles
+      Group=pegoles
+      SupplementaryGroups=input video render
+      RuntimeDirectory=pegoles
+      Environment=XDG_RUNTIME_DIR=/run/pegoles
+      Environment=WAYLAND_DISPLAY=wayland-0
+      Environment=XKB_DEFAULT_LAYOUT=us
+      Environment=XKB_DEFAULT_VARIANT=intl
+      ExecStart=/usr/bin/weston --backend=drm-backend.so --shell=desktop-shell.so --socket=wayland-0 --config=/etc/xdg/weston/weston.ini --debug --log=/run/pegoles/weston.log
+      Restart=on-failure
+      RestartSec=3s
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+      ReadWritePaths=/run/pegoles
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/pegoles-fixture.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Pegoles deterministic input fixture (dev/test only)
+      After=pegoles-weston.service
+      Requires=pegoles-weston.service
+
+      [Service]
+      Type=simple
+      User=pegoles
+      Group=pegoles
+      Environment=XDG_RUNTIME_DIR=/run/pegoles
+      Environment=WAYLAND_DISPLAY=wayland-0
+      Environment=PEGOLES_FIXTURE_LOG=/tmp/pegoles-fixture.log
+      Environment=TERM=foot
+      ExecStart=/bin/sh -c 'exec /usr/bin/foot --maximized /usr/local/bin/pegoles-input-fixture || exec /usr/bin/foot /usr/local/bin/pegoles-input-fixture'
+      Restart=on-failure
+      RestartSec=3s
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=false
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/modules-load.d/pegoles.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Ensure the uinput module backing /dev/uinput is present.
+      uinput
 
 runcmd:
-  # Install the runtime binary from this same seed ISO (offline).
-  - mkdir -p /mnt/pegoles-seed && mount -o ro -L cidata /mnt/pegoles-seed && cp /mnt/pegoles-seed/pegoles-guest-runtime /usr/local/bin/pegoles-guest-runtime && umount /mnt/pegoles-seed && rmdir /mnt/pegoles-seed
-  - chmod 0755 /usr/local/bin/pegoles-guest-runtime
+  # Mount the seed ISO once; everything below comes from it (offline).
+  - mkdir -p /mnt/pegoles-seed && mount -o ro -L cidata /mnt/pegoles-seed
+  - cp /mnt/pegoles-seed/pegoles-guest-runtime /usr/local/bin/pegoles-guest-runtime && chmod 0755 /usr/local/bin/pegoles-guest-runtime
+  - cp /mnt/pegoles-seed/pegoles-input-fixture /usr/local/bin/pegoles-input-fixture && chmod 0755 /usr/local/bin/pegoles-input-fixture
   - /usr/local/bin/pegoles-guest-runtime --version
+  # Version-pinned graphical stack (dpkg fails fast on missing deps —
+  # extend the seed bundle and rebuild the ISO, never apt online here).
+  - dpkg -i /mnt/pegoles-seed/debs/*.deb
+  - weston --version && foot --version
+  # Sanity gates: udev, uinput module source, XKB data present.
+  - command -v udevadm && (modinfo uinput || ls /dev/uinput)
+  - test -f /usr/share/X11/xkb/rules/evdev.lst
+  - umount /mnt/pegoles-seed && rmdir /mnt/pegoles-seed
+  # Activate udev rule + groups + units.
+  - udevadm control --reload-rules && udevadm trigger --subsystem-match=misc || true
   - systemctl daemon-reload
-  - systemctl enable pegoles-guest-runtime.service
+  - systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-fixture.service seatd.service || systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-fixture.service
   # Serial console on the virtio-console (hvc0) for boot diagnostics.
   # GuestReady never depends on serial; this is diagnostics only.
   - grep -q 'console=hvc0' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=hvc0"/' /etc/default/grub
@@ -63,4 +187,4 @@ runcmd:
   - touch /etc/cloud/cloud-init.disabled
   - poweroff
 
-final_message: "Pegoles provisioning complete, powering off for snapshot."
+final_message: "Pegoles v2 provisioning complete, powering off for snapshot."

@@ -8,6 +8,12 @@ Wants=systemd-user-sessions.service
 [Service]
 Type=simple
 User=pegoles
+# Phase 5.1: uinput access for the virtual input device. Narrowest
+# mechanism: group membership only (udev rule grants input:0660).
+# NoNewPrivileges and every other protection below stay in force.
+SupplementaryGroups=input
+Environment=XDG_RUNTIME_DIR=/run/pegoles
+Environment=WAYLAND_DISPLAY=wayland-0
 ExecStart=/usr/local/bin/pegoles-guest-runtime
 Restart=on-failure
 RestartSec=5s

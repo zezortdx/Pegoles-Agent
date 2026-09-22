@@ -58,13 +58,13 @@ fn main() {
     let manifest = mgr
         .publish_derived(
             &disk,
-            DerivedManifestInput {
-                debian_version: "13".into(),
-                architecture: "arm64".into(),
-                guest_runtime_version: RUNTIME_VERSION.into(),
-                guest_protocol_version: GUEST_PROTOCOL_VERSION,
-                source_image_sha512: source.sha512.clone(),
-            },
+            DerivedManifestInput::v0_1(
+                "13".into(),
+                "arm64".into(),
+                RUNTIME_VERSION.into(),
+                GUEST_PROTOCOL_VERSION,
+                source.sha512.clone(),
+            ),
         )
         .expect("publish derived");
     println!(

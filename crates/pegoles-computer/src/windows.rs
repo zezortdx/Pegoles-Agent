@@ -917,13 +917,13 @@ mod backend_tests {
         std::fs::write(&work, b"fake-vhdx-bytes").unwrap();
         mgr.publish_derived_as(
             &work,
-            DerivedManifestInput {
-                debian_version: "13".into(),
-                architecture: "amd64".into(),
-                guest_runtime_version: "0.1.0".into(),
-                guest_protocol_version: 1,
-                source_image_sha512: "sourcesha".into(),
-            },
+            DerivedManifestInput::v0_1(
+                "13".into(),
+                "amd64".into(),
+                "0.1.0".into(),
+                1,
+                "sourcesha".into(),
+            ),
             "disk.vhdx",
             DiskFormat::Vhdx,
         )

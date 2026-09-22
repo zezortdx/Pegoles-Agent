@@ -43,11 +43,12 @@ pub use guest::{
     SessionOutcome, GUEST_READY_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_MISS_LIMIT,
 };
 pub use image::{
-    check_kernel_config, disk_format_for, gpt_root_partition, known_artifacts, ArtifactRecord,
-    ArtifactStatus, BootSource, ComputerImage, ComputerImageManager, DerivedManifest,
-    DerivedManifestInput, GraphicalImageInfo, GuestKernelCapabilities, ImageFamily, ImageSpec,
-    ImageStatus, KernelConfigState, PlatformArtifact, PrepareStage, GENERIC_DEBIAN_13_AMD64,
-    GENERIC_DEBIAN_13_ARM64, PEGOLES_BASE_IMAGE_ID, PEGOLES_IMAGE_VERSION,
+    active_image_id, check_kernel_config, disk_format_for, gpt_root_partition, known_artifacts,
+    ArtifactRecord, ArtifactStatus, BootSource, ComputerImage, ComputerImageManager,
+    DerivedManifest, DerivedManifestInput, GraphicalImageInfo, GuestKernelCapabilities,
+    ImageFamily, ImageSpec, ImageStatus, KernelConfigState, PlatformArtifact, PrepareStage,
+    GENERIC_DEBIAN_13_AMD64, GENERIC_DEBIAN_13_ARM64, IMAGE_ID_ENV, PEGOLES_BASE_IMAGE_ID,
+    PEGOLES_BASE_IMAGE_ID_V2, PEGOLES_IMAGE_VERSION, PEGOLES_IMAGE_VERSION_V2,
 };
 pub use input::{
     action_to_input_ops, base64_png, chunk_bytes, drag_step_count, encode_png_rgba, op_to_guest,

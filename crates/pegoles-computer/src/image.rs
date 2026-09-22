@@ -85,6 +85,25 @@ pub const GENERIC_DEBIAN_13_AMD64: ImageSpec = ImageSpec {
 /// Pegoles derived image (built once from the official source).
 pub const PEGOLES_BASE_IMAGE_ID: &str = "pegoles-base-0.1";
 pub const PEGOLES_IMAGE_VERSION: &str = "0.1";
+/// Phase 5.1: second derived image (graphical + input/capture). Sealed
+/// beside v0.1, never over it.
+pub const PEGOLES_BASE_IMAGE_ID_V2: &str = "pegoles-base-0.2";
+pub const PEGOLES_IMAGE_VERSION_V2: &str = "0.2";
+/// Env override selecting the boot image (dev/provisioning). Unset →
+/// v0.1 (unchanged default). Unknown values fail closed (missing dir →
+/// `Missing`, never a silent fallback to another image).
+pub const IMAGE_ID_ENV: &str = "PEGOLES_IMAGE_ID";
+
+/// Which derived image this process boots. v0.1 unless overridden.
+/// Unknown values are returned as-is: their directory does not exist,
+/// so status resolves to `Missing` with an explicit error (fail closed,
+/// never a silent fallback to another image).
+pub fn active_image_id() -> String {
+    match std::env::var(IMAGE_ID_ENV).map(|v| v.trim().to_string()) {
+        Ok(v) if !v.is_empty() => v,
+        _ => PEGOLES_BASE_IMAGE_ID.to_string(),
+    }
+}
 
 /// Logical image: one identity across platform artifacts.
 /// `pegoles-debian-13-arm64.raw` is NOT "the Pegoles image" — it is the
@@ -392,7 +411,11 @@ impl ComputerImageManager {
     // --- Pegoles derived base image (built once, booted always) ---
 
     fn derived_dir(&self) -> PathBuf {
-        self.images_dir.join(PEGOLES_BASE_IMAGE_ID)
+        self.derived_dir_for(&active_image_id())
+    }
+
+    fn derived_dir_for(&self, image_id: &str) -> PathBuf {
+        self.images_dir.join(image_id)
     }
 
     fn derived_paths(&self) -> DerivedPaths {
@@ -400,7 +423,11 @@ impl ComputerImageManager {
     }
 
     fn derived_paths_for(&self, format: DiskFormat) -> DerivedPaths {
-        let dir = self.derived_dir();
+        self.derived_paths_for_image(&active_image_id(), format)
+    }
+
+    fn derived_paths_for_image(&self, image_id: &str, format: DiskFormat) -> DerivedPaths {
+        let dir = self.derived_dir_for(image_id);
         let disk_name = format!("disk.{}", format.extension());
         DerivedPaths {
             marker: dir.join(format!("{disk_name}.verified")),
@@ -413,16 +440,20 @@ impl ComputerImageManager {
     /// must exist alongside marker + manifest. Format-agnostic, so RAW
     /// and VHDX derived images share one code path with separate hashes.
     pub fn derived_status(&self) -> ImageStatus {
-        let manifest_path = self.derived_dir().join("manifest.json");
+        self.derived_status_for(&active_image_id())
+    }
+
+    /// Status of one named derived image (v0.1 default; v0.2 for Phase 5.1).
+    pub fn derived_status_for(&self, image_id: &str) -> ImageStatus {
+        let dir = self.derived_dir_for(image_id);
+        let manifest_path = dir.join("manifest.json");
         let manifest: Option<DerivedManifest> = fs::read_to_string(&manifest_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok());
         match manifest.and_then(|m| m.artifacts.first().cloned()) {
             Some(record) => {
-                let disk = self.derived_dir().join(&record.file_name);
-                let marker = self
-                    .derived_dir()
-                    .join(format!("{}.verified", record.file_name));
+                let disk = dir.join(&record.file_name);
+                let marker = dir.join(format!("{}.verified", record.file_name));
                 if disk.exists() && marker.exists() {
                     ImageStatus::Ready
                 } else if disk.exists() {
@@ -446,13 +477,20 @@ impl ComputerImageManager {
     }
 
     pub fn derived_manifest(&self) -> Result<DerivedManifest> {
-        if self.derived_status() != ImageStatus::Ready {
-            return Err(ComputerError::ImageMissing(
-                PEGOLES_BASE_IMAGE_ID.to_string(),
-            ));
+        self.derived_manifest_for(&active_image_id())
+    }
+
+    /// Manifest of one named derived image.
+    pub fn derived_manifest_for(&self, image_id: &str) -> Result<DerivedManifest> {
+        if self.derived_status_for(image_id) != ImageStatus::Ready {
+            return Err(ComputerError::ImageMissing(image_id.to_string()));
         }
-        let raw = fs::read_to_string(&self.derived_paths().manifest)
-            .map_err(|e| ComputerError::Backend(e.to_string()))?;
+        let raw = fs::read_to_string(
+            &self
+                .derived_paths_for_image(image_id, DiskFormat::Raw)
+                .manifest,
+        )
+        .map_err(|e| ComputerError::Backend(e.to_string()))?;
         serde_json::from_str(&raw).map_err(|e| ComputerError::Backend(e.to_string()))
     }
 
@@ -469,6 +507,7 @@ impl ComputerImageManager {
 
     /// Same, with explicit artifact file name + format (e.g. `disk.vhdx`
     /// for the Windows artifact — independently hashed, never shared).
+    /// Seals into `manifest.image_id` (v0.1 default path preserved).
     pub fn publish_derived_as(
         &self,
         work_disk: &Path,
@@ -476,7 +515,7 @@ impl ComputerImageManager {
         file_name: &str,
         format: DiskFormat,
     ) -> Result<DerivedManifest> {
-        let dir = self.derived_dir();
+        let dir = self.images_dir.join(&manifest.image_id);
         let disk = dir.join(file_name);
         let marker = dir.join(format!("{file_name}.verified"));
         fs::create_dir_all(&dir).map_err(|e| ComputerError::Backend(e.to_string()))?;
@@ -533,8 +572,8 @@ impl ComputerImageManager {
             ),
         };
         let full = DerivedManifest {
-            image_id: PEGOLES_BASE_IMAGE_ID.to_string(),
-            pegoles_image_version: PEGOLES_IMAGE_VERSION.to_string(),
+            image_id: manifest.image_id.clone(),
+            pegoles_image_version: manifest.image_version.clone(),
             debian_version: manifest.debian_version,
             architecture: top_arch,
             guest_runtime_version: top_runtime,
@@ -543,10 +582,18 @@ impl ComputerImageManager {
             image_sha512: top_sha,
             built_at: top_built,
             artifacts,
-            // CONTRACT: the guest-image stream records the installed
-            // graphical stack via DerivedManifestInput; until then keep
-            // whatever a previous build recorded.
-            graphical: previous.as_ref().and_then(|m| m.graphical.clone()),
+            // Graphical stack + capabilities: the builder's fresh facts
+            // win when provided; otherwise keep whatever a previous build
+            // recorded (multi-artifact merge never invents them).
+            graphical: manifest
+                .graphical
+                .clone()
+                .or_else(|| previous.as_ref().and_then(|m| m.graphical.clone())),
+            capabilities: if manifest.capabilities.is_empty() {
+                previous.map(|m| m.capabilities).unwrap_or_default()
+            } else {
+                manifest.capabilities.clone()
+            },
         };
         let manifest_path = dir.join("manifest.json");
         fs::write(
@@ -580,9 +627,7 @@ impl ComputerImageManager {
     /// Fails closed when that platform artifact was never built.
     pub fn derived_disk_for_format(&self, format: DiskFormat) -> Result<PathBuf> {
         if self.derived_status() != ImageStatus::Ready {
-            return Err(ComputerError::ImageMissing(
-                PEGOLES_BASE_IMAGE_ID.to_string(),
-            ));
+            return Err(ComputerError::ImageMissing(active_image_id()));
         }
         let manifest = self.derived_manifest()?;
         let record = manifest
@@ -592,7 +637,8 @@ impl ComputerImageManager {
             .ok_or_else(|| {
                 ComputerError::ImageMissing(format!(
                     "{} has no {:?} artifact",
-                    PEGOLES_BASE_IMAGE_ID, format
+                    active_image_id(),
+                    format
                 ))
             })?;
         Ok(self.derived_dir().join(&record.file_name))
@@ -733,6 +779,7 @@ impl ComputerImageManager {
                 built_at: record.built_at.clone(),
                 artifacts: Vec::new(),
                 graphical: None,
+                capabilities: Vec::new(),
             });
         full.artifacts.retain(|a| a.file_name != record.file_name);
         full.artifacts.push(record);
@@ -756,11 +803,43 @@ pub enum BootSource {
 /// content hashes are always computed here, never passed in.
 #[derive(Clone, Debug)]
 pub struct DerivedManifestInput {
+    /// Target derived image id (v0.1 default; v0.2 for Phase 5.1).
+    pub image_id: String,
+    /// Pegoles image version string for the manifest.
+    pub image_version: String,
     pub debian_version: String,
     pub architecture: String,
     pub guest_runtime_version: String,
     pub guest_protocol_version: u32,
     pub source_image_sha512: String,
+    /// Graphical stack the builder actually installed (`None` = headless).
+    /// Recorded from real installs, never assumed.
+    pub graphical: Option<GraphicalImageInfo>,
+    /// Guest capabilities this image provides (e.g. `["input", "frame"]`).
+    pub capabilities: Vec<String>,
+}
+
+impl DerivedManifestInput {
+    /// v0.1-shaped input (headless, no caps): preserves legacy call sites.
+    pub fn v0_1(
+        debian_version: String,
+        architecture: String,
+        guest_runtime_version: String,
+        guest_protocol_version: u32,
+        source_image_sha512: String,
+    ) -> Self {
+        Self {
+            image_id: PEGOLES_BASE_IMAGE_ID.to_string(),
+            image_version: PEGOLES_IMAGE_VERSION.to_string(),
+            debian_version,
+            architecture,
+            guest_runtime_version,
+            guest_protocol_version,
+            source_image_sha512,
+            graphical: None,
+            capabilities: Vec::new(),
+        }
+    }
 }
 
 /// On-disk manifest of the derived image. `image_sha512` (derived bytes)
@@ -788,6 +867,11 @@ pub struct DerivedManifest {
     /// it actually installed, never assumed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graphical: Option<GraphicalImageInfo>,
+    /// Guest capabilities this image provides (Phase 5.1: `input`,
+    /// `frame`). Empty for v0.1. Records image contents, not live
+    /// handshake facts (the runtime still self-tests per connection).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 /// Graphical stack inside a derived image (names + versions as installed).
@@ -1216,13 +1300,13 @@ mod tests {
         let manifest = mgr
             .publish_derived(
                 &work,
-                DerivedManifestInput {
-                    debian_version: "13".into(),
-                    architecture: "arm64".into(),
-                    guest_runtime_version: "0.1.0".into(),
-                    guest_protocol_version: 1,
-                    source_image_sha512: "sourcesha".into(),
-                },
+                DerivedManifestInput::v0_1(
+                    "13".into(),
+                    "arm64".into(),
+                    "0.1.0".into(),
+                    1,
+                    "sourcesha".into(),
+                ),
             )
             .unwrap();
         assert_eq!(manifest.artifacts.len(), 1);
@@ -1255,6 +1339,78 @@ mod tests {
         let caps = check_kernel_config("# nothing here\n");
         assert_eq!(caps.vsock, KernelConfigState::Missing);
         assert!(!caps.universal_ready());
+    }
+
+    #[test]
+    fn active_image_id_defaults_to_v0_1() {
+        let saved = std::env::var(IMAGE_ID_ENV).ok();
+        std::env::remove_var(IMAGE_ID_ENV);
+        assert_eq!(active_image_id(), PEGOLES_BASE_IMAGE_ID);
+        std::env::set_var(IMAGE_ID_ENV, PEGOLES_BASE_IMAGE_ID_V2);
+        assert_eq!(active_image_id(), PEGOLES_BASE_IMAGE_ID_V2);
+        // Unknown ids fail closed downstream (missing dir), never remap.
+        std::env::set_var(IMAGE_ID_ENV, "pegoles-base-9.9");
+        assert_eq!(active_image_id(), "pegoles-base-9.9");
+        match saved {
+            Some(v) => std::env::set_var(IMAGE_ID_ENV, v),
+            None => std::env::remove_var(IMAGE_ID_ENV),
+        }
+    }
+
+    #[test]
+    fn v2_publish_records_graphical_and_capabilities() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ComputerImageManager::new(dir.path().to_path_buf());
+        let work = dir.path().join("work.raw");
+        fs::write(&work, b"v2-derived-bytes").unwrap();
+        let manifest = mgr
+            .publish_derived(
+                &work,
+                DerivedManifestInput {
+                    image_id: PEGOLES_BASE_IMAGE_ID_V2.to_string(),
+                    image_version: PEGOLES_IMAGE_VERSION_V2.to_string(),
+                    debian_version: "13".into(),
+                    architecture: "arm64".into(),
+                    guest_runtime_version: "0.2.0".into(),
+                    guest_protocol_version: 1,
+                    source_image_sha512: "sourcesha".into(),
+                    graphical: Some(GraphicalImageInfo {
+                        compositor: "weston 14.0.2-1".into(),
+                        terminal: "foot 1.21.0-2".into(),
+                        browser: None,
+                    }),
+                    capabilities: vec!["input".into(), "frame".into()],
+                },
+            )
+            .unwrap();
+        assert_eq!(manifest.image_id, PEGOLES_BASE_IMAGE_ID_V2);
+        assert_eq!(manifest.pegoles_image_version, PEGOLES_IMAGE_VERSION_V2);
+        let g = manifest.graphical.expect("graphical recorded");
+        assert_eq!(g.compositor, "weston 14.0.2-1");
+        assert_eq!(
+            manifest.capabilities,
+            vec!["input".to_string(), "frame".to_string()]
+        );
+        // v0.1-style fresh publish stays headless with no caps.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ComputerImageManager::new(dir.path().to_path_buf());
+        let work = dir.path().join("work.raw");
+        fs::write(&work, b"v1-derived-bytes").unwrap();
+        let manifest = mgr
+            .publish_derived(
+                &work,
+                DerivedManifestInput::v0_1(
+                    "13".into(),
+                    "arm64".into(),
+                    "0.1.0".into(),
+                    1,
+                    "sourcesha".into(),
+                ),
+            )
+            .unwrap();
+        assert_eq!(manifest.image_id, PEGOLES_BASE_IMAGE_ID);
+        assert!(manifest.graphical.is_none());
+        assert!(manifest.capabilities.is_empty());
     }
 
     #[test]
@@ -1316,13 +1472,13 @@ mod tests {
         let manifest = mgr
             .publish_derived(
                 &work,
-                DerivedManifestInput {
-                    debian_version: "13".into(),
-                    architecture: "arm64".into(),
-                    guest_runtime_version: "0.1.0".into(),
-                    guest_protocol_version: 1,
-                    source_image_sha512: "sourcesha".into(),
-                },
+                DerivedManifestInput::v0_1(
+                    "13".into(),
+                    "arm64".into(),
+                    "0.1.0".into(),
+                    1,
+                    "sourcesha".into(),
+                ),
             )
             .unwrap();
         assert_eq!(manifest.image_id, PEGOLES_BASE_IMAGE_ID);
