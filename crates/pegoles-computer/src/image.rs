@@ -657,12 +657,22 @@ impl ComputerImageManager {
     }
 
     /// Format-aware resolution (Windows asks for Vhdx, macOS for Raw).
+    /// Build-time exception (found by Phase 5.1 hardware provisioning):
+    /// when `PEGOLES_SEED_ISO` is set, an image builder is provisioning
+    /// FROM the official cloud image, so the derived preference is
+    /// skipped — otherwise builders could never reprovision once ANY
+    /// derived image is Ready (they would clone the old image, whose
+    /// cloud-init already ran, and idle forever waiting for poweroff).
+    /// Normal boots never set the seed env and are unaffected.
     pub fn boot_source_for_format_with_fallback(
         &self,
         format: DiskFormat,
         allow_official: bool,
     ) -> Result<BootSource> {
-        if self.derived_status() == ImageStatus::Ready {
+        let building = std::env::var("PEGOLES_SEED_ISO")
+            .ok()
+            .is_some_and(|p| !p.trim().is_empty());
+        if !building && self.derived_status() == ImageStatus::Ready {
             if let Ok(disk) = self.derived_disk_for_format(format) {
                 return Ok(BootSource::Derived(disk));
             }
@@ -1411,6 +1421,47 @@ mod tests {
         assert_eq!(manifest.image_id, PEGOLES_BASE_IMAGE_ID);
         assert!(manifest.graphical.is_none());
         assert!(manifest.capabilities.is_empty());
+    }
+
+    #[test]
+    fn seed_iso_skips_derived_preference_for_builders() {
+        // Regression (Phase 5.1 hardware): with a Ready derived image,
+        // normal boots use it — but a builder holding PEGOLES_SEED_ISO
+        // must boot the official cloud image instead, or it clones an
+        // already-provisioned disk whose cloud-init never runs again.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr =
+            ComputerImageManager::with_spec(dir.path().to_path_buf(), GENERIC_DEBIAN_13_ARM64);
+        let work = dir.path().join("work.raw");
+        fs::write(&work, b"derived-bytes").unwrap();
+        mgr.publish_derived(
+            &work,
+            DerivedManifestInput::v0_1(
+                "13".into(),
+                "arm64".into(),
+                "0.1.0".into(),
+                1,
+                "sourcesha".into(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(mgr.derived_status(), ImageStatus::Ready);
+        let saved_seed = std::env::var("PEGOLES_SEED_ISO").ok();
+        std::env::remove_var("PEGOLES_SEED_ISO");
+        let normal = mgr.boot_source_for_format_with_fallback(DiskFormat::Raw, true);
+        assert!(matches!(normal, Ok(BootSource::Derived(_))));
+        std::env::set_var("PEGOLES_SEED_ISO", "/tmp/does-not-need-to-exist.iso");
+        // No official artifact cached in this temp dir → fails closed on
+        // the official path, but crucially NOT Derived.
+        let building = mgr.boot_source_for_format_with_fallback(DiskFormat::Raw, true);
+        assert!(
+            !matches!(building, Ok(BootSource::Derived(_))),
+            "builder must not clone the derived image"
+        );
+        match saved_seed {
+            Some(v) => std::env::set_var("PEGOLES_SEED_ISO", v),
+            None => std::env::remove_var("PEGOLES_SEED_ISO"),
+        }
     }
 
     #[test]

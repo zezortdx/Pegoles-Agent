@@ -20,8 +20,7 @@ fn main() {
     let image_id = std::env::var("PEGOLES_IMAGE_ID").unwrap_or_else(|_| "pegoles-base-0.1".into());
     println!("image: {image_id}");
     let bus = EventBus::new();
-    let mut registry =
-        ComputerRegistry::with_backend_kind(bus, BackendKind::MacOSVirtualization);
+    let mut registry = ComputerRegistry::with_backend_kind(bus, BackendKind::MacOSVirtualization);
     let id = registry.create_default().expect("create");
     println!("computer: {id}");
     registry.start().expect("start");
@@ -49,7 +48,10 @@ fn main() {
             break;
         }
         if Instant::now() > deadline {
-            eprintln!("V2 VERIFY FAIL: guest={guest:?} graphical={:?}", session.state);
+            eprintln!(
+                "V2 VERIFY FAIL: guest={guest:?} graphical={:?}",
+                session.state
+            );
             std::process::exit(2);
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -71,12 +73,18 @@ fn main() {
     let task = pegoles_protocol::TaskId::new();
     let steps = pegoles_demo_script();
     println!("demo steps: {}", steps.len());
-    let (report, events) =
-        registry.run_script(task, &steps, &PolicyContext::default(), &CancellationToken::new());
+    let (report, events) = registry.run_script(
+        task,
+        &steps,
+        &PolicyContext::default(),
+        &CancellationToken::new(),
+    );
     let mut counts = std::collections::HashMap::new();
     for e in &events {
         let t = serde_json::to_value(e).expect("event serializes");
-        *counts.entry(t["type"].as_str().unwrap_or("?").to_string()).or_insert(0) += 1;
+        *counts
+            .entry(t["type"].as_str().unwrap_or("?").to_string())
+            .or_insert(0) += 1;
         println!("event: {}", t["type"].as_str().unwrap_or("?"));
     }
     println!("event histogram: {counts:?}");
