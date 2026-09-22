@@ -1,0 +1,207 @@
+/*
+ * CommandBar + TaskController — one surface language (radius 24,
+ * elevation 3) so the morph only changes size and material.
+ */
+.pg-command-morph {
+  position: relative;
+  width: 100%;
+  max-width: var(--pg-command-width, 680px);
+}
+
+.pg-command-morph__slot {
+  width: 100%;
+}
+
+/* ── CommandBar ────────────────────────────────────────────────── */
+.pg-command {
+  width: 100%;
+  max-width: var(--pg-command-width, 680px);
+  transition:
+    transform var(--pg-duration-interaction) var(--pg-ease-out),
+    box-shadow var(--pg-duration-interaction) ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pg-command:hover {
+    transform: translateY(-1px);
+  }
+}
+
+.pg-command__row {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-md);
+  height: 58px;
+  padding: 0 11px 0 18px;
+}
+
+.pg-command__leading {
+  display: inline-flex;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-command__input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-family: var(--pg-font-sans);
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: -0.011em;
+  color: var(--pg-text-primary);
+  caret-color: var(--pg-focus-ring);
+}
+
+.pg-command__input::placeholder {
+  color: var(--pg-text-secondary);
+  opacity: 1;
+}
+
+.pg-command__input:disabled {
+  color: var(--pg-text-disabled);
+}
+
+.pg-command__send.pg-button {
+  --pg-button-h: 36px;
+}
+
+/* Listening: the edge lights up while the field has focus. An opacity
+ * fade on a pre-rendered light, not a shadow transition. */
+.pg-command::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--pg-accent-active-rgb) / 0.5),
+    0 0 0 3px rgb(var(--pg-accent-active-rgb) / calc(0.1 * var(--pg-glow))),
+    0 16px 48px -18px rgb(var(--pg-accent-primary-rgb) / calc(0.75 * var(--pg-glow)));
+  opacity: 0;
+  transition: opacity var(--pg-duration-interaction) var(--pg-ease-out);
+}
+
+.pg-command:focus-within::after {
+  opacity: 1;
+}
+
+/* ── Keycap ────────────────────────────────────────────────────── */
+.pg-kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--pg-radius-key);
+  font-family: var(--pg-font-mono);
+  font-size: var(--pg-type-label-size);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--pg-text-secondary);
+  background: rgb(var(--pg-text-primary-rgb) / 0.05);
+  box-shadow:
+    inset 0 0 0 1px var(--pg-border-default),
+    inset 0 -1px 0 var(--pg-border-subtle);
+}
+
+/* ── TaskController ────────────────────────────────────────────── */
+.pg-task {
+  width: 100%;
+  max-width: var(--pg-command-width, 680px);
+  overflow: hidden;
+}
+
+.pg-task__body {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-md);
+  min-height: 74px;
+  padding: 14px 14px 14px 18px;
+}
+
+.pg-task__leading {
+  display: inline-flex;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-task__text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--pg-rhythm-stack-tight);
+}
+
+.pg-task__title {
+  margin: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: var(--pg-type-headline-size);
+  line-height: var(--pg-type-headline-line);
+  font-weight: var(--pg-type-headline-weight);
+  letter-spacing: var(--pg-type-headline-tracking);
+  color: var(--pg-text-primary);
+}
+
+.pg-task__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-sm);
+  min-width: 0;
+  color: var(--pg-text-secondary);
+  font-size: var(--pg-type-footnote-size);
+  line-height: var(--pg-type-footnote-line);
+}
+
+.pg-task__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-task__detail::before,
+.pg-task__elapsed::before {
+  content: "·";
+  margin-inline-end: var(--pg-space-sm);
+  color: var(--pg-text-disabled);
+}
+
+.pg-task__elapsed {
+  flex: none;
+  font-family: var(--pg-font-mono);
+  font-size: var(--pg-type-data-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-task__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--pg-space-xs);
+}
+
+.pg-task__progress.pg-progress,
+.pg-task__progress.pg-progress-row {
+  position: absolute;
+  inset: auto 24px 0 24px;
+  width: auto;
+}
+
+.pg-task__progress.pg-progress-row .pg-progress__value {
+  display: none;
+}

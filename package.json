@@ -1,0 +1,17 @@
+{
+  "name": "pegoles-agent",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20 <27",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "check": "bash scripts/check.sh",
+    "setup": "bash scripts/setup.sh",
+    "test:rust": "cargo test",
+    "lint:rust": "cargo clippy --all-targets -- -D warnings",
+    "fmt:rust": "cargo fmt --check"
+  }
+}

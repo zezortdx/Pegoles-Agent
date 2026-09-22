@@ -1,0 +1,56 @@
+{
+  "source": {
+    "file": "assets/brand/source/pegoles-mark-source.png",
+    "size": 1254,
+    "sha256_prefix": "2c1660e1"
+  },
+  "target_iou": 0.97,
+  "reference_masks": {
+    "method": "Sobel(|R+G+B| smoothed sigma=0.8) > threshold, seeded region labels, edge band split by nearest region",
+    "edge_threshold": 300.0
+  },
+  "fit_residuals_px": {
+    "outer": {
+      "points": 3600,
+      "mean_px": 0.294,
+      "p95_px": 0.961,
+      "max_px": 1.342
+    },
+    "inner": {
+      "points": 3600,
+      "mean_px": 0.276,
+      "p95_px": 0.762,
+      "max_px": 1.116
+    },
+    "eye_l": {
+      "points": 1440,
+      "mean_px": 0.026,
+      "p95_px": 0.088,
+      "max_px": 0.277
+    },
+    "eye_r": {
+      "points": 1440,
+      "mean_px": 0.037,
+      "p95_px": 0.101,
+      "max_px": 0.256
+    }
+  },
+  "iou_python_renderer": {
+    "ring": 0.9858,
+    "silhouette": 0.9972,
+    "eyes": 0.9907,
+    "eye_left": 0.9954,
+    "eye_right": 0.9859
+  },
+  "iou_chromium": {
+    "ring": 0.9852,
+    "eyes": 0.9889,
+    "eye_left": 0.9935,
+    "eye_right": 0.9843
+  },
+  "appearance_chromium": {
+    "region": "source silhouette dilated by 12 px, rendered over #000",
+    "mean_abs_error_8bit": 9.88,
+    "psnr_db": 23.93
+  }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "pegoles-input-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Pegoles input test fixture: fullscreen terminal target for deterministic Eyes & Hands validation (guest side, dev only)"
+license = "MIT"
+
+# Detached from the workspace: builds with the omitted... (standalone;
+# zero workspace deps beyond libc, testable on any Unix terminal).
+[workspace]
+
+[dependencies]
+libc = "=0.2.189"

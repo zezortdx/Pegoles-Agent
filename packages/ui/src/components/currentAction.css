@@ -1,0 +1,55 @@
+/* CurrentAction — compact contextual label with Pegoles working light. */
+.pg-current-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 30px;
+  padding: 4px 12px 4px 6px;
+  border-radius: var(--pg-radius-pill);
+  background: rgb(var(--pg-text-primary-rgb) / 0.045);
+  box-shadow: inset 0 0 0 1px var(--pg-border-subtle);
+  font-size: var(--pg-type-footnote-size);
+  line-height: 1.4;
+  color: var(--pg-text-secondary);
+  animation: pg-fade-in var(--pg-duration-interaction) var(--pg-ease-out);
+}
+
+.pg-current-action__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pg-text-primary);
+}
+
+.pg-current-action[data-tone="user"] .pg-current-action__label {
+  color: var(--pg-text-primary);
+}
+
+.pg-current-action__mark {
+  position: relative;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-current-action__light {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(var(--pg-accent-active-rgb) / calc(0.5 * var(--pg-glow))), transparent);
+  animation: pg-breathe 2400ms var(--pg-ease-ambient) infinite alternate;
+  pointer-events: none;
+}
+
+.pg-current-action[data-working="false"] .pg-current-action__light {
+  display: none;
+}
+
+[data-reduced-motion="true"] .pg-current-action__light,
+[data-effects-tier="minimal"] .pg-current-action__light {
+  animation: none;
+  opacity: 0.5;
+}

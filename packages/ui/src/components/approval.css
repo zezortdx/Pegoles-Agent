@@ -1,0 +1,56 @@
+/* ApprovalCard — glass that emerges near the task, never a modal. */
+.pg-approval {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-sm);
+  padding: 16px 18px;
+  animation: pg-approval-in var(--pg-duration-standard) var(--pg-ease-out);
+}
+
+.pg-approval__head {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-sm);
+}
+
+.pg-approval__title {
+  margin: 2px 0 0;
+  font-size: var(--pg-type-headline-size);
+  line-height: var(--pg-type-headline-line);
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  color: var(--pg-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.pg-approval__detail {
+  margin: 0;
+  font-size: var(--pg-type-footnote-size);
+  line-height: 1.6;
+  color: var(--pg-text-secondary);
+}
+
+.pg-approval__actions {
+  display: flex;
+  gap: var(--pg-space-sm);
+  margin-top: 6px;
+}
+
+@keyframes pg-approval-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+[data-reduced-motion="true"] .pg-approval {
+  animation: pg-fade-in var(--pg-duration-interaction) ease;
+}
+
+[data-effects-tier="minimal"] .pg-approval {
+  animation: pg-fade-in var(--pg-duration-interaction) ease;
+}

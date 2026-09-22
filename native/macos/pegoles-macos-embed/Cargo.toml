@@ -1,0 +1,12 @@
+[package]
+name = "pegoles-macos-embed"
+version = "0.1.0"
+edition = "2021"
+description = "macOS adapter: in-process VM host (same JSONL protocol as pegoles-vm-host) + native framebuffer display for the Pegoles window"
+license = "MIT"
+
+# Empty library on every non-macOS target: the workspace (and Windows /
+# Linux CI) keeps compiling without Apple toolchains.
+[dependencies]
+pegoles-computer = { workspace = true }
+pegoles-protocol = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+name = "pegoles-guest-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Pegoles Guest Runtime v0.1: vsock handshake + heartbeat + system info (Linux ARM64 guest)"
+license = "MIT"
+
+[[bin]]
+name = "pegoles-guest-runtime"
+path = "src/main.rs"
+
+[dependencies]
+pegoles-guest-proto = { path = "../../crates/pegoles-guest-proto" }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

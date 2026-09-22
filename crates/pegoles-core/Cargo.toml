@@ -1,0 +1,21 @@
+[package]
+name = "pegoles-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pegoles Core: tasks, computers, actions, policy orchestration, events"
+license = "MIT"
+
+[dependencies]
+pegoles-protocol = { workspace = true }
+pegoles-guest-proto = { path = "../pegoles-guest-proto" }
+pegoles-computer = { workspace = true }
+pegoles-policy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

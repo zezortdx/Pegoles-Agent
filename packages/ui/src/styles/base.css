@@ -1,0 +1,131 @@
+/*
+ * Pegoles Flux Glass — base rules.
+ * Values come from the generated token sheet (FluxGlassRoot); this file
+ * only holds the animation gates, shared keyframes and utilities.
+ */
+
+/* ── Idle GPU gate ───────────────────────────────────────────────────
+ * .pg-ambient  — decorative life (presence breathing). Runs only while
+ *                the AmbientController says so, and never offscreen.
+ * .pg-work-anim — communicates real work (indeterminate progress).
+ *                Runs while the window is visible, even unfocused, so a
+ *                glance never shows a frozen "working" state.
+ * Both are paused by default: no FluxGlassRoot → no motion.
+ */
+.pg-ambient {
+  animation-play-state: paused;
+}
+
+[data-ambient="running"] .pg-ambient {
+  animation-play-state: running;
+}
+
+[data-offscreen="true"] .pg-ambient,
+.pg-ambient[data-offscreen="true"] {
+  animation-play-state: paused;
+}
+
+.pg-work-anim {
+  animation-play-state: paused;
+}
+
+[data-visibility="visible"] .pg-work-anim {
+  animation-play-state: running;
+}
+
+[data-visibility="hidden"] .pg-work-anim,
+[data-offscreen="true"] .pg-work-anim,
+.pg-work-anim[data-offscreen="true"] {
+  animation-play-state: paused;
+}
+
+/* Minimal tier: no continuous animation of any kind. Reduced motion:
+ * no ambient loops (static presence instead). Kill switches, hence
+ * !important over component-level animation declarations. */
+[data-effects-tier="minimal"] .pg-ambient,
+[data-effects-tier="minimal"] .pg-work-anim,
+[data-reduced-motion="true"] .pg-ambient {
+  animation-name: none !important;
+}
+
+/* ── Shared keyframes ───────────────────────────────────────────── */
+@keyframes pg-breathe {
+  0%,
+  100% {
+    opacity: calc(1 - 0.5 * var(--pg-ambient-amplitude, 0.5));
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes pg-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+@keyframes pg-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes pg-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pg-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pg-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Utilities ──────────────────────────────────────────────────── */
+.pg-visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The Pegoles focus ring: the mark's cyan eye-light, offset from the
+ * control so it never muddies the fill. */
+.pg-focus-ring:focus-visible {
+  outline: 2px solid var(--pg-focus-ring);
+  outline-offset: 2px;
+}
+
+[data-effects-tier] ::selection {
+  background: rgb(var(--pg-accent-primary-rgb) / 0.5);
+  color: var(--pg-text-primary);
+}

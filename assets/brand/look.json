@@ -1,0 +1,27 @@
+{
+  "note": "Lighting recipe fitted by scripts/brand/tune_look.py against the source PNG.",
+  "loss_start": 888.4,
+  "loss_final": 879.7,
+  "evaluations": 694,
+  "params": {
+    "glow_far_opacity": 0.978,
+    "glow_far_std": 139.459,
+    "glow_near_opacity": 0.696,
+    "glow_near_std": 59.044,
+    "glow_tight_opacity": 0.619,
+    "glow_tight_std": 6.192,
+    "light_width": 48.201,
+    "light_std": 11.853,
+    "light_opacity": 0.996,
+    "rim_width": 9.537,
+    "rim_std": 2.211,
+    "rim_opacity": 0.987,
+    "edge_width": 6.609,
+    "edge_opacity": 0.968,
+    "shade_opacity": 0.996,
+    "shade_std": 47.988,
+    "eye_glow_opacity": 0.725,
+    "eye_glow_std": 15.761,
+    "body_gain": 0.937
+  }
+}

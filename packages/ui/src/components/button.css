@@ -1,0 +1,217 @@
+/*
+ * GlassButton — capsule controls. Feedback lives on the press (100 ms),
+ * hover is gated to fine pointers, only transform/opacity/colors move.
+ */
+.pg-button {
+  --pg-button-h: 32px;
+  --pg-button-px: var(--pg-rhythm-control-x);
+  --pg-button-font: var(--pg-type-callout-size);
+  --pg-button-bg: rgb(var(--pg-text-primary-rgb) / 0.07);
+  --pg-button-bg-hover: rgb(var(--pg-text-primary-rgb) / 0.11);
+  --pg-button-bg-active: rgb(var(--pg-text-primary-rgb) / 0.15);
+  --pg-button-fg: var(--pg-text-primary);
+  --pg-button-edge: var(--pg-border-default);
+  --pg-button-lip: rgb(var(--pg-text-primary-rgb) / 0.07);
+
+  appearance: none;
+  margin: 0;
+  border: 0;
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--pg-rhythm-inline);
+  height: var(--pg-button-h);
+  padding: 0 var(--pg-button-px);
+  border-radius: var(--pg-radius-control);
+  font-family: var(--pg-font-sans);
+  font-size: var(--pg-button-font);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.003em;
+  white-space: nowrap;
+  color: var(--pg-button-fg);
+  background-color: var(--pg-button-bg);
+  box-shadow:
+    inset 0 0 0 1px var(--pg-button-edge),
+    inset 0 1px 0 var(--pg-button-lip);
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform var(--pg-duration-instant) var(--pg-ease-out),
+    background-color var(--pg-duration-interaction) ease,
+    color var(--pg-duration-interaction) ease,
+    opacity var(--pg-duration-interaction) ease;
+}
+
+/* Hover light (opacity-only overlay) and energy halo for primary. */
+.pg-button::before,
+.pg-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--pg-duration-interaction) ease;
+}
+
+.pg-button__icon,
+.pg-button__trailing {
+  display: inline-flex;
+  flex: none;
+  transition: transform var(--pg-duration-interaction) var(--pg-ease-out);
+}
+
+.pg-button__trailing {
+  margin-inline-start: 2px;
+  color: var(--pg-text-secondary);
+}
+
+.pg-button__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Variants ──────────────────────────────────────────────────── */
+.pg-button[data-variant="primary"] {
+  --pg-button-fg: var(--pg-text-on-accent);
+  --pg-button-edge: rgb(var(--pg-accent-active-rgb) / 0.6);
+  --pg-button-lip: rgb(var(--pg-text-primary-rgb) / 0.3);
+  background-color: var(--pg-accent-primary);
+  background-image: linear-gradient(180deg, var(--pg-accent-primary) 0%, var(--pg-accent-shadow) 100%);
+}
+
+.pg-button[data-variant="primary"]::before {
+  background: rgb(var(--pg-text-primary-rgb) / 0.12);
+}
+
+.pg-button[data-variant="primary"]::after {
+  box-shadow: 0 6px 24px -6px rgb(var(--pg-accent-primary-rgb) / calc(0.85 * var(--pg-glow)));
+}
+
+.pg-button[data-variant="primary"] .pg-button__trailing {
+  color: rgb(var(--pg-text-primary-rgb) / 0.72);
+}
+
+/* Neutral primary: the white "Return to Pegoles" capsule. */
+.pg-button[data-variant="primary"][data-tone="neutral"] {
+  --pg-button-fg: var(--pg-text-inverse);
+  --pg-button-edge: rgb(var(--pg-text-primary-rgb) / 0.9);
+  --pg-button-lip: rgb(var(--pg-text-primary-rgb) / 0.6);
+  background-color: var(--pg-text-primary);
+  background-image: none;
+}
+
+.pg-button[data-variant="primary"][data-tone="neutral"]::before {
+  background: rgb(var(--pg-bg-primary-rgb) / 0.08);
+}
+
+.pg-button[data-variant="primary"][data-tone="neutral"]::after {
+  box-shadow: 0 6px 24px -8px rgb(var(--pg-text-primary-rgb) / calc(0.35 * var(--pg-glow)));
+}
+
+.pg-button[data-variant="quiet"] {
+  --pg-button-bg: transparent;
+  --pg-button-bg-hover: rgb(var(--pg-text-primary-rgb) / 0.07);
+  --pg-button-bg-active: rgb(var(--pg-text-primary-rgb) / 0.11);
+  --pg-button-edge: transparent;
+  --pg-button-lip: transparent;
+  --pg-button-fg: var(--pg-text-secondary);
+}
+
+/* ── Sizes ─────────────────────────────────────────────────────── */
+.pg-button[data-size="sm"] {
+  --pg-button-h: 26px;
+  --pg-button-px: 10px;
+  --pg-button-font: var(--pg-type-footnote-size);
+}
+
+.pg-button[data-size="lg"] {
+  --pg-button-h: 40px;
+  --pg-button-px: 18px;
+  --pg-button-font: var(--pg-type-body-size);
+}
+
+.pg-button[data-icon-only="true"] {
+  width: var(--pg-button-h);
+  padding: 0;
+}
+
+/* ── States ────────────────────────────────────────────────────── */
+@media (hover: hover) and (pointer: fine) {
+  .pg-button:hover:not(:disabled) {
+    background-color: var(--pg-button-bg-hover);
+  }
+
+  .pg-button:hover:not(:disabled) .pg-button__icon {
+    transform: translateX(1px);
+  }
+
+  .pg-button[data-variant="quiet"]:hover:not(:disabled) {
+    color: var(--pg-text-primary);
+  }
+
+  .pg-button[data-variant="primary"]:hover:not(:disabled) {
+    background-color: var(--pg-accent-primary);
+  }
+
+  .pg-button[data-variant="primary"]:hover:not(:disabled)::before,
+  .pg-button[data-variant="primary"]:hover:not(:disabled)::after {
+    opacity: 1;
+  }
+}
+
+.pg-button:active:not(:disabled) {
+  transform: scale(0.97);
+  background-color: var(--pg-button-bg-active);
+}
+
+.pg-button[data-variant="primary"]:active:not(:disabled) {
+  background-color: var(--pg-accent-shadow);
+}
+
+.pg-button[data-variant="primary"]:active:not(:disabled)::before {
+  opacity: 0;
+}
+
+/* Reduced motion: the press is a brightness change, not a movement. */
+[data-reduced-motion="true"] .pg-button:active:not(:disabled) {
+  transform: none;
+}
+
+.pg-button:focus-visible {
+  outline: 2px solid var(--pg-focus-ring);
+  outline-offset: 2px;
+}
+
+.pg-button:disabled {
+  opacity: 0.4;
+}
+
+.pg-button[data-loading="true"] {
+  opacity: 0.85;
+}
+
+/* ── Working indicator ─────────────────────────────────────────── */
+.pg-button__spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  animation: pg-spin 800ms linear infinite;
+}
+
+[data-reduced-motion="true"] .pg-button__spinner {
+  border-top-color: currentColor;
+  animation-name: pg-pulse;
+  animation-duration: 1600ms;
+  animation-timing-function: var(--pg-ease-ambient);
+}

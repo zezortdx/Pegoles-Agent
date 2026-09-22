@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Phase 3.5: one matrix, three OSes. No job boots a real VM, downloads a
+# multi-hundred-MB image, or touches Hyper-V: this gate proves the
+# architecture stays portable (shared code + Windows skeleton compile and
+# behave on every platform). Swift stays macOS-only (Apple toolchain).
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  guest-cross:
+    # The guest runtime must compile for aarch64 Linux without a VM.
+    # `cargo check` needs no linker, so this runs on the macOS image.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - run: cargo check -p pegoles-guest-runtime --target aarch64-unknown-linux-gnu
+
+  swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build --package-path native/macos/pegoles-vm-host
+
+  web:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pegoles/desktop lint
+      - run: pnpm --filter @pegoles/desktop typecheck
+      - run: pnpm --filter @pegoles/desktop build

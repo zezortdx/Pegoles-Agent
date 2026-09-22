@@ -1,0 +1,7 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "default",
+  "description": "Main window: invoke Pegoles Core app commands (no app ACL manifest, so every command registered in lib.rs is allowed) and listen to Core events (pegoles://event, pegoles://image-progress, pegoles://display-activity). No filesystem, shell, clipboard or other plugin permissions.",
+  "windows": ["main"],
+  "permissions": ["core:event:default", "core:window:default"]
+}

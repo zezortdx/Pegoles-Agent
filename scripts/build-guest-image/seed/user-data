@@ -1,0 +1,66 @@
+#cloud-config
+# Pegoles Base Image provisioning (BUILD TIME ONLY).
+# Runs once on first boot with this seed ISO attached. Installs the guest
+# runtime, enables its systemd unit, disables cloud-init for all later
+# boots, enables the hvc0 serial console, then powers off. The builder
+# snapshots the disk as images/pegoles-base-0.1; the normal lifecycle
+# never attaches a seed and never runs cloud-init.
+hostname: pegoles
+manage_etc_hosts: true
+
+users:
+  - name: pegoles
+    system: true
+    shell: /usr/sbin/nologin
+    lock_passwd: true
+
+write_files:
+  - path: /etc/systemd/system/pegoles-guest-runtime.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Pegoles Guest Runtime (host<->guest control plane over vsock)
+      After=systemd-user-sessions.service
+      Wants=systemd-user-sessions.service
+
+      [Service]
+      Type=simple
+      User=pegoles
+      ExecStart=/usr/local/bin/pegoles-guest-runtime
+      Restart=on-failure
+      RestartSec=5s
+      CapabilityBoundingSet=
+      AmbientCapabilities=
+      NoNewPrivileges=true
+      PrivateTmp=true
+      ProtectHome=true
+      ProtectSystem=strict
+      ProtectKernelTunables=true
+      ProtectKernelModules=true
+      ProtectControlGroups=true
+      LockPersonality=true
+      RestrictSUIDSGID=true
+      RestrictRealtime=true
+      ReadOnlyPaths=/etc/os-release /etc/hostname
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Install the runtime binary from this same seed ISO (offline).
+  - mkdir -p /mnt/pegoles-seed && mount -o ro -L cidata /mnt/pegoles-seed && cp /mnt/pegoles-seed/pegoles-guest-runtime /usr/local/bin/pegoles-guest-runtime && umount /mnt/pegoles-seed && rmdir /mnt/pegoles-seed
+  - chmod 0755 /usr/local/bin/pegoles-guest-runtime
+  - /usr/local/bin/pegoles-guest-runtime --version
+  - systemctl daemon-reload
+  - systemctl enable pegoles-guest-runtime.service
+  # Serial console on the virtio-console (hvc0) for boot diagnostics.
+  # GuestReady never depends on serial; this is diagnostics only.
+  - grep -q 'console=hvc0' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=hvc0"/' /etc/default/grub
+  - update-grub
+  # cloud-init did its one job: disable it for every later boot.
+  - systemctl disable cloud-init cloud-config cloud-final cloud-init-local || true
+  - touch /etc/cloud/cloud-init.disabled
+  - poweroff
+
+final_message: "Pegoles provisioning complete, powering off for snapshot."

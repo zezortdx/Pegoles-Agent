@@ -1,0 +1,34 @@
+[Unit]
+Description=Pegoles Guest Runtime (host<->guest control plane over vsock)
+Documentation=https://github.com/pegoles/pegoles-agent
+# No network dependency: vsock works with zero functional interfaces.
+After=systemd-user-sessions.service
+Wants=systemd-user-sessions.service
+
+[Service]
+Type=simple
+User=pegoles
+ExecStart=/usr/local/bin/pegoles-guest-runtime
+Restart=on-failure
+RestartSec=5s
+# AF_VSOCK needs no capabilities; drop everything.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+# Read-only access to OS facts + /proc for uptime/meminfo.
+ReadOnlyPaths=/etc/os-release /etc/hostname
+# NOTE: RestrictAddressFamilies intentionally NOT set: AF_UNIX (default
+# systemd socket deps) plus AF_VSOCK must both work. If a future systemd
+# supports AF_VSOCK in RestrictAddressFamilies, scope it then and re-test.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,196 @@
+/*
+ * AgentCursor — THE AGENT's pointer, drawn in its own overlay layer.
+ *
+ * Positions are written by AgentCursorController as `transform` on the
+ * nodes below (never through React). CSS here only owns looks, state
+ * visibility (data-state) and short opacity transitions. The layer never
+ * takes pointer events: the human's input always goes through.
+ */
+
+.pgc-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  z-index: 1;
+  --pgc-ease: var(--pg-ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+
+.pgc-pointer,
+.pgc-trail,
+.pgc-ripple,
+.pgc-drag {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+/* Hotspot = element origin. */
+.pgc-pointer {
+  width: 0;
+  height: 0;
+  opacity: 1;
+  transition: opacity 180ms var(--pgc-ease);
+}
+
+.pgc-body {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+.pgc-glyph {
+  position: absolute;
+  /* viewBox "-5 -5 24 27" at 1 unit = 1 px: tip (0,0) sits on the origin. */
+  left: -5px;
+  top: -5px;
+  width: 24px;
+  height: 27px;
+  overflow: visible;
+}
+
+.pgc-layer[data-state="hidden"] .pgc-pointer,
+.pgc-layer[data-state="hidden"] .pgc-trail {
+  opacity: 0 !important;
+}
+
+/* Trail: small cyan sparks behind the pointer; opacity set per frame. */
+.pgc-trail {
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #f4f7fc 0%, #4ccefc 45%, rgb(22 156 253 / 0) 72%);
+  opacity: 0;
+}
+
+/* Click ripple / refraction: a thin luminous ring (WAAPI drives it). */
+.pgc-ripple {
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border-radius: 50%;
+  border: 1.5px solid rgb(151 235 253 / 0.9);
+  box-shadow:
+    0 0 10px rgb(22 156 253 / 0.55),
+    inset 0 0 6px rgb(76 206 252 / 0.45);
+  opacity: 0;
+}
+
+/* Drag: a temporary direction path that fades after the drag ends. */
+.pgc-drag {
+  width: 1px;
+  height: 2px;
+  margin-top: -1px;
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, rgb(76 206 252 / 0.05), rgb(151 235 253 / 0.85));
+  box-shadow: 0 0 6px rgb(22 156 253 / 0.6);
+  opacity: 0;
+  transition: opacity 420ms var(--pgc-ease);
+}
+
+/* Waiting: still, with a subtle attention ring (opacity breathing only). */
+.pgc-wait {
+  position: absolute;
+  left: -13px;
+  top: -13px;
+  width: 26px;
+  height: 26px;
+  opacity: 0;
+  transition: opacity 260ms var(--pgc-ease);
+}
+
+.pgc-wait i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgb(76 206 252 / 0.75);
+  box-shadow: 0 0 12px rgb(22 156 253 / 0.45);
+  animation: pgc-attend 2400ms var(--pg-ease-ambient, cubic-bezier(0.37, 0, 0.63, 1)) infinite alternate;
+}
+
+.pgc-layer[data-state="waiting"] .pgc-wait {
+  opacity: 1;
+}
+
+/* Typing: a small ephemeral pill of three dots beside the pointer. */
+.pgc-typing {
+  position: absolute;
+  left: 14px;
+  top: 16px;
+  display: flex;
+  gap: 3px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgb(7 11 20 / 0.82);
+  box-shadow:
+    0 0 0 1px rgb(22 156 253 / 0.55),
+    0 0 10px rgb(22 156 253 / 0.35);
+  opacity: 0;
+  transition: opacity 180ms var(--pgc-ease);
+}
+
+.pgc-typing i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #97ebfd;
+  animation: pgc-type 900ms ease-in-out infinite;
+}
+
+.pgc-typing i:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.pgc-typing i:nth-child(3) {
+  animation-delay: 300ms;
+}
+
+.pgc-layer[data-state="typing"] .pgc-typing {
+  opacity: 1;
+}
+
+/* Gates: nothing loops while idle/hidden/offscreen; reduced motion and the
+ * Minimal tier keep the ring and dots static (still visible = still readable). */
+.pgc-layer:not([data-state="waiting"]) .pgc-wait i,
+.pgc-layer:not([data-state="typing"]) .pgc-typing i,
+[data-ambient="paused"] .pgc-wait i,
+[data-visibility="hidden"] .pgc-typing i {
+  animation-play-state: paused;
+}
+
+.pgc-layer[data-rm="true"] .pgc-wait i,
+.pgc-layer[data-rm="true"] .pgc-typing i,
+.pgc-layer[data-tier="minimal"] .pgc-wait i,
+.pgc-layer[data-tier="minimal"] .pgc-typing i {
+  animation: none;
+}
+
+.pgc-layer[data-rm="true"] .pgc-typing i:nth-child(2) {
+  opacity: 0.7;
+}
+
+.pgc-layer[data-rm="true"] .pgc-typing i:nth-child(3) {
+  opacity: 0.45;
+}
+
+@keyframes pgc-attend {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pgc-type {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}

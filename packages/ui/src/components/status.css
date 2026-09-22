@@ -1,0 +1,122 @@
+/* StatusIndicator — shape + color + words. */
+.pg-status {
+  --pg-status-color: var(--pg-text-secondary);
+  --pg-status-glyph: 10px;
+
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pg-rhythm-inline);
+  min-width: 0;
+  font-family: var(--pg-font-sans);
+  font-size: var(--pg-type-footnote-size);
+  line-height: var(--pg-type-footnote-line);
+  font-weight: 500;
+  color: var(--pg-text-primary);
+  white-space: nowrap;
+}
+
+.pg-status[data-size="sm"] {
+  --pg-status-glyph: 8px;
+  gap: 5px;
+  font-size: var(--pg-type-caption-size);
+  line-height: var(--pg-type-caption-line);
+}
+
+.pg-status__glyph {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: var(--pg-status-glyph);
+  height: var(--pg-status-glyph);
+  color: var(--pg-status-color);
+}
+
+.pg-status__glyph svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.pg-status__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pg-status__detail {
+  font-family: var(--pg-font-mono);
+  font-size: var(--pg-type-data-size);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--pg-text-secondary);
+}
+
+.pg-status[data-pill="true"] {
+  height: 24px;
+  padding: 0 10px 0 8px;
+  border-radius: var(--pg-radius-pill);
+  background: rgb(var(--pg-text-primary-rgb) / 0.06);
+  box-shadow: inset 0 0 0 1px var(--pg-border-subtle);
+}
+
+.pg-status[data-tone="neutral"] {
+  --pg-status-color: var(--pg-text-secondary);
+}
+
+.pg-status[data-tone="active"] {
+  --pg-status-color: var(--pg-accent-active);
+}
+
+.pg-status[data-tone="success"] {
+  --pg-status-color: var(--pg-status-success);
+}
+
+.pg-status[data-tone="warning"] {
+  --pg-status-color: var(--pg-status-warning);
+}
+
+.pg-status[data-tone="danger"] {
+  --pg-status-color: var(--pg-status-danger);
+}
+
+.pg-status[data-tone="waiting"] {
+  --pg-status-color: var(--pg-status-waiting);
+}
+
+.pg-status[data-tone="paused"] {
+  --pg-status-color: var(--pg-text-secondary);
+}
+
+.pg-status[data-tone="user"] {
+  --pg-status-color: var(--pg-text-primary);
+}
+
+.pg-status[data-pill="true"][data-tone="active"] {
+  background: var(--pg-accent-soft);
+  box-shadow: inset 0 0 0 1px rgb(var(--pg-accent-active-rgb) / 0.28);
+}
+
+.pg-status[data-pill="true"][data-tone="danger"] {
+  background: var(--pg-status-soft-danger);
+}
+
+.pg-status[data-pill="true"][data-tone="warning"] {
+  background: var(--pg-status-soft-warning);
+}
+
+.pg-status[data-pill="true"][data-tone="success"] {
+  background: var(--pg-status-soft-success);
+}
+
+.pg-status[data-pill="true"][data-tone="waiting"] {
+  background: var(--pg-status-soft-waiting);
+}
+
+/* Presence halo: a soft light that breathes while Pegoles works.
+ * Ambient: pauses with the idle gate; static under reduced motion. */
+.pg-status__halo {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(var(--pg-accent-active-rgb) / calc(0.55 * var(--pg-glow))), transparent);
+  animation: pg-breathe var(--pg-ambient-period) var(--pg-ease-ambient) infinite;
+}

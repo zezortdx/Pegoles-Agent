@@ -1,0 +1,142 @@
+/* ActivityItem — a calm timeline: glyph rail, one line, time. */
+.pg-activity-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pg-activity {
+  --pg-activity-tone: var(--pg-text-secondary);
+
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  column-gap: var(--pg-space-md);
+  align-items: start;
+  padding: 9px 0;
+  animation: pg-rise-in var(--pg-duration-standard) var(--pg-ease-out);
+}
+
+/* Current action carries subtle Pegoles-blue energy; history stays quiet. */
+.pg-activity[data-current="true"] .pg-activity__glyph {
+  background: var(--pg-accent-soft);
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--pg-accent-active-rgb) / 0.4),
+    0 0 18px -4px rgb(var(--pg-accent-primary-rgb) / calc(0.5 * var(--pg-glow)));
+  color: var(--pg-accent-active);
+}
+
+.pg-activity[data-current="true"] .pg-activity__title {
+  color: var(--pg-text-primary);
+}
+
+[data-reduced-motion="true"] .pg-activity,
+[data-effects-tier="minimal"] .pg-activity {
+  animation: pg-fade-in var(--pg-duration-interaction) ease;
+}
+
+/* The rail connecting consecutive glyphs. */
+.pg-activity::before {
+  content: "";
+  position: absolute;
+  top: 34px;
+  bottom: -9px;
+  left: 13.5px;
+  width: 1px;
+  background: var(--pg-border-subtle);
+}
+
+.pg-activity:last-child::before {
+  display: none;
+}
+
+.pg-activity__glyph {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--pg-activity-tone);
+  background: rgb(var(--pg-text-primary-rgb) / 0.04);
+  box-shadow: inset 0 0 0 1px var(--pg-border-subtle);
+}
+
+.pg-activity__text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+.pg-activity__title {
+  margin: 0;
+  font-size: var(--pg-type-callout-size);
+  line-height: var(--pg-type-callout-line);
+  letter-spacing: var(--pg-type-callout-tracking);
+  color: var(--pg-text-primary);
+}
+
+.pg-activity__repeat {
+  margin-inline-start: var(--pg-space-sm);
+  font-family: var(--pg-font-mono);
+  font-size: var(--pg-type-data-size);
+  color: var(--pg-text-secondary);
+}
+
+.pg-activity__detail {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--pg-type-footnote-size);
+  line-height: var(--pg-type-footnote-line);
+  color: var(--pg-text-secondary);
+}
+
+.pg-activity__time {
+  padding-top: 6px;
+  font-family: var(--pg-font-mono);
+  font-size: var(--pg-type-data-size);
+  line-height: var(--pg-type-data-line);
+  font-variant-numeric: tabular-nums;
+  color: var(--pg-text-secondary);
+}
+
+.pg-activity[data-emphasis="quiet"] .pg-activity__title {
+  color: var(--pg-text-secondary);
+}
+
+.pg-activity[data-tone="active"] {
+  --pg-activity-tone: var(--pg-accent-active);
+}
+
+.pg-activity[data-tone="active"] .pg-activity__glyph {
+  background: var(--pg-accent-soft);
+  box-shadow: inset 0 0 0 1px rgb(var(--pg-accent-active-rgb) / 0.3);
+}
+
+.pg-activity[data-tone="success"] {
+  --pg-activity-tone: var(--pg-status-success);
+}
+
+.pg-activity[data-tone="warning"] {
+  --pg-activity-tone: var(--pg-status-warning);
+}
+
+.pg-activity[data-tone="danger"] {
+  --pg-activity-tone: var(--pg-status-danger);
+}
+
+.pg-activity[data-tone="danger"] .pg-activity__glyph {
+  background: var(--pg-status-soft-danger);
+}
+
+.pg-activity[data-tone="waiting"] {
+  --pg-activity-tone: var(--pg-status-waiting);
+}
+
+.pg-activity[data-tone="user"] {
+  --pg-activity-tone: var(--pg-text-primary);
+}

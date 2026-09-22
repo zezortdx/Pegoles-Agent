@@ -1,0 +1,33 @@
+[package]
+name = "pegoles-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "pegoles_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+pegoles-protocol = { workspace = true }
+pegoles-guest-proto = { path = "../../../crates/pegoles-guest-proto" }
+pegoles-computer = { workspace = true }
+pegoles-policy = { workspace = true }
+pegoles-core = { workspace = true }
+
+# macOS only: in-process VM host + native framebuffer display. Never a
+# dependency of the shared crates (they stay platform-free).
+[target.'cfg(target_os = "macos")'.dependencies]
+pegoles-macos-embed = { path = "../../../native/macos/pegoles-macos-embed" }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
