@@ -27,7 +27,6 @@ fn main() {
 
     // GuestReady + graphical Ready (weston session) with a generous budget.
     let deadline = Instant::now() + Duration::from_secs(180);
-    let mut graphical_ready = false;
     loop {
         registry.pump();
         let guest = registry.guest_state();
@@ -38,7 +37,6 @@ fn main() {
                 pegoles_protocol::GraphicalSessionState::Ready
             )
         {
-            graphical_ready = true;
             println!(
                 "graphical ready: {:?} {}x{}",
                 session.compositor,
@@ -56,7 +54,6 @@ fn main() {
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    assert!(graphical_ready);
 
     println!("input_available: {}", registry.input_available());
     let st = registry.input_status();
