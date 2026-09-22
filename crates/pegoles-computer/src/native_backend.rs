@@ -1352,9 +1352,9 @@ impl NativeHelperBackend {
             ));
         }
         if !inner.guest_supports(capability) {
-            return Err(ComputerError::UnsupportedOperation(format!(
-                "guest runtime does not advertise '{capability}' support"
-            )));
+            return Err(ComputerError::UnsupportedOperation(
+                inner.missing_capability_reason(capability),
+            ));
         }
         Ok(())
     }

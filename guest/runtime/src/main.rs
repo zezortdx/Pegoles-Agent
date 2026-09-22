@@ -78,6 +78,70 @@ fn serve_once(device: &mut Option<input::device::AgentDevice>) -> std::io::Resul
     result
 }
 
+/// Strict capability advertisement (Phase 5.1): a capability is listed
+/// ONLY with a passing self-test; otherwise it lands in `unavailable`
+/// with the structured reason. Pure (host-tested).
+fn advertise(
+    input: &Result<(), String>,
+    capture: &Result<(), String>,
+) -> (Vec<String>, Vec<pegoles_guest_proto::CapabilityDiagnostic>) {
+    let mut capabilities = Vec::new();
+    let mut unavailable = Vec::new();
+    match input {
+        Ok(()) => capabilities.push("input".to_string()),
+        Err(reason) => unavailable.push(pegoles_guest_proto::CapabilityDiagnostic {
+            capability: "input".to_string(),
+            reason: reason.clone(),
+        }),
+    }
+    match capture {
+        Ok(()) => capabilities.push("frame".to_string()),
+        Err(reason) => unavailable.push(pegoles_guest_proto::CapabilityDiagnostic {
+            capability: "frame".to_string(),
+            reason: reason.clone(),
+        }),
+    }
+    (capabilities, unavailable)
+}
+
+/// Self-test: device opened AND recognized by the input stack
+/// (`/proc/bus/input/devices`, retried — devnode timing is real).
+#[cfg(target_os = "linux")]
+fn probe_input(device: &Option<input::device::AgentDevice>) -> Result<(), String> {
+    if device.is_none() {
+        return Err(
+            "uinput device not opened (/dev/uinput inaccessible — image needs udev rule + input group)"
+                .to_string(),
+        );
+    }
+    for _ in 0..20 {
+        match std::fs::read_to_string("/proc/bus/input/devices") {
+            Ok(text) if input::device_recognized(&text, input::DEVICE_NAME) => return Ok(()),
+            Ok(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(e) => return Err(format!("/proc/bus/input/devices unreadable: {e}")),
+        }
+    }
+    Err("device created but not recognized by the input stack after 2s".to_string())
+}
+
+/// Self-test: Wayland socket visible AND one trial frame completes.
+/// Pixels are discarded; success proves the capture path works.
+#[cfg(target_os = "linux")]
+fn probe_capture() -> Result<(), String> {
+    if capture::display_socket_path().is_none() {
+        return Err("no Wayland socket (compositor not running?)".to_string());
+    }
+    match capture::capture() {
+        Ok((w, h, pixels)) => {
+            if w == 0 || h == 0 || pixels.len() != w as usize * h as usize * 4 {
+                return Err("trial capture failed stride check".to_string());
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("trial capture failed: {e}")),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn execute_input(
     device: &Option<input::device::AgentDevice>,
@@ -119,16 +183,11 @@ fn serve_inner(device: &mut Option<input::device::AgentDevice>) -> std::io::Resu
     let mut greeted = false;
     let mut ready_sent = false;
 
-    // 1. Guest initiates: GuestHello first, always. Capabilities are
-    // probed honestly: input iff the uinput device opened, frame iff a
-    // Wayland socket is visible.
-    let mut capabilities = Vec::new();
-    if device.is_some() {
-        capabilities.push("input".to_string());
-    }
-    if capture::display_socket_path().is_some() {
-        capabilities.push("frame".to_string());
-    }
+    // 1. Guest initiates: GuestHello first, always. STRICT (Phase
+    // 5.1): capabilities are self-tested per connection — device
+    // created AND recognized; trial frame captured. Anything failing
+    // lands in `unavailable` with its reason, never in `capabilities`.
+    let (capabilities, unavailable) = advertise(&probe_input(device), &probe_capture());
     send(
         &mut writer,
         &GuestMessage::GuestHello {
@@ -138,6 +197,7 @@ fn serve_inner(device: &mut Option<input::device::AgentDevice>) -> std::io::Resu
             os_version: debian_version(),
             arch: std::env::consts::ARCH.into(),
             capabilities,
+            unavailable,
         },
     )?;
 
@@ -369,4 +429,26 @@ fn main() {
 fn main() {
     eprintln!("pegoles-guest-runtime runs on Linux only (guest VM side)");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advertise_lists_only_passing_self_tests() {
+        let (caps, un) = advertise(&Ok(()), &Ok(()));
+        assert_eq!(caps, vec!["input".to_string(), "frame".to_string()]);
+        assert!(un.is_empty());
+
+        let (caps, un) = advertise(&Err("no uinput".to_string()), &Ok(()));
+        assert_eq!(caps, vec!["frame".to_string()]);
+        assert_eq!(un.len(), 1);
+        assert_eq!(un[0].capability, "input");
+        assert!(un[0].reason.contains("uinput"));
+
+        let (caps, un) = advertise(&Err("a".to_string()), &Err("b".to_string()));
+        assert!(caps.is_empty());
+        assert_eq!(un.len(), 2);
+    }
 }

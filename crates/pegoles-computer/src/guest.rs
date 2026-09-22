@@ -23,9 +23,10 @@
 //! `SessionOutcome::GraphicalSessionChanged`.
 
 use pegoles_guest_proto::{
-    capabilities_bounded, encode_host, parse_guest_message, GraphicalSessionReport,
-    GraphicalSessionStatus, GuestMessage, HostMessage, MessageError, SystemInfo,
-    GUEST_PROTOCOL_VERSION, MAX_FRAME_CHUNKS, MAX_FRAME_CHUNK_B64, MAX_REQUEST_ID_BYTES,
+    capabilities_bounded, diagnostics_bounded, encode_host, parse_guest_message,
+    CapabilityDiagnostic, GraphicalSessionReport, GraphicalSessionStatus, GuestMessage,
+    HostMessage, MessageError, SystemInfo, GUEST_PROTOCOL_VERSION, MAX_FRAME_CHUNKS,
+    MAX_FRAME_CHUNK_B64, MAX_REQUEST_ID_BYTES,
 };
 use pegoles_protocol::{GraphicalSessionState, GuestRuntimeState};
 use serde::{Deserialize, Serialize};
@@ -311,6 +312,9 @@ pub struct GuestSession {
     /// Phase 5 capability advertisement from `GuestHello` (e.g. "input",
     /// "frame"). Empty for v0.1 guests. Reset on every VM start.
     guest_capabilities: Vec<String>,
+    /// Phase 5.1 structured reasons for withheld capabilities.
+    /// Reset on every VM start.
+    capability_diagnostics: Vec<CapabilityDiagnostic>,
     info: Option<SystemInfo>,
     vm_started_at: Option<Instant>,
     ready_at: Option<Instant>,
@@ -337,6 +341,7 @@ impl GuestSession {
             greeted: false,
             guest_version: None,
             guest_capabilities: Vec::new(),
+            capability_diagnostics: Vec::new(),
             info: None,
             vm_started_at: None,
             ready_at: None,
@@ -371,6 +376,25 @@ impl GuestSession {
     /// True when the guest advertised a capability (input/frame).
     pub fn guest_supports(&self, capability: &str) -> bool {
         self.guest_capabilities.iter().any(|c| c == capability)
+    }
+
+    /// Structured reasons the guest withheld capabilities (empty when
+    /// everything advertised, or for pre-5.1 guests).
+    pub fn capability_diagnostics(&self) -> &[CapabilityDiagnostic] {
+        &self.capability_diagnostics
+    }
+
+    /// Human-readable reason a capability is missing: guest diagnostic
+    /// wins, else the honest default for silent (v0.1) guests.
+    pub fn missing_capability_reason(&self, capability: &str) -> String {
+        if let Some(d) = self
+            .capability_diagnostics
+            .iter()
+            .find(|d| d.capability == capability)
+        {
+            return format!("guest reports {} unavailable: {}", capability, d.reason);
+        }
+        format!("guest runtime does not advertise '{capability}' support")
     }
 
     pub fn guest_version(&self) -> Option<u32> {
@@ -480,6 +504,7 @@ impl GuestSession {
         self.greeted = false;
         self.guest_version = None;
         self.guest_capabilities = Vec::new();
+        self.capability_diagnostics = Vec::new();
         self.info = None;
         self.ready_at = None;
         self.last_activity_at = None;
@@ -554,6 +579,7 @@ impl GuestSession {
                 os_version,
                 arch,
                 capabilities,
+                unavailable,
             } => {
                 if ![
                     os.as_str(),
@@ -569,6 +595,10 @@ impl GuestSession {
                 }
                 if !capabilities_bounded(&capabilities) {
                     self.violation("oversized capability advertisement".to_string(), &mut out);
+                    return out.into();
+                }
+                if !diagnostics_bounded(&unavailable) {
+                    self.violation("oversized capability diagnostics".to_string(), &mut out);
                     return out.into();
                 }
                 if protocol_version != GUEST_PROTOCOL_VERSION {
@@ -594,6 +624,7 @@ impl GuestSession {
                 self.greeted = true;
                 self.guest_version = Some(protocol_version);
                 self.guest_capabilities = capabilities;
+                self.capability_diagnostics = unavailable;
                 out.push_back(SessionOutcome::SendFrame(encode_host(
                     &HostMessage::HostHello {
                         protocol_version: GUEST_PROTOCOL_VERSION,
@@ -834,6 +865,7 @@ mod tests {
             os_version: "13".into(),
             arch: "aarch64".into(),
             capabilities: Vec::new(),
+            unavailable: Vec::new(),
         })
     }
 
@@ -845,6 +877,7 @@ mod tests {
             os_version: "13".into(),
             arch: "aarch64".into(),
             capabilities,
+            unavailable: Vec::new(),
         })
     }
 
@@ -912,6 +945,70 @@ mod tests {
         // Reset on next boot.
         s.on_vm_started(now);
         assert!(s.guest_capabilities().is_empty());
+        assert!(s.capability_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn withheld_capabilities_carry_structured_reasons() {
+        use pegoles_guest_proto::CapabilityDiagnostic;
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        s.on_connected(now);
+        let line = encode_guest(&GuestMessage::GuestHello {
+            protocol_version: 1,
+            runtime_version: "0.1.0".into(),
+            os: "debian".into(),
+            os_version: "13".into(),
+            arch: "aarch64".into(),
+            capabilities: vec!["frame".to_string()],
+            unavailable: vec![CapabilityDiagnostic {
+                capability: "input".to_string(),
+                reason: "/dev/uinput: permission denied".to_string(),
+            }],
+        });
+        let out = s.on_frame(&line, now);
+        assert!(out.contains(&SessionOutcome::HandshakeCompleted {
+            protocol_version: 1
+        }));
+        assert!(!s.guest_supports("input"));
+        assert!(s.guest_supports("frame"));
+        let diags = s.capability_diagnostics();
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].capability, "input");
+        // Host refusal reasons surface the guest diagnostic verbatim.
+        assert!(s
+            .missing_capability_reason("input")
+            .contains("permission denied"));
+        // Silent (pre-5.1) guests get the honest default instead.
+        let silent = GuestSession::new();
+        assert_eq!(
+            silent.missing_capability_reason("input"),
+            "guest runtime does not advertise 'input' support"
+        );
+    }
+
+    #[test]
+    fn oversized_diagnostics_are_violation() {
+        use pegoles_guest_proto::CapabilityDiagnostic;
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        s.on_connected(now);
+        let line = encode_guest(&GuestMessage::GuestHello {
+            protocol_version: 1,
+            runtime_version: "0.1.0".into(),
+            os: "debian".into(),
+            os_version: "13".into(),
+            arch: "aarch64".into(),
+            capabilities: Vec::new(),
+            unavailable: vec![CapabilityDiagnostic {
+                capability: "input".into(),
+                reason: "x".repeat(512),
+            }],
+        });
+        let out = s.on_frame(&line, now);
+        assert!(out.contains(&SessionOutcome::KickConnection));
     }
 
     #[test]

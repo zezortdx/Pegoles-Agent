@@ -169,6 +169,35 @@ pub fn needs_shift(c: char) -> bool {
         )
 }
 
+/// Device name registered with the kernel (also the recognition key).
+pub const DEVICE_NAME: &str = "Pegoles Agent Input";
+
+/// True when `/proc/bus/input/devices` shows our device as recognized by
+/// the input stack. Pure parser (host-tested); the file read is Linux.
+pub fn device_recognized(proc_bus_input: &str, name: &str) -> bool {
+    let mut current_name: Option<&str> = None;
+    let mut matched = false;
+    for line in proc_bus_input.lines().chain(std::iter::once("")) {
+        let line = line.trim_end();
+        if line.is_empty() {
+            current_name = None;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("N: Name=") {
+            let unquoted = rest
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or(rest);
+            current_name = Some(unquoted);
+            if unquoted == name {
+                matched = true;
+            }
+        }
+    }
+    let _ = current_name;
+    matched
+}
+
 /// One physical key press: keycode + held modifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyStroke {
@@ -509,7 +538,7 @@ pub mod device {
             setup(UI_SET_ABSBIT, ABS_X as i64)?;
             setup(UI_SET_ABSBIT, ABS_Y as i64)?;
             let mut dev: UinputUserDev = unsafe { std::mem::zeroed() };
-            let name = b"Pegoles Agent Input";
+            let name = super::DEVICE_NAME.as_bytes();
             dev.name[..name.len()].copy_from_slice(name);
             dev.id = UinputId {
                 bustype: 0x03,
@@ -815,5 +844,22 @@ mod tests {
         assert_eq!(button_code(GuestButton::Primary), 272);
         assert_eq!(button_code(GuestButton::Secondary), 273);
         assert_eq!(button_code(GuestButton::Middle), 274);
+    }
+
+    #[test]
+    fn recognition_parses_proc_bus_input() {
+        let sample = "I: Bus=0006 Vendor=0000 Product=0000 Version=0000\n\
+                      N: Name=\"Pegoles Agent Input\"\n\
+                      P: Phys=\n\
+                      \n\
+                      I: Bus=0011 Vendor=0002 Product=0008 Version=0000\n\
+                      N: Name=\"AT Translated Set 2 keyboard\"\n";
+        assert!(device_recognized(sample, DEVICE_NAME));
+        assert!(!device_recognized(sample, "Nope"));
+        assert!(!device_recognized("", DEVICE_NAME));
+        assert!(!device_recognized(
+            "N: Name=\"Pegoles Agent Inpu\"\n",
+            DEVICE_NAME
+        ));
     }
 }

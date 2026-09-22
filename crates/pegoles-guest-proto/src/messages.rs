@@ -29,8 +29,17 @@ pub enum GuestMessage {
         arch: String,
         /// Phase 5 capability advertisement, e.g. `["input", "frame"]`.
         /// Optional so v0.1 hellos still parse; unknown entries ignored.
+        /// STRICT (Phase 5.1): a capability is advertised ONLY after the
+        /// guest verified it actually works (device created + recognized
+        /// by the input stack; trial frame captured). Installed code
+        /// without working functionality is reported in `unavailable`.
         #[serde(default)]
         capabilities: Vec<String>,
+        /// Structured reasons for withheld capabilities, e.g.
+        /// `{capability:"input", reason:"/dev/uinput: permission denied"}`.
+        /// Optional for backward compatibility; old hosts ignore it.
+        #[serde(default)]
+        unavailable: Vec<CapabilityDiagnostic>,
     },
     /// Handshake complete from the guest side (after receiving HostHello).
     Ready,
@@ -184,13 +193,32 @@ pub enum GuestButton {
 pub const GUEST_CAP_INPUT: &str = "input";
 pub const GUEST_CAP_FRAME: &str = "frame";
 
+/// Structured reason for a withheld capability (Phase 5.1 strict
+/// advertisement). Bounded like all untrusted guest strings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityDiagnostic {
+    pub capability: String,
+    pub reason: String,
+}
+
 /// Cap for capability entries (count + bytes each).
 pub const MAX_CAPABILITIES: usize = 8;
 pub const MAX_CAPABILITY_BYTES: usize = 32;
+/// Cap for withheld-capability diagnostics.
+pub const MAX_DIAGNOSTICS: usize = 8;
+pub const MAX_DIAGNOSTIC_BYTES: usize = 256;
 
 /// Whether an advertised capability list is well-formed (untrusted).
 pub fn capabilities_bounded(caps: &[String]) -> bool {
     caps.len() <= MAX_CAPABILITIES && caps.iter().all(|c| c.len() <= MAX_CAPABILITY_BYTES)
+}
+
+/// Whether withheld-capability diagnostics are well-formed (untrusted).
+pub fn diagnostics_bounded(diags: &[CapabilityDiagnostic]) -> bool {
+    diags.len() <= MAX_DIAGNOSTICS
+        && diags.iter().all(|d| {
+            d.capability.len() <= MAX_CAPABILITY_BYTES && d.reason.len() <= MAX_DIAGNOSTIC_BYTES
+        })
 }
 
 /// Bounds for untrusted Phase 5 fields.
@@ -395,6 +423,10 @@ mod tests {
             os_version: "13".into(),
             arch: "aarch64".into(),
             capabilities: vec!["input".into(), "frame".into()],
+            unavailable: vec![CapabilityDiagnostic {
+                capability: "browser".into(),
+                reason: "not installed".into(),
+            }],
         };
         let line = encode_guest(&m);
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -403,11 +435,26 @@ mod tests {
         // v0.1 hellos without capabilities still parse.
         let legacy = r#"{"type":"guest_hello","protocol_version":1,"runtime_version":"0.1.0","os":"debian","os_version":"13","arch":"aarch64"}"#;
         match parse_guest_message(legacy).unwrap() {
-            GuestMessage::GuestHello { capabilities, .. } => assert!(capabilities.is_empty()),
+            GuestMessage::GuestHello {
+                capabilities,
+                unavailable,
+                ..
+            } => {
+                assert!(capabilities.is_empty());
+                assert!(unavailable.is_empty());
+            }
             other => panic!("unexpected: {other:?}"),
         }
         assert!(capabilities_bounded(&["input".to_string()]));
         assert!(!capabilities_bounded(&["x".repeat(33)]));
+        assert!(diagnostics_bounded(&[CapabilityDiagnostic {
+            capability: "input".into(),
+            reason: "nope".into(),
+        }]));
+        assert!(!diagnostics_bounded(&[CapabilityDiagnostic {
+            capability: "input".into(),
+            reason: "x".repeat(257),
+        }]));
     }
 
     #[test]

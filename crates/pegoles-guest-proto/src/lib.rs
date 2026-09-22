@@ -19,11 +19,11 @@ pub mod messages;
 
 pub use framing::{FrameError, Framer, MAX_FRAME_BYTES};
 pub use messages::{
-    capabilities_bounded, encode_guest, encode_host, parse_guest_message, parse_host_message,
-    CpuJiffies, GraphicalSessionReport, GraphicalSessionStatus, GuestButton, GuestDisplaySize,
-    GuestInputOp, GuestMessage, HostMessage, MessageError, ProcessRss, SystemInfo, GUEST_CAP_FRAME,
-    GUEST_CAP_INPUT, GUEST_PROTOCOL_VERSION, MAX_CAPABILITIES, MAX_CAPABILITY_BYTES,
-    MAX_CHORD_KEYS, MAX_FRAME_CHUNKS, MAX_FRAME_CHUNK_B64, MAX_KEY_NAME_BYTES,
-    MAX_REQUEST_ID_BYTES, MAX_SESSION_FIELD_BYTES, MAX_TYPE_TEXT_CHARS, PEGOLES_VSOCK_PORT,
-    RUNTIME_VERSION,
+    capabilities_bounded, diagnostics_bounded, encode_guest, encode_host, parse_guest_message,
+    parse_host_message, CapabilityDiagnostic, CpuJiffies, GraphicalSessionReport,
+    GraphicalSessionStatus, GuestButton, GuestDisplaySize, GuestInputOp, GuestMessage, HostMessage,
+    MessageError, ProcessRss, SystemInfo, GUEST_CAP_FRAME, GUEST_CAP_INPUT, GUEST_PROTOCOL_VERSION,
+    MAX_CAPABILITIES, MAX_CAPABILITY_BYTES, MAX_CHORD_KEYS, MAX_DIAGNOSTICS, MAX_DIAGNOSTIC_BYTES,
+    MAX_FRAME_CHUNKS, MAX_FRAME_CHUNK_B64, MAX_KEY_NAME_BYTES, MAX_REQUEST_ID_BYTES,
+    MAX_SESSION_FIELD_BYTES, MAX_TYPE_TEXT_CHARS, PEGOLES_VSOCK_PORT, RUNTIME_VERSION,
 };
