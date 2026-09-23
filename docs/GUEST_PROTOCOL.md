@@ -112,7 +112,8 @@ Input (`HostMessage::Input{request_id, op, display?}` → `InputAck`):
 
 Frames (`HostMessage::GetFrame{request_id}` → `FrameBegin` + chunks):
 
-- The guest captures its OWN framebuffer (weston-screenshooter client),
+- The guest captures its OWN framebuffer (`weston_capture_v1` client
+  against weston 14; the retired `weston_screenshooter` protocol is gone),
   answers `FrameBegin{width, height, total_chunks}` then base64 raw-RGBA
   chunks (≤32 KiB raw each, ≤1024 chunks, 64 MiB total cap).
 - Capture failures ride `InputAck{ok:false}` on the same id so the host

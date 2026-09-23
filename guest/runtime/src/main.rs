@@ -104,8 +104,55 @@ fn advertise(
     (capabilities, unavailable)
 }
 
-/// Self-test: device opened AND recognized by the input stack
-/// (`/proc/bus/input/devices`, retried — devnode timing is real).
+/// Reconnect budget for capability flips (Phase 5.1 monitor).
+/// Heartbeat wakeups re-check cheap signals; a flip means the hello
+/// lied about the present (weston arriving late, compositor dying,
+/// device appearing). Reconnecting re-handshakes with fresh full
+/// probes. Persistent disagreement (broken compositor) is capped:
+/// after MAX_FLIPS the monitor goes quiet instead of churning.
+/// Pure (host-tested).
+struct FlipBudget {
+    flips: u32,
+}
+
+const MAX_FLIPS: u32 = 3;
+
+impl FlipBudget {
+    fn new() -> Self {
+        Self { flips: 0 }
+    }
+
+    /// True when `current` differs from `hello` and budget remains.
+    /// Counts the flip either way (converges: persistent disagreement
+    /// exhausts the budget instead of reconnect-looping forever).
+    fn should_reconnect(&mut self, hello: &[String], current: &[String]) -> bool {
+        if hello == current || self.flips >= MAX_FLIPS {
+            return false;
+        }
+        self.flips += 1;
+        true
+    }
+}
+
+/// Cheap capability signals for monitor wakeups (Linux): device
+/// open-state + recognition (file reads) and compositor liveness
+/// (registry roundtrip — milliseconds, never pixels). Full trial
+/// capture stays connect-time only.
+#[cfg(target_os = "linux")]
+fn cheap_probe(device: &Option<input::device::AgentDevice>) -> Vec<String> {
+    let mut caps = Vec::new();
+    let input_ok = device.is_some()
+        && std::fs::read_to_string("/proc/bus/input/devices")
+            .map(|t| input::device_recognized(&t, input::DEVICE_NAME))
+            .unwrap_or(false);
+    if input_ok {
+        caps.push("input".to_string());
+    }
+    if capture::query_capture_global().unwrap_or(false) {
+        caps.push("frame".to_string());
+    }
+    caps
+}
 #[cfg(target_os = "linux")]
 fn probe_input(device: &Option<input::device::AgentDevice>) -> Result<(), String> {
     if device.is_none() {
@@ -177,6 +224,25 @@ fn serve_inner(device: &mut Option<input::device::AgentDevice>) -> std::io::Resu
     }
     let mut reader = BufReader::new(unsafe { std::fs::File::from_raw_fd(read_fd) });
     let mut writer = unsafe { std::fs::File::from_raw_fd(fd) };
+    // Heartbeat-class wakeups for the capability monitor: a quiet
+    // connection still re-checks cheap signals every 10 s (never
+    // pixels). Uses the raw fd (BufReader has no timeout API).
+    {
+        use std::os::fd::AsRawFd;
+        let tv = libc::timeval {
+            tv_sec: 10,
+            tv_usec: 0,
+        };
+        unsafe {
+            libc::setsockopt(
+                reader.get_ref().as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                &tv as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&tv) as libc::socklen_t,
+            );
+        }
+    }
 
     let mut framer = Framer::new();
     let mut buf = [0u8; 8192];
@@ -188,6 +254,7 @@ fn serve_inner(device: &mut Option<input::device::AgentDevice>) -> std::io::Resu
     // created AND recognized; trial frame captured. Anything failing
     // lands in `unavailable` with its reason, never in `capabilities`.
     let (capabilities, unavailable) = advertise(&probe_input(device), &probe_capture());
+    let mut flips = FlipBudget::new();
     send(
         &mut writer,
         &GuestMessage::GuestHello {
@@ -196,13 +263,30 @@ fn serve_inner(device: &mut Option<input::device::AgentDevice>) -> std::io::Resu
             os: "debian".into(),
             os_version: debian_version(),
             arch: std::env::consts::ARCH.into(),
-            capabilities,
+            capabilities: capabilities.clone(),
             unavailable,
         },
     )?;
 
     loop {
-        let n = reader.read(&mut buf)?;
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                // Heartbeat-class wakeup (no host traffic): cheap
+                // capability check (file reads + registry roundtrip —
+                // never pixels). On a budgeted flip, reconnect so the
+                // next hello advertises the truth (e.g. weston arriving
+                // late on first boot, or dying later).
+                if flips.should_reconnect(&capabilities, &cheap_probe(device)) {
+                    return Ok(());
+                }
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             return Ok(()); // host closed: reconnect
         }
@@ -450,5 +534,20 @@ mod tests {
         let (caps, un) = advertise(&Err("a".to_string()), &Err("b".to_string()));
         assert!(caps.is_empty());
         assert_eq!(un.len(), 2);
+    }
+
+    #[test]
+    fn flip_budget_converges() {
+        let hello = vec!["input".to_string()];
+        let mut budget = FlipBudget::new();
+        // Same state: no reconnect.
+        assert!(!budget.should_reconnect(&hello, &hello));
+        // Flip: reconnect (weston arriving late, compositor dying).
+        let changed = vec!["input".to_string(), "frame".to_string()];
+        assert!(budget.should_reconnect(&hello, &changed));
+        assert!(budget.should_reconnect(&hello, &changed));
+        assert!(budget.should_reconnect(&hello, &changed));
+        // Budget exhausted: quiet instead of looping forever.
+        assert!(!budget.should_reconnect(&hello, &changed));
     }
 }

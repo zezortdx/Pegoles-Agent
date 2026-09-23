@@ -63,8 +63,10 @@ write_files:
       # Pegoles input device access (Image v2).
       # Narrow rule: the pegoles user (via the input group) may open the
       # uinput misc device to create the single "Pegoles Agent Input"
-      # virtual device. No MODE=0666 anywhere.
-      KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660"
+      # virtual device. No MODE=0666 anywhere. (No SUBSYSTEM match:
+      # misc-device uevents vary; KERNEL match alone is precise enough
+      # for the single uinput node.)
+      KERNEL=="uinput", GROUP="input", MODE="0660"
   - path: /etc/xdg/weston/weston.ini
     owner: root:root
     permissions: '0644'
@@ -74,8 +76,14 @@ write_files:
       # weston_screenshooter global with the debug protocol extension.
       # Scope note: guest-local clients only; the guest is already
       # untrusted and isolated, so this exposes nothing beyond the VM.
+      # Phase 5.1: VZ exposes NO GPU (pure framebuffer for the native
+      # view), so the DRM backend can never start here. Headless
+      # composites in software (the weston test-suite pattern); the
+      # agent observes via output capture. --width/--height belt and
+      # suspenders alongside the [output] section (headless sizes from
+      # weston.ini in weston 14).
       [core]
-      backend=drm-backend.so
+      backend=headless-backend.so
       shell=desktop-shell.so
       xwayland=false
       require-input=false
@@ -115,7 +123,7 @@ write_files:
       Environment=WAYLAND_DISPLAY=wayland-0
       Environment=XKB_DEFAULT_LAYOUT=us
       Environment=XKB_DEFAULT_VARIANT=intl
-      ExecStart=/usr/bin/weston --backend=drm-backend.so --shell=desktop-shell.so --socket=wayland-0 --config=/etc/xdg/weston/weston.ini --debug --log=/run/pegoles/weston.log
+      ExecStart=/usr/bin/weston --backend=headless-backend.so --shell=desktop-shell.so --socket=wayland-0 --config=/etc/xdg/weston/weston.ini --width=1440 --height=900 --debug --log=/var/log/pegoles/weston.log
       Restart=on-failure
       RestartSec=3s
       NoNewPrivileges=true
@@ -123,6 +131,7 @@ write_files:
       ProtectHome=true
       PrivateTmp=true
       ReadWritePaths=/run/pegoles
+      LogsDirectory=pegoles
 
       [Install]
       WantedBy=multi-user.target
@@ -182,9 +191,16 @@ runcmd:
   # GuestReady never depends on serial; this is diagnostics only.
   - grep -q 'console=hvc0' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=hvc0"/' /etc/default/grub
   - update-grub
-  # cloud-init did its one job: disable it for every later boot.
+  # cloud-init did its one job: disable it for every later boot,
+  # then power off for snapshot. NOTE: runcmd `poweroff` is refused
+  # while systemd is still booting — use the power_state module, which
+  # synchronizes with boot completion itself.
   - systemctl disable cloud-init cloud-config cloud-final cloud-init-local || true
   - touch /etc/cloud/cloud-init.disabled
-  - poweroff
+
+power_state:
+  mode: poweroff
+  timeout: 120
+  condition: true
 
 final_message: "Pegoles v2 provisioning complete, powering off for snapshot."

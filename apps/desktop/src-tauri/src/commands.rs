@@ -677,6 +677,7 @@ pub async fn demo_script_steps() -> Result<Vec<pegoles_core::ScriptStep>, String
 #[serde(rename_all = "snake_case")]
 pub struct InputStatusPayload {
     pub available: bool,
+    pub frame_available: bool,
     pub agent_busy: bool,
     pub pressed_clean: bool,
     pub audit_len: usize,
@@ -699,6 +700,7 @@ pub async fn input_status(
         let st = s.registry.input_status();
         Ok(InputStatusPayload {
             available: st.available,
+            frame_available: st.frame_available,
             agent_busy: st.agent_busy,
             pressed_clean: st.pressed_clean,
             audit_len: st.audit_len,

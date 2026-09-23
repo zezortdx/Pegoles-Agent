@@ -209,6 +209,8 @@ pub fn pegoles_demo_script() -> Vec<ScriptStep> {
 #[derive(Clone, Debug)]
 pub struct InputStatus {
     pub available: bool,
+    /// Frame capture advertised and session ready (ObserveScreen path).
+    pub frame_available: bool,
     pub agent_busy: bool,
     pub pressed_clean: bool,
     pub audit_len: usize,
@@ -225,8 +227,13 @@ impl ComputerRegistry {
     }
 
     pub fn input_status(&self) -> InputStatus {
+        let frame_available = self
+            .backend
+            .as_ref()
+            .is_some_and(|b| b.input_capabilities().screenshot);
         InputStatus {
             available: self.input_available(),
+            frame_available,
             agent_busy: self.display.control == ControlOwner::Agent,
             pressed_clean: self.input_pressed.is_clean(),
             audit_len: self.audit.len(),

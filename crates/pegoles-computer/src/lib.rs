@@ -59,9 +59,7 @@ pub use input::{
 pub use macos::MacOSVirtualizationBackend;
 pub use mock::MockComputerBackend;
 pub use pegoles_guest_proto::MAX_FRAME_BYTES as GUEST_FRAME_MAX_BYTES;
-pub use pegoles_guest_proto::{
-    CapabilityDiagnostic, GUEST_CAP_FRAME, GUEST_CAP_INPUT,
-};
+pub use pegoles_guest_proto::{CapabilityDiagnostic, GUEST_CAP_FRAME, GUEST_CAP_INPUT};
 pub use platform::{
     host_architecture, host_capabilities, host_platform, BackendCapabilities, BackendKind,
     DiskFormat, GuestArchitecture, GuestTransportKind, HostArchitecture, HostCapabilities,

@@ -1,14 +1,16 @@
-//! Guest framebuffer capture (Phase 5).
+//! Guest framebuffer capture (Phase 5.1).
 //!
-//! A minimal `weston-screenshooter` Wayland client written against the raw
+//! A minimal `weston_capture_v1` Wayland client written against the raw
 //! wire protocol with std + libc only (no wayland-client link needed in
 //! the guest). Captures the guest output into shared memory, shuffles
 //! ARGB8888 to RGBA, and emits base64 chunks for the vsock transport.
+//! See protocol/weston-output-capture.xml (weston 14; the retired
+//! weston_screenshooter protocol is NOT spoken).
 //!
 //! Layout mirrors `input.rs`: pure logic (wire marshalling, pixel
 //! shuffle, base64, chunk planning) is platform-free and host-tested;
 //! socket fd-passing and memfd live behind the Linux-gated `capture`
-//! function. If the compositor does not expose `weston_screenshooter`,
+//! function. If the compositor does not expose `weston_capture_v1`,
 //! capture fails with a structured honest error (flag/image side).
 
 use pegoles_guest_proto::{MAX_FRAME_CHUNKS, MAX_FRAME_CHUNK_B64};
@@ -142,15 +144,6 @@ pub fn parse_global(args: &[u8]) -> Option<(u32, String, u32)> {
     Some((name, interface, version))
 }
 
-/// wl_output mode event (opcode 1): flags, width, height, refresh.
-pub fn parse_output_mode(args: &[u8]) -> Option<(i32, i32)> {
-    let mut at = 0;
-    let _flags = read_u32(args, &mut at)?;
-    let width = read_i32(args, &mut at)?;
-    let height = read_i32(args, &mut at)?;
-    Some((width, height))
-}
-
 /// wl_display error event (opcode 0): object id, code, message.
 pub fn parse_display_error(args: &[u8]) -> Option<(u32, u32, String)> {
     let mut at = 0;
@@ -224,14 +217,14 @@ pub trait CaptureStream {
 struct Globals {
     shm: Option<(u32, u32)>,
     output: Option<(u32, u32)>,
-    shooter: Option<(u32, u32)>,
+    capture: Option<(u32, u32)>,
 }
 
 fn collect_globals(events: &[WireEvent], registry: u32) -> Globals {
     let mut g = Globals {
         shm: None,
         output: None,
-        shooter: None,
+        capture: None,
     };
     for e in events {
         if e.sender != registry || e.opcode != 0 {
@@ -241,8 +234,10 @@ fn collect_globals(events: &[WireEvent], registry: u32) -> Globals {
             match interface.as_str() {
                 "wl_shm" if g.shm.is_none() => g.shm = Some((name, version.min(1))),
                 "wl_output" if g.output.is_none() => g.output = Some((name, version.min(3))),
-                "weston_screenshooter" if g.shooter.is_none() => {
-                    g.shooter = Some((name, version.min(1)))
+                // weston 14 output capture (replaces the retired
+                // weston_capture_v1); see protocol/weston-output-capture.xml.
+                "weston_capture_v1" if g.capture.is_none() => {
+                    g.capture = Some((name, version.min(1)))
                 }
                 _ => {}
             }
@@ -251,7 +246,24 @@ fn collect_globals(events: &[WireEvent], registry: u32) -> Globals {
     g
 }
 
-/// Drive the screenshooter dance over any stream. Returns raw RGBA.
+/// DRM fourcc codes the capture path accepts (bytes land B,G,R,A in
+/// memory; the shuffle below normalizes both to RGBA).
+const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
+const DRM_FORMAT_XRGB8888: u32 = 0x34325258;
+/// Pixel source: framebuffer copy (always available per the protocol).
+const CAPTURE_SOURCE_FRAMEBUFFER: u32 = 1;
+
+/// Capture-source parameters delivered by the compositor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CaptureParams {
+    format: Option<u32>,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+/// Drive the output-capture dance over any stream. Returns raw RGBA.
+/// Flow: bind shm/output/capture factory → create source → read the
+/// server's format+size → shm buffer → capture → complete.
 pub fn capture_over<S: PoolStream>(stream: &mut S) -> Result<(u32, u32, Vec<u8>), String> {
     let mut next_id: u32 = 2;
     let mut fresh = || {
@@ -276,8 +288,8 @@ pub fn capture_over<S: PoolStream>(stream: &mut S) -> Result<(u32, u32, Vec<u8>)
     let (output_name, output_version) = globals
         .output
         .ok_or_else(|| "compositor has no wl_output".to_string())?;
-    let (shooter_name, shooter_version) = globals.shooter.ok_or_else(|| {
-        "compositor does not expose weston_screenshooter (needs the compositor capture flag)"
+    let (capture_name, capture_version) = globals.capture.ok_or_else(|| {
+        "compositor does not expose weston_capture_v1 (needs the compositor capture flag)"
             .to_string()
     })?;
     // Bind the three globals.
@@ -292,34 +304,36 @@ pub fn capture_over<S: PoolStream>(stream: &mut S) -> Result<(u32, u32, Vec<u8>)
         output_version,
         output,
     )?;
-    let shooter = fresh();
+    let factory = fresh();
     bind(
         stream,
         registry,
-        shooter_name,
-        "weston_screenshooter",
-        shooter_version,
-        shooter,
+        capture_name,
+        "weston_capture_v1",
+        capture_version,
+        factory,
     )?;
-    // Roundtrip: output mode (size) arrives.
-    let callback = fresh();
+    // Create the capture source for this output (framebuffer source).
+    let source = fresh();
     let mut payload = Vec::new();
-    put_u32(&mut payload, callback);
-    stream.send(&frame_request(1, 0, &payload), &[])?;
-    let events = pump_until(stream, callback)?;
-    let (width, height) = events
-        .iter()
-        .filter(|e| e.sender == output && e.opcode == 1)
-        .filter_map(|e| parse_output_mode(&e.args))
-        .find(|(w, h)| *w > 0 && *h > 0)
-        .map(|(w, h)| (w as u32, h as u32))
-        .ok_or_else(|| "no output mode with dimensions".to_string())?;
-    if width > 16384 || height > 16384 {
-        return Err("absurd output dimensions".to_string());
+    put_u32(&mut payload, output);
+    put_u32(&mut payload, CAPTURE_SOURCE_FRAMEBUFFER);
+    put_u32(&mut payload, source);
+    stream.send(&frame_request(factory, 1, &payload), &[])?;
+    // The server answers format + size (authoritative buffer params).
+    let params = await_capture_params(stream, source)?;
+    let drm_format = params
+        .format
+        .ok_or_else(|| "capture source sent no format".to_string())?;
+    if drm_format != DRM_FORMAT_ARGB8888 && drm_format != DRM_FORMAT_XRGB8888 {
+        return Err(format!("unsupported capture format {drm_format:#x}"));
     }
-    // Pool + buffer, then shoot. The fd handoff is stream-specific:
-    // `send_pool` returns the fd the pool was created with semantics the
-    // stream understands (real: SCM_RIGHTS memfd; fake: marker only).
+    let (width, height) = match (params.width, params.height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 && w <= 16384 && h <= 16384 => (w, h),
+        _ => return Err("capture source sent no usable size".to_string()),
+    };
+    // Pool + ARGB8888 shm buffer, then capture into it. The fd handoff
+    // is stream-specific (real: SCM_RIGHTS memfd; fake: marker only).
     let stride = width
         .checked_mul(4)
         .ok_or_else(|| "stride overflow".to_string())?;
@@ -337,13 +351,12 @@ pub fn capture_over<S: PoolStream>(stream: &mut S) -> Result<(u32, u32, Vec<u8>)
     put_i32(&mut payload, stride as i32);
     put_u32(&mut payload, 0); // WL_SHM_FORMAT_ARGB8888
     stream.send(&frame_request(pool, 0, &payload), &[])?;
-    // weston_screenshooter.shoot(output, buffer)
+    // weston_capture_source_v1.capture(buffer)
     let mut payload = Vec::new();
-    put_u32(&mut payload, output);
     put_u32(&mut payload, buffer);
-    stream.send(&frame_request(shooter, 0, &payload), &[])?;
-    // Wait for shooter.done on the shooter object.
-    pump_until_object(stream, shooter, 0)?;
+    stream.send(&frame_request(source, 1, &payload), &[])?;
+    // Await complete (done) / retry (once) / failed.
+    await_capture_done(stream, source)?;
     let pixels = stream_take_pixels(stream, pool_fd, pool_size)?;
     Ok((width, height, pixels))
 }
@@ -392,12 +405,61 @@ fn pump_until<S: CaptureStream>(stream: &mut S, callback: u32) -> Result<Vec<Wir
     Err("roundtrip without callback done".to_string())
 }
 
-/// Read until a specific (sender, opcode) event arrives.
-fn pump_until_object<S: CaptureStream>(
+/// Read format+size events for a capture source (server-authoritative).
+fn await_capture_params<S: CaptureStream>(
     stream: &mut S,
-    sender: u32,
-    opcode: u16,
-) -> Result<(), String> {
+    source: u32,
+) -> Result<CaptureParams, String> {
+    let mut pending = Vec::new();
+    let mut params = CaptureParams::default();
+    for _ in 0..512 {
+        let chunk = stream.recv()?;
+        if chunk.is_empty() {
+            return Err("compositor closed the connection".to_string());
+        }
+        pending.extend_from_slice(&chunk);
+        let (events, rest) = parse_events(&pending);
+        pending = rest;
+        for e in events {
+            if e.sender == 1 && e.opcode == 0 {
+                let (_, code, message) = parse_display_error(&e.args).unwrap_or((0, 0, "?".into()));
+                return Err(format!("compositor error {code}: {message}"));
+            }
+            if e.sender != source {
+                continue;
+            }
+            match e.opcode {
+                0 => {
+                    // format(drm_format: uint)
+                    let mut at = 0;
+                    if let Some(f) = read_u32(&e.args, &mut at) {
+                        params.format = Some(f);
+                    }
+                }
+                1 => {
+                    // size(width: int, height: int)
+                    let mut at = 0;
+                    if let (Some(w), Some(h)) =
+                        (read_i32(&e.args, &mut at), read_i32(&e.args, &mut at))
+                    {
+                        if w > 0 && h > 0 {
+                            params.width = Some(w as u32);
+                            params.height = Some(h as u32);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if params.format.is_some() && params.width.is_some() {
+                return Ok(params);
+            }
+        }
+    }
+    Err("capture source sent no format/size".to_string())
+}
+
+/// Await complete / retry (once) / failed for a capture request.
+fn await_capture_done<S: CaptureStream>(stream: &mut S, source: u32) -> Result<(), String> {
     let mut pending = Vec::new();
     for _ in 0..512 {
         let chunk = stream.recv()?;
@@ -412,12 +474,27 @@ fn pump_until_object<S: CaptureStream>(
                 let (_, code, message) = parse_display_error(&e.args).unwrap_or((0, 0, "?".into()));
                 return Err(format!("compositor error {code}: {message}"));
             }
-            if e.sender == sender && e.opcode == opcode {
-                return Ok(());
+            if e.sender != source {
+                continue;
+            }
+            match e.opcode {
+                2 => return Ok(()), // complete
+                3 => {
+                    // retry: parameters changed mid-flight; single-shot
+                    // clients fail rather than chase them.
+                    return Err("capture retry requested (buffer params changed)".to_string());
+                }
+                4 => {
+                    // failed(msg?: string)
+                    let mut at = 0;
+                    let msg = read_string(&e.args, &mut at).unwrap_or_else(|| "?".to_string());
+                    return Err(format!("capture failed: {msg}"));
+                }
+                _ => {}
             }
         }
     }
-    Err("capture without shooter done".to_string())
+    Err("capture without completion".to_string())
 }
 
 /// Default pool/pixel handling for streams without fd semantics (tests).
@@ -589,6 +666,28 @@ pub fn capture() -> Result<(u32, u32, Vec<u8>), String> {
     Ok((w, h, pixels))
 }
 
+/// Lightweight compositor liveness check (Linux): connect, read the
+/// registry, report whether `weston_capture_v1` is present. Heartbeat
+/// class (milliseconds, no pixels, no shm) — safe to run on wakeups.
+#[cfg(target_os = "linux")]
+pub fn query_capture_global() -> Result<bool, String> {
+    let path = display_socket_path()
+        .ok_or_else(|| "no wayland socket (WAYLAND_DISPLAY unset)".to_string())?;
+    let mut stream = socket::SocketStream::connect(&path)?;
+    let mut next_id: u32 = 2;
+    let registry = next_id;
+    next_id += 1;
+    let mut payload = Vec::new();
+    put_u32(&mut payload, registry);
+    stream.send(&frame_request(1, 1, &payload), &[])?;
+    let callback = next_id;
+    let mut payload = Vec::new();
+    put_u32(&mut payload, callback);
+    stream.send(&frame_request(1, 0, &payload), &[])?;
+    let events = pump_until(&mut stream, callback)?;
+    Ok(collect_globals(&events, registry).capture.is_some())
+}
+
 #[cfg(target_os = "linux")]
 struct RealCapture {
     stream: socket::SocketStream,
@@ -670,21 +769,21 @@ mod tests {
             let mut first = Vec::new();
             first.extend(Self::global(10, "wl_shm", 1));
             first.extend(Self::global(11, "wl_output", 3));
-            first.extend(Self::global(12, "weston_screenshooter", 1));
+            first.extend(Self::global(12, "weston_capture_v1", 1));
             first.extend(Self::event(3, 0, &[])); // callback done
             script.push(first);
-            // Second roundtrip: output mode + callback done.
-            let mut mode_args = Vec::new();
-            put_u32(&mut mode_args, 0); // flags
-            put_i32(&mut mode_args, 64);
-            put_i32(&mut mode_args, 36);
-            put_i32(&mut mode_args, 60000);
-            let mut second = Vec::new();
-            second.extend(Self::event(5, 1, &mode_args)); // output id 5
-            second.extend(Self::event(7, 0, &[])); // callback done
-            script.push(second);
-            // Shooter done.
-            script.push(Self::event(6, 0, &[]));
+            // After create: format + size on the source (object 7).
+            let mut params = Vec::new();
+            let mut format_args = Vec::new();
+            put_u32(&mut format_args, 0x34325241); // DRM_FORMAT_ARGB8888
+            params.extend(Self::event(7, 0, &format_args));
+            let mut size_args = Vec::new();
+            put_i32(&mut size_args, 64);
+            put_i32(&mut size_args, 36);
+            params.extend(Self::event(7, 1, &size_args));
+            script.push(params);
+            // After capture: complete on the source.
+            script.push(Self::event(7, 2, &[]));
             // 64x36 test pixels: ARGB (B,G,R,A memory order).
             let mut pixels = Vec::with_capacity(64 * 36 * 4);
             for i in 0..64 * 36 {
@@ -753,16 +852,40 @@ mod tests {
         // Pool sized for stride*height; shoot referenced output+buffer.
         assert_eq!(fake.pool_size, 64 * 36 * 4);
         assert!(!fake.inbox.is_empty());
-        // The shoot request went to object 6 (shooter) opcode 0.
-        let shoot = fake
+        let object_op = |b: &[u8]| {
+            (
+                u32::from_le_bytes(b[0..4].try_into().unwrap()),
+                u32::from_le_bytes(b[4..8].try_into().unwrap()) & 0xffff,
+            )
+        };
+        assert!(fake
             .inbox
             .iter()
-            .find(|(b, _)| b.len() >= 8 && u32::from_le_bytes(b[0..4].try_into().unwrap()) == 6);
-        assert!(shoot.is_some());
+            .any(|(b, _)| b.len() >= 8 && object_op(b) == (6, 1)));
+        assert!(fake
+            .inbox
+            .iter()
+            .any(|(b, _)| b.len() >= 8 && object_op(b) == (7, 1)));
     }
 
     #[test]
-    fn missing_screenshooter_is_honest_error() {
+    fn failed_and_retry_surface_honestly() {
+        let mut fake = FakeCompositor::new_mode();
+        // Replace the completion chunk with failed(msg).
+        let mut failed_args = Vec::new();
+        put_string(&mut failed_args, "denied by policy");
+        fake.script[2] = FakeCompositor::event(7, 4, &failed_args);
+        let err = capture_over(&mut fake).unwrap_err();
+        assert!(err.contains("denied by policy"));
+
+        let mut fake = FakeCompositor::new_mode();
+        fake.script[2] = FakeCompositor::event(7, 3, &[]);
+        let err = capture_over(&mut fake).unwrap_err();
+        assert!(err.contains("retry"));
+    }
+
+    #[test]
+    fn missing_capture_global_is_honest_error() {
         let mut fake = FakeCompositor::new_mode();
         // Strip the shooter global from the first script chunk.
         let mut args = Vec::new();
@@ -779,7 +902,7 @@ mod tests {
         first.extend(FakeCompositor::event(3, 0, &[]));
         fake.script[0] = first;
         let err = capture_over(&mut fake).unwrap_err();
-        assert!(err.contains("weston_screenshooter"));
+        assert!(err.contains("weston_capture_v1"));
     }
 
     #[test]

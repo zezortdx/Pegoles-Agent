@@ -13,6 +13,7 @@ import { LabSection, SimulatedTag } from "../lab/controls";
 
 interface Diag {
   available: boolean;
+  frame_available: boolean;
   agent_busy: boolean;
   pressed_clean: boolean;
   audit_len: number;
@@ -240,6 +241,8 @@ export function EyesHandsSection() {
         <dl style={{ ...surface, margin: 0, display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 12px" }} className="lab-mono">
           <dt>input</dt>
           <dd style={{ margin: 0 }}>{diag ? (diag.available ? "available" : "unavailable") : "…"}</dd>
+          <dt>capture</dt>
+          <dd style={{ margin: 0 }}>{diag ? (diag.frame_available ? "available" : "unavailable") : "…"}</dd>
           <dt>agent</dt>
           <dd style={{ margin: 0 }}>{diag ? (diag.agent_busy ? "busy" : "idle") : "…"}</dd>
           <dt>pressed</dt>

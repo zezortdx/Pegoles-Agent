@@ -270,6 +270,7 @@ export const api = {
   inputStatus: () =>
     invoke<{
       available: boolean;
+      frame_available: boolean;
       agent_busy: boolean;
       pressed_clean: boolean;
       audit_len: number;
