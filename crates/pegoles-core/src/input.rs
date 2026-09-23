@@ -213,6 +213,9 @@ pub struct InputStatus {
     pub pressed_clean: bool,
     pub audit_len: usize,
     pub last_frame: Option<ObservedFrameMeta>,
+    /// Structured guest reasons for withheld capabilities (empty when
+    /// all advertised or the guest predates diagnostics).
+    pub unavailable: Vec<pegoles_computer::CapabilityDiagnostic>,
 }
 
 impl ComputerRegistry {
@@ -228,6 +231,11 @@ impl ComputerRegistry {
             pressed_clean: self.input_pressed.is_clean(),
             audit_len: self.audit.len(),
             last_frame: self.frame_cache.last().map(|f| f.meta.clone()),
+            unavailable: self
+                .backend
+                .as_ref()
+                .map(|b| b.capability_diagnostics())
+                .unwrap_or_default(),
         }
     }
 

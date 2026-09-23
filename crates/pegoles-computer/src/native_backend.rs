@@ -1160,6 +1160,15 @@ impl NativeHelperBackend {
         self.inner.lock().expect("inner").guest.ready_duration_ms()
     }
 
+    pub fn capability_diagnostics(&self) -> Vec<crate::CapabilityDiagnostic> {
+        self.inner
+            .lock()
+            .expect("inner")
+            .guest
+            .capability_diagnostics()
+            .to_vec()
+    }
+
     pub fn graphical_session(&self) -> GraphicalSessionInfo {
         self.inner.lock().expect("inner").guest.graphical_session()
     }

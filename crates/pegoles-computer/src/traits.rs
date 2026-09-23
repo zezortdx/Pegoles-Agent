@@ -81,6 +81,12 @@ pub trait ComputerBackend: Send + Sync {
     fn guest_ready_ms(&self) -> Option<u64> {
         None
     }
+    /// Structured reasons the guest withheld input/capture capabilities
+    /// (Phase 5.1 strict advertisement). Empty when all advertised or
+    /// when the guest predates diagnostics.
+    fn capability_diagnostics(&self) -> Vec<crate::CapabilityDiagnostic> {
+        Vec::new()
+    }
     /// Guest-reported graphical session (compositor) for this boot.
     /// Default: never reported (`Unavailable`) — Mock and headless
     /// backends have no graphical session.

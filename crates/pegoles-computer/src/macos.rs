@@ -162,6 +162,9 @@ impl ComputerBackend for MacOSVirtualizationBackend {
     fn guest_ready_ms(&self) -> Option<u64> {
         self.engine.guest_ready_ms()
     }
+    fn capability_diagnostics(&self) -> Vec<crate::CapabilityDiagnostic> {
+        self.engine.capability_diagnostics()
+    }
     fn graphical_session(&self) -> crate::guest::GraphicalSessionInfo {
         self.engine.graphical_session()
     }

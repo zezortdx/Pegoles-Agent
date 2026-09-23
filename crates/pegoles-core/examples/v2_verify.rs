@@ -73,6 +73,9 @@ fn main() {
         "agent_busy={} pressed_clean={} audit={}",
         st.agent_busy, st.pressed_clean, st.audit_len
     );
+    for d in &st.unavailable {
+        println!("unavailable: {}: {}", d.capability, d.reason);
+    }
     if !registry.input_available() {
         eprintln!("V2 VERIFY FAIL: input plane unavailable on v2 image");
         std::process::exit(2);

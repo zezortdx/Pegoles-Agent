@@ -681,6 +681,14 @@ pub struct InputStatusPayload {
     pub pressed_clean: bool,
     pub audit_len: usize,
     pub last_frame: Option<pegoles_protocol::ObservedFrameMeta>,
+    pub unavailable: Vec<UnavailabilityRow>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct UnavailabilityRow {
+    pub capability: String,
+    pub reason: String,
 }
 
 #[tauri::command]
@@ -695,6 +703,14 @@ pub async fn input_status(
             pressed_clean: st.pressed_clean,
             audit_len: st.audit_len,
             last_frame: st.last_frame,
+            unavailable: st
+                .unavailable
+                .into_iter()
+                .map(|d| UnavailabilityRow {
+                    capability: d.capability,
+                    reason: d.reason,
+                })
+                .collect(),
         })
     })
     .await
