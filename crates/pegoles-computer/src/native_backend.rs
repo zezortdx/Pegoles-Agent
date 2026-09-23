@@ -1406,6 +1406,9 @@ impl NativeHelperBackend {
         let mut inner = self.inner.lock().expect("inner");
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
         Self::require_input_ready(&inner.guest, pegoles_guest_proto::GUEST_CAP_INPUT)?;
+        let budget = std::time::Duration::from_millis(
+            pegoles_protocol::limits::INPUT_ROUNDTRIP_MS + guest_op.execution_budget_ms(),
+        );
         let frame = pegoles_guest_proto::encode_host(&pegoles_guest_proto::HostMessage::Input {
             request_id: request_id.to_string(),
             op: guest_op,
@@ -1414,22 +1417,17 @@ impl NativeHelperBackend {
         Self::guest_send_frame(&mut inner, &id, &frame)?;
         let mut ack: Option<(bool, Option<String>)> = None;
         let wanted = request_id.to_string();
-        Self::wait_guest_frame(
-            &mut inner,
-            &id,
-            std::time::Duration::from_millis(pegoles_protocol::limits::INPUT_ROUNDTRIP_MS),
-            |o| match o {
-                GuestObservation::InputAckReceived {
-                    request_id,
-                    ok,
-                    error,
-                } if *request_id == wanted => {
-                    ack = Some((*ok, error.clone()));
-                    true
-                }
-                _ => false,
-            },
-        )?;
+        Self::wait_guest_frame(&mut inner, &id, budget, |o| match o {
+            GuestObservation::InputAckReceived {
+                request_id,
+                ok,
+                error,
+            } if *request_id == wanted => {
+                ack = Some((*ok, error.clone()));
+                true
+            }
+            _ => false,
+        })?;
         match ack {
             Some((true, _)) => Ok(()),
             Some((false, error)) => Err(ComputerError::Backend(

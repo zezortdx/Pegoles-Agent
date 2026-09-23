@@ -108,6 +108,43 @@ fn advertise(
     (capabilities, unavailable)
 }
 
+/// Graphical session report from the connect-time trial capture. Pure
+/// (host-tested): a captured frame proves the compositor is up and gives
+/// its real output size; a failed probe is reported with its reason.
+fn session_report(
+    probe: &Result<(u32, u32), String>,
+) -> pegoles_guest_proto::GraphicalSessionReport {
+    use pegoles_guest_proto::{
+        GraphicalSessionReport, GraphicalSessionStatus, MAX_SESSION_FIELD_BYTES,
+    };
+    match probe {
+        Ok((w, h)) => GraphicalSessionReport {
+            status: GraphicalSessionStatus::Ready,
+            compositor: "weston".to_string(),
+            width_px: Some(*w),
+            height_px: Some(*h),
+            detail: None,
+        },
+        Err(reason) => {
+            let mut detail = reason.clone();
+            if detail.len() > MAX_SESSION_FIELD_BYTES {
+                let mut cut = MAX_SESSION_FIELD_BYTES;
+                while !detail.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                detail.truncate(cut);
+            }
+            GraphicalSessionReport {
+                status: GraphicalSessionStatus::Unavailable,
+                compositor: "weston".to_string(),
+                width_px: None,
+                height_px: None,
+                detail: Some(detail),
+            }
+        }
+    }
+}
+
 /// Reconnect budget for capability flips (Phase 5.1 monitor).
 /// Heartbeat wakeups re-check cheap signals; a flip means the hello
 /// lied about the present (weston arriving late, compositor dying,
@@ -202,7 +239,7 @@ fn probe_input(
 /// Bounded (15 s wall clock): a stalled compositor must not wedge the
 /// serve loop past the host heartbeat budget.
 #[cfg(target_os = "linux")]
-fn probe_capture() -> Result<(), String> {
+fn probe_capture() -> Result<(u32, u32), String> {
     if capture::display_socket_path().is_none() {
         return Err("no Wayland socket (compositor not running?)".to_string());
     }
@@ -215,7 +252,7 @@ fn probe_capture() -> Result<(), String> {
             if w == 0 || h == 0 || pixels.len() != w as usize * h as usize * 4 {
                 return Err("trial capture failed stride check".to_string());
             }
-            Ok(())
+            Ok((w, h))
         }
         Ok(Err(e)) => Err(format!("trial capture failed: {e}")),
         Err(_) => Err("trial capture timed out after 15s".to_string()),
@@ -291,7 +328,9 @@ fn serve_inner(
     // 5.1): capabilities are self-tested per connection — device
     // created AND recognized; trial frame captured. Anything failing
     // lands in `unavailable` with its reason, never in `capabilities`.
-    let (capabilities, unavailable) = advertise(&probe_input(device, open_error), &probe_capture());
+    let capture_probe = probe_capture();
+    let capture_ok = capture_probe.as_ref().map(|_| ()).map_err(Clone::clone);
+    let (capabilities, unavailable) = advertise(&probe_input(device, open_error), &capture_ok);
     send(
         &mut writer,
         &GuestMessage::GuestHello {
@@ -363,22 +402,12 @@ fn serve_inner(
                     return Ok(());
                 }
                 Ok(HostMessage::GetGraphicalSession) => {
-                    // CONTRACT STUB (Phase 4): the guest-image stream
-                    // implements the real compositor probe. Until then,
-                    // report honestly that no session is known.
+                    // Ready only when this connection's trial frame was
+                    // captured from the compositor (real pixels, real size).
                     if greeted {
                         send(
                             &mut writer,
-                            &GuestMessage::GraphicalSession(
-                                pegoles_guest_proto::GraphicalSessionReport {
-                                    status:
-                                        pegoles_guest_proto::GraphicalSessionStatus::Unavailable,
-                                    compositor: String::new(),
-                                    width_px: None,
-                                    height_px: None,
-                                    detail: None,
-                                },
-                            ),
+                            &GuestMessage::GraphicalSession(session_report(&capture_probe)),
                         )?;
                     }
                 }
@@ -579,6 +608,23 @@ mod tests {
         let (caps, un) = advertise(&Err("a".to_string()), &Err("b".to_string()));
         assert!(caps.is_empty());
         assert_eq!(un.len(), 2);
+    }
+
+    #[test]
+    fn session_report_follows_trial_capture() {
+        let ready = session_report(&Ok((1440, 900)));
+        assert_eq!(
+            ready.status,
+            pegoles_guest_proto::GraphicalSessionStatus::Ready
+        );
+        assert_eq!((ready.width_px, ready.height_px), (Some(1440), Some(900)));
+        assert!(ready.is_bounded());
+        let down = session_report(&Err("x".repeat(1000)));
+        assert_eq!(
+            down.status,
+            pegoles_guest_proto::GraphicalSessionStatus::Unavailable
+        );
+        assert!(down.is_bounded());
     }
 
     #[test]

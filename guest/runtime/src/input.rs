@@ -456,9 +456,12 @@ pub mod device {
     const REL_HWHEEL: u16 = 0x06;
     const ABS_X: u16 = 0x00;
     const ABS_Y: u16 = 0x01;
-    const BTN_TOUCH: u16 = 0x14a;
 
-    const KEY_MAX: usize = 0x2ff;
+    // Keyboard keys only (KEY_ESC..=KEY_MICMUTE region). The BTN_* block
+    // at 0x100.. must stay clear apart from the three mouse buttons:
+    // BTN_TOOL_PEN / BTN_STYLUS make udev tag the device as a tablet and
+    // libinput then rejects it ("missing tablet capabilities").
+    const KEYBOARD_KEY_LAST: u16 = 0xff;
 
     #[repr(C)]
     struct UinputId {
@@ -475,7 +478,13 @@ pub mod device {
         ff_effects_max: u32,
         absmax: [i32; 64],
         absmin: [i32; 64],
+        absfuzz: [i32; 64],
+        absflat: [i32; 64],
     }
+
+    // The kernel's legacy setup path rejects any write whose size differs
+    // from `struct uinput_user_dev` (80 + 8 + 4 + 4 * 64 * 4) with EINVAL.
+    const _: () = assert!(std::mem::size_of::<UinputUserDev>() == 1116);
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -527,11 +536,10 @@ pub mod device {
             setup("evbit-key", UI_SET_EVBIT, EV_KEY as i64)?;
             setup("evbit-rel", UI_SET_EVBIT, EV_REL as i64)?;
             setup("evbit-abs", UI_SET_EVBIT, EV_ABS as i64)?;
-            for code in [272u16, 273, 274, BTN_TOUCH] {
+            for code in [272u16, 273, 274] {
                 setup("keybit-button", UI_SET_KEYBIT, code as i64)?;
             }
-            // Full keyboard range (bounded use at dispatch).
-            for code in 1..=KEY_MAX as u16 {
+            for code in 1..=KEYBOARD_KEY_LAST {
                 // Skip unknown/hazardous codes silently: errors here are
                 // non-fatal (the bit just stays clear).
                 let _ = ioctl(fd, UI_SET_KEYBIT, code as i64);
@@ -578,6 +586,10 @@ pub mod device {
 
     pub struct AgentDevice {
         fd: i32,
+    }
+
+    fn pause_ms(ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
 
     impl AgentDevice {
@@ -632,6 +644,13 @@ pub mod device {
             }
         }
 
+        /// Press + paced release: an instant pair can be debounced away.
+        fn click(&self, code: u16) {
+            self.key(code, true);
+            pause_ms(pegoles_guest_proto::CLICK_HOLD_MS);
+            self.key(code, false);
+        }
+
         fn abs_for(&self, x: u32, y: u32, display: GuestDisplaySize) {
             self.abs_xy(
                 scale_to_abs(x, display.width_px),
@@ -656,17 +675,14 @@ pub mod device {
                 }
                 GuestInputOp::Click { x, y, button } => {
                     self.abs_for(*x, *y, display);
-                    let code = button_code(*button);
-                    self.key(code, true);
-                    self.key(code, false);
+                    self.click(button_code(*button));
                 }
                 GuestInputOp::DoubleClick { x, y, button } => {
                     self.abs_for(*x, *y, display);
                     let code = button_code(*button);
-                    for _ in 0..2 {
-                        self.key(code, true);
-                        self.key(code, false);
-                    }
+                    self.click(code);
+                    pause_ms(pegoles_guest_proto::DOUBLE_CLICK_GAP_MS);
+                    self.click(code);
                 }
                 GuestInputOp::Drag {
                     from_x,
@@ -745,6 +761,7 @@ pub mod device {
                             .ok_or_else(|| format!("unsupported character: {ch:?}"))?;
                         for s in plan {
                             self.stroke(s);
+                            pause_ms(pegoles_guest_proto::KEY_STROKE_PACING_MS);
                         }
                     }
                 }
@@ -754,7 +771,7 @@ pub mod device {
 
         /// Release every button + modifier (cancellation / disconnect).
         pub fn release_all(&self) {
-            for code in [272u16, 273, 274, BTN_TOUCH, 42, 29, 56, 125, 100] {
+            for code in [272u16, 273, 274, 42, 29, 56, 125, 100] {
                 self.key(code, false);
             }
         }
@@ -812,6 +829,22 @@ mod tests {
         assert!(compose_plan('œ').is_none());
         assert!(compose_plan('中').is_none());
         assert!(compose_plan('\n').is_none());
+    }
+
+    #[test]
+    fn every_typable_char_fits_the_host_budget() {
+        // The host budgets TypeText as chars * MAX_STROKES_PER_CHAR paced
+        // strokes; a longer plan would time out on long text.
+        let accents = "áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ";
+        for ch in (' '..='~').chain(accents.chars()) {
+            if let Some(plan) = compose_plan(ch) {
+                assert!(
+                    plan.len() as u64 <= pegoles_guest_proto::MAX_STROKES_PER_CHAR,
+                    "{ch:?} needs {} strokes",
+                    plan.len()
+                );
+            }
+        }
     }
 
     #[test]

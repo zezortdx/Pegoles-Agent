@@ -1,8 +1,13 @@
 //! Minimal host facts for `GetSystemInfo`. Reads only:
 //! `/etc/os-release`, `uname(2)`, `/proc/uptime`, `/proc/meminfo`,
-//! hostname. Never environment, tokens, command lines, or home contents.
+//! `/proc/stat`, hostname, and `comm` + `VmRSS` of ALLOWLISTED processes.
+//! Never environment, tokens, command lines, or home contents.
 
-use pegoles_guest_proto::SystemInfo;
+use pegoles_guest_proto::{CpuJiffies, ProcessRss, SystemInfo, MAX_RSS_PROCESSES};
+
+/// Processes whose resident memory is reported (kernel `comm`, which is
+/// truncated to 15 bytes). Names only.
+const RSS_ALLOWLIST: [&str; 4] = ["pegoles-guest-r", "weston", "foot", "pegoles-input-f"];
 
 fn read_first_match(path: &str, prefix: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()?.lines().find_map(|l| {
@@ -33,10 +38,11 @@ pub fn collect() -> SystemInfo {
         uptime_s: uptime_s(),
         cpu_count: cpu_count(),
         mem_total_mb: mem_total_mb(),
-        // Phase 4 measurement facts: filled by the guest runtime stream.
-        mem_available_mb: None,
-        cpu_jiffies: None,
-        process_rss: Vec::new(),
+        mem_available_mb: meminfo_mb("MemAvailable:"),
+        cpu_jiffies: std::fs::read_to_string("/proc/stat")
+            .ok()
+            .and_then(|s| parse_cpu_jiffies(&s)),
+        process_rss: allowlisted_rss(),
     }
 }
 
@@ -83,12 +89,76 @@ fn cpu_count() -> Option<u32> {
 }
 
 fn mem_total_mb() -> Option<u64> {
-    let line = read_first_match("/proc/meminfo", "MemTotal:")?;
+    meminfo_mb("MemTotal:")
+}
+
+fn meminfo_mb(key: &str) -> Option<u64> {
+    let line = read_first_match("/proc/meminfo", key)?;
     line.split_whitespace()
         .next()?
         .parse::<u64>()
         .ok()
         .map(|kb| kb / 1024)
+}
+
+/// Aggregate `cpu` line of /proc/stat: busy excludes idle + iowait.
+pub fn parse_cpu_jiffies(stat: &str) -> Option<CpuJiffies> {
+    let line = stat.lines().find(|l| l.starts_with("cpu "))?;
+    let fields: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    if fields.len() < 5 {
+        return None;
+    }
+    let total: u64 = fields.iter().take(8).sum();
+    let idle = fields[3] + fields[4];
+    Some(CpuJiffies {
+        busy: total.saturating_sub(idle),
+        total,
+    })
+}
+
+/// `VmRSS` in kB from a /proc/<pid>/status body.
+pub fn parse_vm_rss_kb(status: &str) -> Option<u64> {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn allowlisted_rss() -> Vec<ProcessRss> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        if out.len() >= MAX_RSS_PROCESSES {
+            break;
+        }
+        let path = entry.path();
+        let Ok(comm) = std::fs::read_to_string(path.join("comm")) else {
+            continue;
+        };
+        let comm = comm.trim();
+        if !RSS_ALLOWLIST.contains(&comm) {
+            continue;
+        }
+        if let Some(rss_kb) = std::fs::read_to_string(path.join("status"))
+            .ok()
+            .and_then(|s| parse_vm_rss_kb(&s))
+        {
+            out.push(ProcessRss {
+                name: comm.to_string(),
+                rss_kb,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -103,5 +173,17 @@ mod tests {
             assert!(!line.contains(forbidden), "leaked {forbidden}");
         }
         assert_eq!(info.protocol_version, 1);
+    }
+
+    #[test]
+    fn parses_proc_stat_and_status() {
+        let stat = "cpu  100 5 50 800 20 1 2 3 0 0\ncpu0 1 2 3 4 5 6 7 8\n";
+        let j = parse_cpu_jiffies(stat).expect("cpu line");
+        assert_eq!(j.total, 100 + 5 + 50 + 800 + 20 + 1 + 2 + 3);
+        assert_eq!(j.busy, j.total - 800 - 20);
+        assert!(parse_cpu_jiffies("intr 1 2").is_none());
+        let status = "Name:\tweston\nVmRSS:\t   41234 kB\nThreads: 3\n";
+        assert_eq!(parse_vm_rss_kb(status), Some(41234));
+        assert_eq!(parse_vm_rss_kb("Name: x\n"), None);
     }
 }

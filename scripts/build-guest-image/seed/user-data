@@ -76,14 +76,12 @@ write_files:
       # weston_screenshooter global with the debug protocol extension.
       # Scope note: guest-local clients only; the guest is already
       # untrusted and isolated, so this exposes nothing beyond the VM.
-      # Phase 5.1: VZ exposes NO GPU (pure framebuffer for the native
-      # view), so the DRM backend can never start here. Headless
-      # composites in software (the weston test-suite pattern); the
-      # agent observes via output capture. --width/--height belt and
-      # suspenders alongside the [output] section (headless sizes from
-      # weston.ini in weston 14).
+      # Backend is chosen by /usr/local/bin/pegoles-weston: DRM when VZ
+      # attaches a virtio-gpu (libinput seat, so the uinput agent device
+      # reaches clients), headless otherwise (capture only; headless has
+      # no libinput seat). Both use the pixman renderer: headless's
+      # default noop renderer never completes framebuffer captures.
       [core]
-      backend=headless-backend.so
       shell=desktop-shell.so
       xwayland=false
       require-input=false
@@ -104,6 +102,25 @@ write_files:
 
       [libinput]
       touchscreen_calibrator=false
+  - path: /usr/local/bin/pegoles-weston
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # Pegoles Image v2 compositor launcher. DRM + libinput when a GPU
+      # is attached (agent uinput input works); headless fallback keeps
+      # capture alive without one. virtio-gpu may probe after us: wait
+      # up to 5 s for the card before falling back.
+      COMMON="--shell=desktop-shell.so --socket=wayland-0 --config=/etc/xdg/weston/weston.ini --renderer=pixman --debug --log=/var/log/pegoles/weston.log"
+      i=0
+      while [ ! -e /dev/dri/card0 ] && [ "$i" -lt 50 ]; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+      if [ -e /dev/dri/card0 ]; then
+        exec /usr/bin/weston --backend=drm-backend.so $COMMON
+      fi
+      exec /usr/bin/weston --backend=headless-backend.so --width=1440 --height=900 $COMMON
   - path: /etc/systemd/system/pegoles-weston.service
     owner: root:root
     permissions: '0644'
@@ -123,7 +140,7 @@ write_files:
       Environment=WAYLAND_DISPLAY=wayland-0
       Environment=XKB_DEFAULT_LAYOUT=us
       Environment=XKB_DEFAULT_VARIANT=intl
-      ExecStart=/usr/bin/weston --backend=headless-backend.so --shell=desktop-shell.so --socket=wayland-0 --config=/etc/xdg/weston/weston.ini --width=1440 --height=900 --debug --log=/var/log/pegoles/weston.log
+      ExecStart=/usr/local/bin/pegoles-weston
       Restart=on-failure
       RestartSec=3s
       NoNewPrivileges=true
@@ -152,7 +169,9 @@ write_files:
       Environment=WAYLAND_DISPLAY=wayland-0
       Environment=PEGOLES_FIXTURE_LOG=/tmp/pegoles-fixture.log
       Environment=TERM=foot
-      ExecStart=/bin/sh -c 'exec /usr/bin/foot --maximized /usr/local/bin/pegoles-input-fixture || exec /usr/bin/foot /usr/local/bin/pegoles-input-fixture'
+      # Fullscreen: no panel/title bar offset, so the fixture's proportional
+      # layout maps 1:1 onto normalized screen coordinates.
+      ExecStart=/usr/bin/foot --fullscreen /usr/local/bin/pegoles-input-fixture
       Restart=on-failure
       RestartSec=3s
       NoNewPrivileges=true

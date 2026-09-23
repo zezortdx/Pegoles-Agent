@@ -67,6 +67,11 @@ fn info_bounded(info: &SystemInfo) -> bool {
     ]
     .iter()
     .all(|s| bounded(s, MAX_GUEST_FIELD))
+        && info.process_rss.len() <= pegoles_guest_proto::MAX_RSS_PROCESSES
+        && info
+            .process_rss
+            .iter()
+            .all(|p| bounded(&p.name, MAX_GUEST_FIELD))
 }
 
 fn report_dims_valid(report: &GraphicalSessionReport) -> bool {
@@ -317,6 +322,9 @@ pub struct GuestSession {
     capability_diagnostics: Vec<CapabilityDiagnostic>,
     info: Option<SystemInfo>,
     vm_started_at: Option<Instant>,
+    /// Start of the current handshake window: VM start, then each new
+    /// connection. A reconnect long after boot gets a fresh 60 s budget.
+    handshake_started_at: Option<Instant>,
     ready_at: Option<Instant>,
     last_activity_at: Option<Instant>,
     last_ping_at: Option<Instant>,
@@ -344,6 +352,7 @@ impl GuestSession {
             capability_diagnostics: Vec::new(),
             info: None,
             vm_started_at: None,
+            handshake_started_at: None,
             ready_at: None,
             last_activity_at: None,
             last_ping_at: None,
@@ -513,6 +522,7 @@ impl GuestSession {
         self.pending_ping = None;
         self.graphical = GraphicalSessionInfo::default();
         self.vm_started_at = Some(now);
+        self.handshake_started_at = Some(now);
         self.set_state(GuestRuntimeState::Waiting, None, &mut out);
         out.into()
     }
@@ -525,10 +535,11 @@ impl GuestSession {
         out.into()
     }
 
-    pub fn on_connected(&mut self, _now: Instant) -> Vec<SessionOutcome> {
+    pub fn on_connected(&mut self, now: Instant) -> Vec<SessionOutcome> {
         let mut out = VecDeque::new();
         self.connected = true;
         if self.state != GuestRuntimeState::Connecting && self.state != GuestRuntimeState::Ready {
+            self.handshake_started_at = Some(now);
             self.set_state(GuestRuntimeState::Connecting, None, &mut out);
             out.push_back(SessionOutcome::Connected);
         }
@@ -787,7 +798,7 @@ impl GuestSession {
         let mut out = VecDeque::new();
         match self.state {
             GuestRuntimeState::Waiting | GuestRuntimeState::Connecting => {
-                if let Some(started) = self.vm_started_at {
+                if let Some(started) = self.handshake_started_at {
                     if now.duration_since(started) >= GUEST_READY_TIMEOUT {
                         if self.connected {
                             out.push_back(SessionOutcome::KickConnection);
@@ -1148,6 +1159,33 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn reconnect_long_after_boot_gets_a_fresh_ready_budget() {
+        // Found on hardware: a reconnect > 60 s after VM start timed out
+        // instantly because the deadline was measured from boot.
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        handshake(&mut s, now);
+        s.on_disconnected("heartbeat missed".to_string());
+        let later = now + Duration::from_secs(300);
+        s.on_connected(later);
+        assert!(s.tick(later + Duration::from_secs(1)).is_empty());
+        assert_eq!(s.state(), GuestRuntimeState::Connecting);
+        s.on_frame(&hello(1), later + Duration::from_secs(2));
+        s.on_frame(
+            &encode_guest(&GuestMessage::Ready),
+            later + Duration::from_secs(2),
+        );
+        assert_eq!(s.state(), GuestRuntimeState::Ready);
+        // A reconnect that never completes still times out.
+        s.on_disconnected("gone".to_string());
+        let again = later + Duration::from_secs(100);
+        s.on_connected(again);
+        s.tick(again + GUEST_READY_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(s.state(), GuestRuntimeState::Error);
     }
 
     #[test]

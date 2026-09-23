@@ -7,13 +7,18 @@
 /// - virtio entropy
 /// - virtio serial console -> logs/serial.log (guest output only)
 /// - virtio socket (reserved for the future guest runtime; unused)
-/// Deliberately absent: network, shared directories, clipboard, graphics,
-/// audio, Rosetta, keyboard/pointing devices.
+/// - virtio-gpu, one scanout (Phase 5.1: guest compositor output only)
+/// Deliberately absent: network, shared directories, clipboard, audio,
+/// Rosetta, keyboard/pointing devices.
 
 import Foundation
 import Virtualization
 
 let mainQueueKey = DispatchSpecificKey<UInt8>()
+
+/// Guest display scanout (matches the Image v2 compositor mode).
+let guestDisplayWidthPx = 1440
+let guestDisplayHeightPx = 900
 
 func mapState(_ state: VZVirtualMachine.State) -> String {
     switch state {
@@ -142,6 +147,18 @@ final class VmManager {
         // Entropy for the guest.
         config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 
+        // Guest display (Phase 5.1): one virtio-gpu scanout so the guest
+        // compositor runs its DRM backend (a libinput seat for the agent's
+        // in-guest uinput device) and output capture has a real
+        // framebuffer. Output only: no host keyboard/pointing devices,
+        // no clipboard. Headless images simply leave it unused.
+        let graphics = VZVirtioGraphicsDeviceConfiguration()
+        graphics.scanouts = [
+            VZVirtioGraphicsScanoutConfiguration(
+                widthInPixels: guestDisplayWidthPx, heightInPixels: guestDisplayHeightPx),
+        ]
+        config.graphicsDevices = [graphics]
+
         // Memory balloon (Phase 3.6 §42): lets the hypervisor reclaim
         // idle guest pages. There is deliberately NO host-driven target
         // API wired here — Vz exposes none publicly; the device enables
@@ -165,7 +182,7 @@ final class VmManager {
         // channel. No code uses it yet; the device only reserves the slot.
         config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
-        // No network, no shared directories, no clipboard, no graphics.
+        // No network, no shared directories, no clipboard, no host input.
         return config
     }
 

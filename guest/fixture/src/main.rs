@@ -352,16 +352,24 @@ fn run() -> std::io::Result<()> {
     let _raw = RawGuard::enter()?;
     let out = std::io::stdout();
     let mut out = out.lock();
-    // Alternate screen + SGR mouse (1006) + any-event tracking.
-    write!(out, "\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?1015h")?;
+    // Alternate screen + press/release tracking (1000) in SGR encoding
+    // (1006). Never 1015: terminals apply the LAST encoding set, and
+    // urxvt reports (`ESC[b;x;yM`) are not what parse_sgr reads.
+    write!(out, "\x1b[?1049h\x1b[?1000h\x1b[?1006h")?;
     out.flush()?;
     let mut state = State::new();
     let mut input: Vec<u8> = Vec::new();
     let mut stdin = std::io::stdin().lock();
     let mut buf = [0u8; 256];
+    let mut last_size = (0, 0);
     loop {
         let (w, h) = term_size();
         let regions = layout(w, h);
+        if (w, h) != last_size {
+            // A resize (e.g. maximize after start) leaves stale cells.
+            write!(out, "\x1b[2J")?;
+            last_size = (w, h);
+        }
         write!(out, "\x1b[H{}", render(&state, &regions, w, h))?;
         out.flush()?;
         let n = stdin.read(&mut buf)?;
@@ -372,7 +380,7 @@ fn run() -> std::io::Result<()> {
         // Drain complete sequences: SGR mouse, single keys, quit on q/Ctrl-C.
         while !input.is_empty() {
             if input[0] == 0x1b {
-                if input.len() >= 6 && input[1] == b'[' && input[2] == b'<' {
+                if input.starts_with(b"\x1b[<") {
                     if let Some(end) = input.iter().position(|&b| b == b'M' || b == b'm') {
                         let seq = String::from_utf8_lossy(&input[..=end]).into_owned();
                         input.drain(..=end);
@@ -385,22 +393,60 @@ fn run() -> std::io::Result<()> {
                     }
                     break; // partial mouse sequence
                 }
-                input.drain(..1);
+                match csi_len(&input) {
+                    // Other CSI (arrows, focus, ...): consumed whole so its
+                    // bytes never land in the type field.
+                    Some(len) => {
+                        input.drain(..len);
+                    }
+                    None if input.len() > 1 => {
+                        input.drain(..1);
+                    }
+                    None => break, // lone ESC: wait for more bytes
+                }
                 continue;
             }
-            let b = input.remove(0);
-            if b == b'q' || b == 3 {
-                write!(out, "\x1b[?1000l\x1b[?1006l\x1b[?1015l\x1b[?1049l")?;
+            let len = utf8_len(input[0]);
+            if input.len() < len {
+                break; // partial UTF-8 character
+            }
+            let bytes: Vec<u8> = input.drain(..len).collect();
+            let b = bytes[0];
+            if b == 3 || (b == b'q' && !state.type_focused) {
+                write!(out, "\x1b[?1000l\x1b[?1006l\x1b[?1049l")?;
                 out.flush()?;
                 return Ok(());
             }
-            let key = (b as char).to_string();
+            let key = String::from_utf8_lossy(&bytes).into_owned();
             if let Some(line) = apply_key(&mut state, &key) {
                 log_line(&log_path, &line);
             }
         }
     }
     Ok(())
+}
+
+/// Byte length of the UTF-8 character starting with `first` (1 for
+/// ASCII and for invalid lead bytes, which decode lossily).
+pub fn utf8_len(first: u8) -> usize {
+    match first {
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        _ => 1,
+    }
+}
+
+/// Length of a complete CSI sequence (`ESC [ params final`) at the start
+/// of `input`, or `None` when it is not a CSI or not complete yet.
+pub fn csi_len(input: &[u8]) -> Option<usize> {
+    if input.len() < 3 || input[0] != 0x1b || input[1] != b'[' {
+        return None;
+    }
+    input[2..]
+        .iter()
+        .position(|b| (0x40..=0x7e).contains(b))
+        .map(|i| i + 3)
 }
 
 fn main() {
@@ -413,6 +459,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_decoding_keeps_accents_and_skips_csi() {
+        let word = "ação".as_bytes();
+        assert_eq!(utf8_len(word[1]), 2);
+        assert_eq!(String::from_utf8_lossy(&word[1..3]), "ç");
+        assert_eq!(utf8_len(b'a'), 1);
+        assert_eq!(csi_len(b"\x1b[D"), Some(3));
+        assert_eq!(csi_len(b"\x1b[1;5C rest"), Some(6));
+        assert_eq!(csi_len(b"\x1b["), None);
+        let mut s = State::new();
+        s.type_focused = true;
+        for key in ["a", "ç", "é"] {
+            apply_key(&mut s, key);
+        }
+        assert_eq!(s.typed, "açé");
+    }
 
     #[test]
     fn regions_are_proportional_and_inside() {

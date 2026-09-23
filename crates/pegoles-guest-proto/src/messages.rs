@@ -229,7 +229,37 @@ pub const MAX_FRAME_CHUNK_B64: usize = 48 * 1024;
 pub const MAX_FRAME_CHUNKS: u32 = 1024;
 pub const MAX_KEY_NAME_BYTES: usize = 32;
 
+/// Guest-side input pacing (Phase 5.1 hardware). Events written within
+/// microseconds are merged by libinput's button debounce (a double
+/// click becomes one) and outrun clients, so the guest paces them at
+/// human scale.
+pub const KEY_STROKE_PACING_MS: u64 = 8;
+pub const CLICK_HOLD_MS: u64 = 15;
+pub const DOUBLE_CLICK_GAP_MS: u64 = 80;
+/// Upper bound of key strokes one typed character needs (dead key + base).
+pub const MAX_STROKES_PER_CHAR: u64 = 2;
+
 impl GuestInputOp {
+    /// Time the guest itself spends executing this op (pacing, drag
+    /// interpolation). The host adds it to the input round-trip timeout
+    /// so long drags and long text never time out mid-execution.
+    pub fn execution_budget_ms(&self) -> u64 {
+        match self {
+            GuestInputOp::Click { .. } => CLICK_HOLD_MS,
+            GuestInputOp::DoubleClick { .. } => 2 * CLICK_HOLD_MS + DOUBLE_CLICK_GAP_MS,
+            GuestInputOp::Drag { duration_ms, .. } => u64::from(*duration_ms),
+            GuestInputOp::Type { text } => {
+                text.chars().count() as u64 * MAX_STROKES_PER_CHAR * KEY_STROKE_PACING_MS
+            }
+            GuestInputOp::Move { .. }
+            | GuestInputOp::Press { .. }
+            | GuestInputOp::Release { .. }
+            | GuestInputOp::Scroll { .. }
+            | GuestInputOp::Key { .. }
+            | GuestInputOp::Chord { .. } => 0,
+        }
+    }
+
     /// Whether every field respects the untrusted-input bounds.
     pub fn is_bounded(&self) -> bool {
         match self {
@@ -314,6 +344,9 @@ pub struct CpuJiffies {
     pub busy: u64,
     pub total: u64,
 }
+
+/// Cap for `SystemInfo::process_rss` entries (allowlisted names only).
+pub const MAX_RSS_PROCESSES: usize = 8;
 
 /// Resident memory of one ALLOWLISTED guest process (e.g. "weston").
 /// Name only — never command lines, arguments, or environment.
@@ -413,6 +446,39 @@ pub fn encode_guest(msg: &GuestMessage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_budget_covers_guest_pacing() {
+        let at = |x| GuestInputOp::Click {
+            x,
+            y: 0,
+            button: GuestButton::Primary,
+        };
+        assert_eq!(at(1).execution_budget_ms(), CLICK_HOLD_MS);
+        let double = GuestInputOp::DoubleClick {
+            x: 0,
+            y: 0,
+            button: GuestButton::Primary,
+        };
+        assert!(double.execution_budget_ms() >= 2 * CLICK_HOLD_MS + DOUBLE_CLICK_GAP_MS);
+        let drag = GuestInputOp::Drag {
+            from_x: 0,
+            from_y: 0,
+            to_x: 1,
+            to_y: 1,
+            button: GuestButton::Primary,
+            duration_ms: 9_000,
+        };
+        assert_eq!(drag.execution_budget_ms(), 9_000);
+        let text = GuestInputOp::Type {
+            text: "é".repeat(MAX_TYPE_TEXT_CHARS),
+        };
+        assert_eq!(
+            text.execution_budget_ms(),
+            MAX_TYPE_TEXT_CHARS as u64 * MAX_STROKES_PER_CHAR * KEY_STROKE_PACING_MS
+        );
+        assert_eq!(GuestInputOp::Move { x: 0, y: 0 }.execution_budget_ms(), 0);
+    }
 
     #[test]
     fn guest_hello_shape() {

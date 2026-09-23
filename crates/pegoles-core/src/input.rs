@@ -585,6 +585,20 @@ impl ComputerRegistry {
                 }
             }
         }
+        // Observation travels the capture path (chunked frame assembly),
+        // never the input primitive path: real engines reject it there.
+        if matches!(
+            req.action,
+            ComputerAction::ObserveScreen | ComputerAction::Screenshot
+        ) {
+            return match self.capture_frame(&format!("{}:observe", req.action_id), out) {
+                Ok(meta) => {
+                    let message = format!("observed {}x{}", meta.width_px, meta.height_px);
+                    self.completed(req, started_wall, message, Some(meta.frame_id), out)
+                }
+                Err(message) => self.failed_result(&req, started_wall, message, out),
+            };
+        }
         let transform = match self.transform() {
             Ok(t) => t,
             Err(e) => return self.failed_result(&req, started_wall, e.to_string(), out),

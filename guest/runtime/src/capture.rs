@@ -250,6 +250,8 @@ fn collect_globals(events: &[WireEvent], registry: u32) -> Globals {
 /// memory; the shuffle below normalizes both to RGBA).
 const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
 const DRM_FORMAT_XRGB8888: u32 = 0x34325258;
+const WL_SHM_FORMAT_ARGB8888: u32 = 0;
+const WL_SHM_FORMAT_XRGB8888: u32 = 1;
 /// Pixel source: framebuffer copy (always available per the protocol).
 const CAPTURE_SOURCE_FRAMEBUFFER: u32 = 1;
 
@@ -349,7 +351,14 @@ pub fn capture_over<S: PoolStream>(stream: &mut S) -> Result<(u32, u32, Vec<u8>)
     put_i32(&mut payload, width as i32);
     put_i32(&mut payload, height as i32);
     put_i32(&mut payload, stride as i32);
-    put_u32(&mut payload, 0); // WL_SHM_FORMAT_ARGB8888
+    // The buffer format must equal the source's advertised format or
+    // weston answers `retry` (DRM outputs are XRGB8888, headless ARGB8888).
+    let shm_format = if drm_format == DRM_FORMAT_XRGB8888 {
+        WL_SHM_FORMAT_XRGB8888
+    } else {
+        WL_SHM_FORMAT_ARGB8888
+    };
+    put_u32(&mut payload, shm_format);
     stream.send(&frame_request(pool, 0, &payload), &[])?;
     // weston_capture_source_v1.capture(buffer)
     let mut payload = Vec::new();
@@ -357,7 +366,13 @@ pub fn capture_over<S: PoolStream>(stream: &mut S) -> Result<(u32, u32, Vec<u8>)
     stream.send(&frame_request(source, 1, &payload), &[])?;
     // Await complete (done) / retry (once) / failed.
     await_capture_done(stream, source)?;
-    let pixels = stream_take_pixels(stream, pool_fd, pool_size)?;
+    let mut pixels = stream_take_pixels(stream, pool_fd, pool_size)?;
+    if drm_format == DRM_FORMAT_XRGB8888 {
+        // X byte is undefined; screen frames are opaque.
+        for px in pixels.chunks_exact_mut(4) {
+            px[3] = 0xff;
+        }
+    }
     Ok((width, height, pixels))
 }
 
@@ -874,6 +889,40 @@ mod tests {
             .inbox
             .iter()
             .any(|(b, _)| b.len() >= 8 && object_op(b) == (2, 0)));
+    }
+
+    #[test]
+    fn xrgb_source_gets_xrgb_buffer_and_opaque_pixels() {
+        // DRM outputs advertise XRGB8888; an ARGB buffer makes weston
+        // answer `retry` (found on real hardware).
+        let mut fake = FakeCompositor::new_mode();
+        let mut params = Vec::new();
+        let mut format_args = Vec::new();
+        put_u32(&mut format_args, DRM_FORMAT_XRGB8888);
+        params.extend(FakeCompositor::event(7, 0, &format_args));
+        let mut size_args = Vec::new();
+        put_i32(&mut size_args, 64);
+        put_i32(&mut size_args, 36);
+        params.extend(FakeCompositor::event(7, 1, &size_args));
+        fake.script[1] = params;
+        for px in fake.pixels.chunks_exact_mut(4) {
+            px[3] = 0;
+        }
+        let (_, _, pixels) = capture_over(&mut fake).expect("capture");
+        assert!(pixels.chunks_exact(4).all(|px| px[3] == 0xff));
+        // wl_shm_pool.create_buffer (pool object 8, opcode 0): format is
+        // the last u32 of buffer, offset, width, height, stride, format.
+        let create = fake
+            .inbox
+            .iter()
+            .find(|(b, _)| {
+                b.len() == 8 + 24
+                    && u32::from_le_bytes(b[0..4].try_into().unwrap()) == 8
+                    && u32::from_le_bytes(b[4..8].try_into().unwrap()) & 0xffff == 0
+            })
+            .expect("create_buffer sent");
+        let format = u32::from_le_bytes(create.0[28..32].try_into().unwrap());
+        assert_eq!(format, WL_SHM_FORMAT_XRGB8888);
     }
 
     #[test]
