@@ -18,6 +18,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(app_state)
+        .manage(commands::ScriptCancel::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::pump,

@@ -302,6 +302,11 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn layout_now() -> Regions {
+    let (w, h) = term_size();
+    layout(w, h)
+}
+
 fn term_size() -> (u16, u16) {
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
@@ -377,6 +382,10 @@ fn run() -> std::io::Result<()> {
             break;
         }
         input.extend_from_slice(&buf[..n]);
+        // Hit-test against the size NOW: the read may have blocked across
+        // a resize (fullscreen right after start), and the first click
+        // would otherwise miss against the stale layout.
+        let regions = layout_now();
         // Drain complete sequences: SGR mouse, single keys, quit on q/Ctrl-C.
         while !input.is_empty() {
             if input[0] == 0x1b {

@@ -140,6 +140,14 @@ fn allowlisted_rss() -> Vec<ProcessRss> {
         if out.len() >= MAX_RSS_PROCESSES {
             break;
         }
+        // Numeric PIDs only: /proc/self and /proc/thread-self alias us.
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        {
+            continue;
+        }
         let path = entry.path();
         let Ok(comm) = std::fs::read_to_string(path.join("comm")) else {
             continue;

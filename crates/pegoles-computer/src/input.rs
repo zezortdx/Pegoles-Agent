@@ -346,9 +346,10 @@ pub fn op_to_guest(op: &InputOp) -> Option<GuestInputOp> {
             dx: *dx,
             dy: *dy,
         }),
-        InputOp::KeyPress { key } => Some(GuestInputOp::Key {
-            key: key.clone(),
-            down: true,
+        // A press is a TAP (down + up in one guest op). A bare
+        // `Key { down: true }` stayed held and auto-repeated on hardware.
+        InputOp::KeyPress { key } => Some(GuestInputOp::Chord {
+            keys: vec![key.clone()],
         }),
         InputOp::KeyChord { keys } => Some(GuestInputOp::Chord { keys: keys.clone() }),
         InputOp::TypeText { text } => Some(GuestInputOp::Type { text: text.clone() }),
@@ -862,6 +863,15 @@ mod tests {
             })
         );
         assert_eq!(op_to_guest(&InputOp::GetDisplayInfo), None);
+        // KeyPress is a tap: never a bare held key-down.
+        assert_eq!(
+            op_to_guest(&InputOp::KeyPress {
+                key: "Enter".into()
+            }),
+            Some(GuestInputOp::Chord {
+                keys: vec!["Enter".into()]
+            })
+        );
     }
 
     #[test]

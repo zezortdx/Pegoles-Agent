@@ -745,12 +745,17 @@ pub mod device {
                             return Err("chord holds one main key".to_string());
                         }
                     }
-                    let main = main.ok_or_else(|| "chord needs a main key".to_string())?;
+                    if main.is_none() && mods.is_empty() {
+                        return Err("chord needs a key".to_string());
+                    }
                     for m in &mods {
                         self.key(*m, true);
                     }
-                    self.key(main, true);
-                    self.key(main, false);
+                    // A lone modifier (KeyPress "Shift") is a modifier tap.
+                    if let Some(main) = main {
+                        self.key(main, true);
+                        self.key(main, false);
+                    }
                     for m in mods.iter().rev() {
                         self.key(*m, false);
                     }

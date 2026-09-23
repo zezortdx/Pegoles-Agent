@@ -20,6 +20,38 @@ use tauri::{Emitter, Manager};
 
 pub type SharedState = Arc<Mutex<AppState>>;
 
+/// Cancel handle of the running input script, kept OUTSIDE the AppState
+/// lock: a script holds that lock for its whole run, so Take Control,
+/// Pause and Stop trip this first; the script then stops at its next
+/// primitive or wait slice and releases the lock (and pressed state).
+#[derive(Clone, Default)]
+pub struct ScriptCancel(Arc<Mutex<Option<pegoles_core::CancellationToken>>>);
+
+impl ScriptCancel {
+    fn arm(&self) -> pegoles_core::CancellationToken {
+        let token = pegoles_core::CancellationToken::new();
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(token.clone());
+        }
+        token
+    }
+
+    fn disarm(&self) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = None;
+        }
+    }
+
+    /// Cancel the running script, if any. Lock-free w.r.t. AppState.
+    pub fn trip(&self) {
+        if let Ok(slot) = self.0.lock() {
+            if let Some(token) = slot.as_ref() {
+                token.cancel();
+            }
+        }
+    }
+}
+
 /// Run `f` with the AppState lock held, on Tauri's blocking pool (never
 /// the main thread). History is synced after every command so
 /// `list_events` mirrors the live stream.
@@ -284,7 +316,9 @@ pub async fn start_computer(
 #[tauri::command]
 pub async fn pause_computer(
     state: tauri::State<'_, SharedState>,
+    script: tauri::State<'_, ScriptCancel>,
 ) -> Result<ComputerPayload, String> {
+    script.trip();
     with_state(state.inner().clone(), |s| lifecycle(s, |r| r.pause())).await
 }
 
@@ -298,7 +332,9 @@ pub async fn resume_computer(
 #[tauri::command]
 pub async fn stop_computer(
     state: tauri::State<'_, SharedState>,
+    script: tauri::State<'_, ScriptCancel>,
 ) -> Result<ComputerPayload, String> {
+    script.trip();
     with_state(state.inner().clone(), |s| lifecycle(s, |r| r.stop())).await
 }
 
@@ -531,7 +567,11 @@ pub async fn display_detach(state: tauri::State<'_, SharedState>) -> Result<Comp
 /// Take Control: route the HUMAN's keyboard/pointer into the isolated
 /// computer. Fails unless the display is ready (viewport `ready`).
 #[tauri::command]
-pub async fn take_control(state: tauri::State<'_, SharedState>) -> Result<ComputerView, String> {
+pub async fn take_control(
+    state: tauri::State<'_, SharedState>,
+    script: tauri::State<'_, ScriptCancel>,
+) -> Result<ComputerView, String> {
+    script.trip();
     with_state(state.inner().clone(), |s| {
         s.registry.take_control().map_err(err)?;
         Ok(s.registry.computer_view(s.preparing_image))
@@ -602,7 +642,11 @@ pub async fn execute_action(
 /// Cooperative cancel for the running agent sequence (Take Control also
 /// cancels; this is the explicit dev path). Releases pressed state.
 #[tauri::command]
-pub async fn cancel_agent_input(state: tauri::State<'_, SharedState>) -> Result<(), String> {
+pub async fn cancel_agent_input(
+    state: tauri::State<'_, SharedState>,
+    script: tauri::State<'_, ScriptCancel>,
+) -> Result<(), String> {
+    script.trip();
     with_state(state.inner().clone(), |s| {
         s.registry.cancel_agent_input("user requested cancel");
         Ok(())
@@ -647,10 +691,13 @@ pub async fn capture_screen(
 #[tauri::command]
 pub async fn run_input_script(
     state: tauri::State<'_, SharedState>,
+    script: tauri::State<'_, ScriptCancel>,
     task_id: Option<String>,
     steps: Vec<pegoles_core::ScriptStep>,
 ) -> Result<pegoles_core::ScriptReport, String> {
-    with_state(state.inner().clone(), move |s| {
+    let handle = script.inner().clone();
+    let cancel = handle.arm();
+    let result = with_state(state.inner().clone(), move |s| {
         let task_id = task_id
             .as_deref()
             .and_then(|t| t.parse::<pegoles_protocol::TaskId>().ok())
@@ -659,11 +706,13 @@ pub async fn run_input_script(
             task_id,
             &steps,
             &pegoles_policy::PolicyContext::default(),
-            &pegoles_core::CancellationToken::new(),
+            &cancel,
         );
         Ok(report)
     })
-    .await
+    .await;
+    handle.disarm();
+    result
 }
 
 /// The deterministic smoke demo steps (precondition: the Pegoles input
@@ -762,6 +811,19 @@ pub async fn input_audit(
 mod tests {
     use super::*;
     use pegoles_core::{BackendKind, ComputerRegistry};
+
+    #[test]
+    fn script_cancel_trips_only_the_armed_script() {
+        let handle = ScriptCancel::default();
+        handle.trip(); // nothing armed: no-op
+        let token = handle.arm();
+        assert!(!token.is_cancelled());
+        handle.clone().trip();
+        assert!(token.is_cancelled());
+        handle.disarm();
+        let next = handle.arm();
+        assert!(!next.is_cancelled(), "a new script starts uncancelled");
+    }
 
     fn state() -> AppState {
         AppState::with_registry(|bus| {
