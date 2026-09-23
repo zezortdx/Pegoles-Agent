@@ -112,28 +112,47 @@ fn advertise(
 /// Heartbeat wakeups re-check cheap signals; a flip means the hello
 /// lied about the present (weston arriving late, compositor dying,
 /// device appearing). Reconnecting re-handshakes with fresh full
-/// probes. Persistent disagreement (broken compositor) is capped:
-/// after MAX_FLIPS the monitor goes quiet instead of churning.
-/// Pure (host-tested).
+/// probes. Token bucket (1 flip per 60 s, burst 3): persistent
+/// disagreement converges to quiet instead of reconnect-looping
+/// forever, while transients always self-heal.
 struct FlipBudget {
     flips: u32,
+    last_flip_ms: u64,
 }
 
 const MAX_FLIPS: u32 = 3;
+const FLIP_REFILL_MS: u64 = 60_000;
 
 impl FlipBudget {
     fn new() -> Self {
-        Self { flips: 0 }
+        Self {
+            flips: 0,
+            last_flip_ms: 0,
+        }
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 
     /// True when `current` differs from `hello` and budget remains.
-    /// Counts the flip either way (converges: persistent disagreement
-    /// exhausts the budget instead of reconnect-looping forever).
     fn should_reconnect(&mut self, hello: &[String], current: &[String]) -> bool {
-        if hello == current || self.flips >= MAX_FLIPS {
+        if hello == current {
             return false;
         }
+        let now = Self::now_ms();
+        if self.flips >= MAX_FLIPS {
+            // Refill one credit per minute of quiet disagreement.
+            if now.saturating_sub(self.last_flip_ms) < FLIP_REFILL_MS {
+                return false;
+            }
+            self.flips = MAX_FLIPS - 1;
+        }
         self.flips += 1;
+        self.last_flip_ms = now;
         true
     }
 }
@@ -180,19 +199,26 @@ fn probe_input(
 
 /// Self-test: Wayland socket visible AND one trial frame completes.
 /// Pixels are discarded; success proves the capture path works.
+/// Bounded (15 s wall clock): a stalled compositor must not wedge the
+/// serve loop past the host heartbeat budget.
 #[cfg(target_os = "linux")]
 fn probe_capture() -> Result<(), String> {
     if capture::display_socket_path().is_none() {
         return Err("no Wayland socket (compositor not running?)".to_string());
     }
-    match capture::capture() {
-        Ok((w, h, pixels)) => {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(capture::capture());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+        Ok(Ok((w, h, pixels))) => {
             if w == 0 || h == 0 || pixels.len() != w as usize * h as usize * 4 {
                 return Err("trial capture failed stride check".to_string());
             }
             Ok(())
         }
-        Err(e) => Err(format!("trial capture failed: {e}")),
+        Ok(Err(e)) => Err(format!("trial capture failed: {e}")),
+        Err(_) => Err("trial capture timed out after 15s".to_string()),
     }
 }
 
@@ -568,5 +594,8 @@ mod tests {
         assert!(budget.should_reconnect(&hello, &changed));
         // Budget exhausted: quiet instead of looping forever.
         assert!(!budget.should_reconnect(&hello, &changed));
+        // Refill after a quiet minute: transients self-heal.
+        budget.last_flip_ms = FlipBudget::now_ms().saturating_sub(61_000);
+        assert!(budget.should_reconnect(&hello, &changed));
     }
 }

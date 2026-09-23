@@ -518,25 +518,28 @@ pub mod device {
                 )
             })?;
         let fd = file.into_raw_fd();
-        let setup = |req: u64, code: i64| ioctl(fd, req, code);
+        let setup = |what: &str, req: u64, code: i64| {
+            ioctl(fd, req, code)
+                .map_err(|e| format!("uinput setup failed at {what} (code {code}): {e}"))
+        };
         let result = (|| {
-            setup(UI_SET_EVBIT, EV_SYN as i64)?;
-            setup(UI_SET_EVBIT, EV_KEY as i64)?;
-            setup(UI_SET_EVBIT, EV_REL as i64)?;
-            setup(UI_SET_EVBIT, EV_ABS as i64)?;
+            setup("evbit-syn", UI_SET_EVBIT, EV_SYN as i64)?;
+            setup("evbit-key", UI_SET_EVBIT, EV_KEY as i64)?;
+            setup("evbit-rel", UI_SET_EVBIT, EV_REL as i64)?;
+            setup("evbit-abs", UI_SET_EVBIT, EV_ABS as i64)?;
             for code in [272u16, 273, 274, BTN_TOUCH] {
-                setup(UI_SET_KEYBIT, code as i64)?;
+                setup("keybit-button", UI_SET_KEYBIT, code as i64)?;
             }
             // Full keyboard range (bounded use at dispatch).
             for code in 1..=KEY_MAX as u16 {
                 // Skip unknown/hazardous codes silently: errors here are
                 // non-fatal (the bit just stays clear).
-                let _ = setup(UI_SET_KEYBIT, code as i64);
+                let _ = ioctl(fd, UI_SET_KEYBIT, code as i64);
             }
-            setup(UI_SET_RELBIT, REL_WHEEL as i64)?;
-            setup(UI_SET_RELBIT, REL_HWHEEL as i64)?;
-            setup(UI_SET_ABSBIT, ABS_X as i64)?;
-            setup(UI_SET_ABSBIT, ABS_Y as i64)?;
+            setup("relbit-wheel", UI_SET_RELBIT, REL_WHEEL as i64)?;
+            setup("relbit-hwheel", UI_SET_RELBIT, REL_HWHEEL as i64)?;
+            setup("absbit-x", UI_SET_ABSBIT, ABS_X as i64)?;
+            setup("absbit-y", UI_SET_ABSBIT, ABS_Y as i64)?;
             let mut dev: UinputUserDev = unsafe { std::mem::zeroed() };
             let name = super::DEVICE_NAME.as_bytes();
             dev.name[..name.len()].copy_from_slice(name);
@@ -556,9 +559,14 @@ pub mod device {
             let written =
                 unsafe { libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
             if written != bytes.len() as isize {
-                return Err(std::io::Error::last_os_error());
+                return Err(format!(
+                    "uinput setup failed at write-dev (wrote {written}/{}, {})",
+                    bytes.len(),
+                    std::io::Error::last_os_error()
+                ));
             }
-            ioctl(fd, UI_DEV_CREATE, 0)?;
+            ioctl(fd, UI_DEV_CREATE, 0)
+                .map_err(|e| format!("uinput setup failed at dev-create: {e}"))?;
             Ok(())
         })();
         if let Err(e) = result {
