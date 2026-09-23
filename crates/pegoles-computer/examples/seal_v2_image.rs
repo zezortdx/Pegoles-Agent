@@ -38,6 +38,16 @@ fn main() {
     let disk = std::env::args()
         .nth(1)
         .expect("usage: seal_v2_image /path/to/disk.img");
+    // Truncation guard (Phase 5.1 lesson): a provisioned generic-derived
+    // disk is exactly 3221225472 bytes. Sealing anything else records a
+    // self-consistent hash of garbage — fail LOUDLY instead.
+    // (ENOSPC mid-copy is the classic cause; free space first.)
+    const EXPECTED_DISK_BYTES: u64 = 3_221_225_472;
+    let len = std::fs::metadata(&disk).expect("stat work disk").len();
+    assert_eq!(
+        len, EXPECTED_DISK_BYTES,
+        "work disk has unexpected size {len} (truncated copy?)"
+    );
     let data = pegoles_data_dir();
     let graphical = std::env::var("PEGOLES_DEBS_DIR")
         .ok()
