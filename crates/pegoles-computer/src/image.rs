@@ -545,7 +545,11 @@ impl ComputerImageManager {
         let manifest_path = dir.join("manifest.json");
         // Merge into any existing manifest (multi-artifact logical image).
         // Top-level scalars stay pinned to the PRIMARY (first-built)
-        // artifact; the new record carries its own authoritative facts.
+        // artifact — EXCEPT when resealing the same file name (rebuild of
+        // the primary): then the fresh record's scalars win, or the
+        // manifest would describe bytes that no longer exist (found by
+        // Phase 5.1 reseal verification). The new record always carries
+        // its own authoritative facts.
         let previous: Option<DerivedManifest> = fs::read_to_string(&manifest_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok());
@@ -553,17 +557,21 @@ impl ComputerImageManager {
             .as_ref()
             .map(|m| m.artifacts.clone())
             .unwrap_or_default();
+        let replaces_primary = previous
+            .as_ref()
+            .and_then(|m| m.artifacts.first())
+            .is_some_and(|a| a.file_name == record.file_name);
         artifacts.retain(|a| a.file_name != record.file_name);
         artifacts.push(record);
         let (top_arch, top_runtime, top_source, top_sha, top_built) = match &previous {
-            Some(m) => (
+            Some(m) if !replaces_primary => (
                 m.architecture.clone(),
                 m.guest_runtime_version.clone(),
                 m.source_image_sha512.clone(),
                 m.image_sha512.clone(),
                 m.built_at.clone(),
             ),
-            None => (
+            _ => (
                 manifest.architecture.clone(),
                 manifest.guest_runtime_version.clone(),
                 manifest.source_image_sha512.clone(),
@@ -1421,6 +1429,53 @@ mod tests {
         assert_eq!(manifest.image_id, PEGOLES_BASE_IMAGE_ID);
         assert!(manifest.graphical.is_none());
         assert!(manifest.capabilities.is_empty());
+    }
+
+    #[test]
+    fn reseal_same_file_updates_top_hash() {
+        // Regression (Phase 5.1 reseal verification): republishing the
+        // SAME file name must move the top-level hash to the new bytes,
+        // or the manifest describes bytes that no longer exist.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ComputerImageManager::new(dir.path().to_path_buf());
+        let work = dir.path().join("work.raw");
+        fs::write(&work, b"v2-first-bytes").unwrap();
+        let first = mgr
+            .publish_derived(
+                &work,
+                DerivedManifestInput {
+                    image_id: PEGOLES_BASE_IMAGE_ID_V2.to_string(),
+                    image_version: PEGOLES_IMAGE_VERSION_V2.to_string(),
+                    debian_version: "13".into(),
+                    architecture: "arm64".into(),
+                    guest_runtime_version: "0.1.0".into(),
+                    guest_protocol_version: 1,
+                    source_image_sha512: "sourcesha".into(),
+                    graphical: None,
+                    capabilities: Vec::new(),
+                },
+            )
+            .unwrap();
+        fs::write(&work, b"v2-fixed-bytes").unwrap();
+        let second = mgr
+            .publish_derived(
+                &work,
+                DerivedManifestInput {
+                    image_id: PEGOLES_BASE_IMAGE_ID_V2.to_string(),
+                    image_version: PEGOLES_IMAGE_VERSION_V2.to_string(),
+                    debian_version: "13".into(),
+                    architecture: "arm64".into(),
+                    guest_runtime_version: "0.1.0".into(),
+                    guest_protocol_version: 1,
+                    source_image_sha512: "sourcesha".into(),
+                    graphical: None,
+                    capabilities: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert_ne!(first.image_sha512, second.image_sha512);
+        assert_eq!(second.artifacts.len(), 1);
+        assert_eq!(second.artifacts[0].sha512, second.image_sha512);
     }
 
     #[test]
