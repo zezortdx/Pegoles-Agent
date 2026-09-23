@@ -70,8 +70,12 @@ mod vsock {
 /// protocol violation), held guest input is released first so the
 /// compositor never keeps a stuck button or modifier.
 #[cfg(target_os = "linux")]
-fn serve_once(device: &mut Option<input::device::AgentDevice>) -> std::io::Result<()> {
-    let result = serve_inner(device);
+fn serve_once(
+    device: &mut Option<input::device::AgentDevice>,
+    open_error: &Option<String>,
+    flips: &mut FlipBudget,
+) -> std::io::Result<()> {
+    let result = serve_inner(device, open_error, flips);
     if let Some(dev) = device.as_ref() {
         dev.release_all();
     }
@@ -154,12 +158,15 @@ fn cheap_probe(device: &Option<input::device::AgentDevice>) -> Vec<String> {
     caps
 }
 #[cfg(target_os = "linux")]
-fn probe_input(device: &Option<input::device::AgentDevice>) -> Result<(), String> {
+fn probe_input(
+    device: &Option<input::device::AgentDevice>,
+    open_error: &Option<String>,
+) -> Result<(), String> {
     if device.is_none() {
-        return Err(
+        return Err(open_error.clone().unwrap_or_else(|| {
             "uinput device not opened (/dev/uinput inaccessible — image needs udev rule + input group)"
-                .to_string(),
-        );
+                .to_string()
+        }));
     }
     for _ in 0..20 {
         match std::fs::read_to_string("/proc/bus/input/devices") {
@@ -211,8 +218,13 @@ fn execute_input(
 
 /// One connection lifetime: handshake then serve until EOF/error.
 /// Returns `Ok(())` only to signal "reconnect and try again".
+/// `flips` persists across connections (reconnect budget converges).
 #[cfg(target_os = "linux")]
-fn serve_inner(device: &mut Option<input::device::AgentDevice>) -> std::io::Result<()> {
+fn serve_inner(
+    device: &mut Option<input::device::AgentDevice>,
+    open_error: &Option<String>,
+    flips: &mut FlipBudget,
+) -> std::io::Result<()> {
     use std::os::fd::{FromRawFd, IntoRawFd};
     let owned = vsock::connect(PEGOLES_VSOCK_PORT)?;
     let fd = owned.into_raw_fd();
@@ -253,8 +265,7 @@ fn serve_inner(device: &mut Option<input::device::AgentDevice>) -> std::io::Resu
     // 5.1): capabilities are self-tested per connection — device
     // created AND recognized; trial frame captured. Anything failing
     // lands in `unavailable` with its reason, never in `capabilities`.
-    let (capabilities, unavailable) = advertise(&probe_input(device), &probe_capture());
-    let mut flips = FlipBudget::new();
+    let (capabilities, unavailable) = advertise(&probe_input(device, open_error), &probe_capture());
     send(
         &mut writer,
         &GuestMessage::GuestHello {
@@ -473,6 +484,10 @@ fn main() {
     // "input" capability is advertised — never a crash.
     let mut device: Option<input::device::AgentDevice> = None;
     let mut input_warned = false;
+    let mut open_error: Option<String> = None;
+    // Persistent across connections: capability-flip reconnect budget
+    // converges instead of looping on persistent disagreement.
+    let mut flips = FlipBudget::new();
     // Capped backoff: 1,2,4,8,15,30,30…s. Retries continue while the
     // process lives; systemd Restart=on-failure covers real crashes.
     // Exit codes: 0 only on clean shutdown paths (none currently — the
@@ -481,8 +496,12 @@ fn main() {
     loop {
         if device.is_none() {
             match input::device::open() {
-                Ok(dev) => device = Some(dev),
+                Ok(dev) => {
+                    device = Some(dev);
+                    open_error = None;
+                }
                 Err(e) => {
+                    open_error = Some(e.clone());
                     // Log once: retrying every backoff tick would spam.
                     if !input_warned {
                         eprintln!("pegoles-guest-runtime: {e}");
@@ -492,7 +511,7 @@ fn main() {
             }
         }
         let started = std::time::Instant::now();
-        match serve_once(&mut device) {
+        match serve_once(&mut device, &open_error, &mut flips) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("pegoles-guest-runtime: connection failed: {e}");

@@ -374,7 +374,8 @@ fn bind<S: CaptureStream>(
     put_string(&mut payload, interface);
     put_u32(&mut payload, version);
     put_u32(&mut payload, new_id);
-    stream.send(&frame_request(registry, 1, &payload), &[])?;
+    // wl_registry.bind is opcode 0 (its only request).
+    stream.send(&frame_request(registry, 0, &payload), &[])?;
     Ok(())
 }
 
@@ -866,6 +867,13 @@ mod tests {
             .inbox
             .iter()
             .any(|(b, _)| b.len() >= 8 && object_op(b) == (7, 1)));
+        // Binds go to wl_registry (object 2) opcode 0 — regression test
+        // for the opcode-1 bug found against real weston 14
+        // ("invalid method 1, object wl_registry#2").
+        assert!(fake
+            .inbox
+            .iter()
+            .any(|(b, _)| b.len() >= 8 && object_op(b) == (2, 0)));
     }
 
     #[test]
