@@ -21,6 +21,11 @@ fn main() {
     println!("image: {image_id}");
     let bus = EventBus::new();
     let mut registry = ComputerRegistry::with_backend_kind(bus, BackendKind::MacOSVirtualization);
+    // TestDisplay adapter: marks a display as available so VZ attaches a
+    // real GPU (weston needs it), without opening a native window. The
+    // guest framebuffer is observed via the guest channel (ObserveScreen),
+    // never via host pixels.
+    registry.install_display_backend(Box::new(pegoles_computer::TestDisplay::new()));
     let id = registry.create_default().expect("create");
     println!("computer: {id}");
     registry.start().expect("start");
