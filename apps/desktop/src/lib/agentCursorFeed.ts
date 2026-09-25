@@ -29,7 +29,7 @@ function num(v: unknown): number | null {
 /** Overlay-px point for a normalized agent position, via the live slot. */
 export function overlayPoint(nx: number, ny: number): { x: number; y: number } | null {
   if (typeof document === "undefined") return null;
-  const wrap = document.querySelector(".computer-viewport-wrap");
+  const wrap = document.querySelector(".computer__screen");
   const slot = document.querySelector("[data-framebuffer-slot]");
   if (!(wrap instanceof HTMLElement) || !(slot instanceof HTMLElement)) return null;
   const wrapRect = wrap.getBoundingClientRect();

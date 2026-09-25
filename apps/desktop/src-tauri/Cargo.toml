@@ -27,6 +27,9 @@ pegoles-core = { workspace = true }
 # dependency of the shared crates (they stay platform-free).
 [target.'cfg(target_os = "macos")'.dependencies]
 pegoles-macos-embed = { path = "../../../native/macos/pegoles-macos-embed" }
+# Public AppKit only: the system accessibility display options (Reduce
+# Transparency, Increase Contrast), which WKWebView does not expose to CSS.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility"] }
 
 [features]
 default = ["custom-protocol"]

@@ -1,0 +1,227 @@
+/*
+ * A task is a work session: the objective, the facts, the work as it
+ * happened. One reading column; the status bar floats at the bottom where
+ * the composer was.
+ */
+.task { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.task__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--gutter);
+  scroll-padding-bottom: 120px;
+}
+.task__column {
+  container-type: inline-size;
+  width: 100%;
+  max-width: var(--column-max);
+  margin: 0 auto;
+  padding: 20px 0 132px;
+}
+
+.task-head { display: grid; gap: 10px; padding-bottom: 20px; }
+.task-head__title {
+  font: var(--type-title);
+  letter-spacing: var(--track-title);
+  color: var(--text-1);
+  text-wrap: pretty;
+}
+.task-head__title:focus-visible { outline: none; }
+.task-head__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  font: var(--type-small);
+  color: var(--text-3);
+}
+.task-head__meta .state-label { font: var(--type-small); font-weight: 600; }
+.task-head__fact { font-variant-numeric: tabular-nums; }
+
+/* ── The narrative ──────────────────────────────────────────────────
+ * Items sit on one left edge with 12 px between them; steps inside a run
+ * pack tight. No boxes except for things you keep (files) and things that
+ * need you (approvals). */
+.narrative { display: grid; gap: 12px; padding-top: 4px; }
+.narrative__item { min-width: 0; }
+
+.narrative__waiting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: var(--text-3);
+  font: var(--type-ui);
+}
+.narrative__pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: dot-breathe 2.2s var(--ease-light) infinite; box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.run { display: grid; }
+.run--open { gap: 0; }
+.run__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% + 16px);
+  height: 30px;
+  margin: 0 -8px;
+  padding: 0 8px;
+  border-radius: var(--radius-row);
+  color: var(--text-3);
+  font: var(--type-ui);
+  text-align: left;
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
+}
+.run__summary:hover { color: var(--text-1); background: var(--fill-quiet); }
+.run__chevron { color: var(--icon-3); transition: transform var(--dur-surface) var(--ease-expand); flex: none; }
+.run[data-open] .run__chevron { transform: rotate(90deg); }
+.run__label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; color: var(--text-2); }
+.run__summary:hover .run__label { color: var(--text-1); }
+.run__meta { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run__time { flex: none; margin-left: auto; padding-left: 8px; color: var(--text-4); font: var(--type-small); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run__steps { display: grid; padding-left: 12px; margin-left: 2px; box-shadow: inset 1px 0 0 var(--hairline-soft); }
+.run:not([data-open]) .run__steps:empty { display: none; }
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 4px 0;
+  color: var(--text-2);
+  font: var(--type-ui);
+}
+.step__icon { display: inline-grid; place-items: center; width: 16px; flex: none; color: var(--icon-3); }
+.step__text { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; overflow: hidden; }
+.step__label { flex: none; color: var(--text-1); }
+.step__detail {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+  font: var(--type-mono);
+}
+.step__word { flex: none; font: var(--type-small); font-weight: 500; color: var(--text-3); }
+.step__word[data-outcome="blocked"],
+.step__word[data-outcome="approval"] { color: var(--tone-attention); }
+.step__word[data-outcome="failed"] { color: var(--tone-error); }
+.step__meta { flex: none; color: var(--text-4); font: var(--type-mono); }
+.step[data-outcome="blocked"] .step__icon,
+.step[data-outcome="approval"] .step__icon { color: var(--warn); }
+.step[data-outcome="failed"] .step__icon { color: var(--danger); }
+.step[data-consequential] .step__icon { color: var(--icon-2); }
+
+/* Something it made: a file you keep. */
+.made {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 10px 10px;
+  border-radius: var(--radius-card);
+  background: var(--fill-quiet);
+  box-shadow: var(--edge);
+}
+.made__tile {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--raised);
+  box-shadow: var(--edge), var(--highlight-top);
+  color: var(--icon-1);
+  flex: none;
+}
+.made__body { display: grid; flex: 1; min-width: 0; }
+.made__name { font-weight: 600; color: var(--text-1); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.made__path { color: var(--text-3); font: var(--type-mono); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.made__meta { flex: none; color: var(--text-3); font: var(--type-small); }
+
+/* Where it stopped to ask you. */
+.ask {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: var(--radius-card);
+  background: linear-gradient(var(--warn-wash), var(--warn-wash)), var(--surface);
+  box-shadow: inset 0 0 0 0.5px var(--warn-line);
+  animation: ask-arrive 900ms var(--ease-out);
+}
+@keyframes ask-arrive {
+  0% { box-shadow: inset 0 0 0 0.5px var(--warn-line), 0 0 0 0 rgb(242 177 76 / 0.28); }
+  60% { box-shadow: inset 0 0 0 0.5px var(--warn-line), 0 0 0 8px rgb(242 177 76 / 0); }
+}
+.ask__head { display: flex; align-items: center; gap: 9px; }
+.ask__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.ask__title { flex: 1; font: var(--type-heading); color: var(--warn-text); }
+.ask__time { color: var(--text-3); font: var(--type-small); }
+.ask__reason { color: var(--text-1); font: var(--type-read); letter-spacing: var(--track-read); padding-left: 16px; }
+.ask__note { color: var(--text-3); font: var(--type-small); padding-left: 16px; }
+
+/* How it ended. */
+.outcome {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 16px;
+  box-shadow: inset 0 0.5px 0 var(--hairline);
+}
+.outcome__tile {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--success-soft);
+  color: var(--success);
+}
+.outcome__tile { animation: outcome-pop 520ms var(--ease-enter) both; }
+@keyframes outcome-pop { from { transform: scale(0.6); opacity: 0; } 60% { transform: scale(1.06); opacity: 1; } }
+.outcome[data-status="failed"] .outcome__tile { background: var(--danger-soft); color: var(--danger-text); }
+.outcome[data-status="cancelled"] .outcome__tile { background: var(--fill-press); color: var(--text-2); }
+.outcome__text { display: grid; gap: 2px; padding-top: 2px; }
+.outcome__title { font: var(--type-heading); color: var(--text-1); }
+.outcome__facts { color: var(--text-3); font: var(--type-small); font-variant-numeric: tabular-nums; }
+.outcome__detail { color: var(--text-2); font: var(--type-small); }
+
+.task .notice { margin-bottom: 16px; }
+
+/* Beside a focused computer the column is narrow: keep the words, drop the clock. */
+@container (max-width: 480px) {
+  .run__time, .step__meta, .made__meta { display: none; }
+  .task-head__title { font-size: 18px; line-height: 24px; }
+}
+
+/* ── The status bar: what Pegoles is doing now ───────────────────── */
+.dock {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 18px;
+  background: var(--material-float);
+  -webkit-backdrop-filter: blur(var(--material-blur)) saturate(var(--material-saturate));
+  backdrop-filter: blur(var(--material-blur)) saturate(var(--material-saturate));
+  box-shadow: var(--material-rim), var(--shadow-float);
+  animation: dock-in var(--dur-spatial) var(--ease-spatial);
+}
+@keyframes dock-in { from { opacity: 0; transform: translateY(10px) scale(0.985); } }
+.dock__mark { display: grid; place-items: center; width: 24px; height: 24px; flex: none; }
+.dock__text { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; overflow: hidden; }
+.dock__headline { flex: none; font-weight: 600; color: var(--text-1); white-space: nowrap; }
+.dock[data-tone="attention"] .dock__headline { color: var(--warn-text); }
+.dock[data-tone="error"] .dock__headline { color: var(--danger-text); }
+.dock__detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-3); }
+.dock__elapsed { flex: none; color: var(--text-3); font: var(--type-small); font-variant-numeric: tabular-nums; }
+.dock__actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.dock__actions:empty { display: none; }
+
+:root[data-reduce-transparency] .dock,
+[data-effects-tier="minimal"] .dock { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-float-solid); }
+@media (prefers-reduced-transparency: reduce) {
+  .dock { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-float-solid); }
+}

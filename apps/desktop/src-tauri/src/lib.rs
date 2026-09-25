@@ -34,6 +34,7 @@ pub fn run() {
             commands::guest_info,
             commands::guest_ping,
             commands::get_host_capabilities,
+            commands::accessibility_display,
             commands::suggested_config,
             commands::suggested_effects,
             commands::display_set_geometry,

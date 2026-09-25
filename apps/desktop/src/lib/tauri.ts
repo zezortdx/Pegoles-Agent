@@ -246,6 +246,7 @@ export const api = {
   guestInfo: () => invoke<GuestInfoPayload>("guest_info"),
   guestPing: () => invoke<GuestPingPayload>("guest_ping"),
   getHostCapabilities: () => invoke<HostCapabilities>("get_host_capabilities"),
+  accessibilityDisplay: () => invoke<{ reduce_transparency: boolean; increase_contrast: boolean }>("accessibility_display"),
   executeAction: (action: { type: string; [k: string]: unknown }, taskId?: string, observeAfter?: boolean) =>
     invoke<ActionResultWire>("execute_action", {
       taskId: taskId ?? null,

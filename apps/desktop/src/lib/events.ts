@@ -30,6 +30,7 @@ export function describeAction(action: { type: string; [k: string]: unknown }): 
       return Array.isArray(action.keys) ? `Pressing ${(action.keys as string[]).join("+")}` : "Pressing keys";
     case "type_text":
     case "type": {
+      if (action.sensitive === true) return "Typing";
       const text = typeof action.text === "string" ? action.text : "";
       if (text.length === 0) return "Typing";
       const short = [...text].slice(0, 42).join("");
@@ -40,13 +41,62 @@ export function describeAction(action: { type: string; [k: string]: unknown }): 
     case "open_url":
       return "Opening link";
     case "shell":
-      return "Running shell command";
+      return "Running a command";
     case "read_file":
-      return "Reading file";
+      return "Reading a file";
+    case "list_directory":
+      return "Looking through a folder";
     case "write_file":
-      return "Writing file";
+      return "Writing a file";
     default:
       return String(action.type).replaceAll("_", " ");
+  }
+}
+
+/** Finished actions, in the past tense. The target (path, host) is shown
+ * separately, so these stay short. Typed text never appears. */
+export function describePast(action: { type: string; [k: string]: unknown }): string {
+  switch (action.type) {
+    case "screenshot":
+    case "observe_screen":
+      return "Looked at the screen";
+    case "get_display_info":
+      return "Checked the display";
+    case "move_pointer":
+      return "Moved the pointer";
+    case "click":
+      return "Clicked";
+    case "double_click":
+      return "Double-clicked";
+    case "mouse_down":
+      return "Pressed the pointer";
+    case "mouse_up":
+      return "Released the pointer";
+    case "drag":
+      return "Dragged";
+    case "scroll":
+      return "Scrolled";
+    case "key_press":
+      return typeof action.key === "string" ? `Pressed ${action.key}` : "Pressed a key";
+    case "key_chord":
+      return Array.isArray(action.keys) ? `Pressed ${(action.keys as string[]).join("+")}` : "Pressed keys";
+    case "type_text":
+    case "type":
+      return "Typed text";
+    case "wait":
+      return "Waited";
+    case "open_url":
+      return "Opened a website";
+    case "shell":
+      return "Ran a command";
+    case "read_file":
+      return "Read a file";
+    case "list_directory":
+      return "Looked through a folder";
+    case "write_file":
+      return "Wrote a file";
+    default:
+      return String(action.type).replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
   }
 }
 
@@ -115,16 +165,14 @@ export function describeEvent(e: AgentEvent): string {
         : "Debian ready";
     }
     case "guest_runtime_disconnected": {
-      const d = e as { reason?: string };
-      return d.reason ? `Guest runtime disconnected (${d.reason})` : "Guest runtime disconnected";
+      return "Computer connection lost";
     }
     case "guest_runtime_incompatible": {
       const i = e as { guest_version?: number };
       return `Guest runtime incompatible (protocol ${i.guest_version ?? "?"})`;
     }
     case "guest_runtime_error": {
-      const m = e as { message?: string };
-      return m.message ? `Guest runtime error: ${m.message}` : "Guest runtime error";
+      return "Computer needs attention";
     }
     default:
       return e.type.replaceAll("_", " ");
@@ -135,5 +183,5 @@ export function eventTime(e: AgentEvent): string {
   const at = (e as { at?: string }).at;
   if (!at) return "";
   const d = new Date(at);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }

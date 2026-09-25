@@ -72,6 +72,8 @@ export interface ActivityItemProps extends Omit<HTMLAttributes<HTMLLIElement>, "
   readonly emphasis?: "normal" | "quiet";
   /** Newest live row: subtle Pegoles-blue energy, settles when superseded. */
   readonly current?: boolean;
+  /** Optional progressive disclosure, rendered below the human-readable event. */
+  readonly technicalDetails?: ReactNode;
 }
 
 function toDate(at: Date | string): Date | null {
@@ -90,6 +92,7 @@ export function ActivityItem({
   repeatCount,
   emphasis = "normal",
   current = false,
+  technicalDetails,
   className,
   ...rest
 }: ActivityItemProps) {
@@ -121,6 +124,7 @@ export function ActivityItem({
           )}
         </p>
         {detail && <p className="pg-activity__detail">{detail}</p>}
+        {technicalDetails}
       </div>
       {date && (
         <time className="pg-activity__time" dateTime={date.toISOString()}>

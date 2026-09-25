@@ -1,180 +1,536 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { LayoutGroup } from "motion/react";
-import {
-  AgentCursorOverlay, CommandBar, CommandMorph, FluxGlassRoot, GlassButton, GlassSurface, PegolesMark, StatusIndicator,
-  MonitorIcon, PresenceIcon, TaskController, TaskIcon, WindowIcon, ProgressLine, VIEWPORT_STATE_SPECS,
-  isEffectsTier, usePresence, type EffectsTier,
-} from "@pegoles/ui";
-import { ActivityTimeline } from "./components/ActivityTimeline";
-import { ComputerControls } from "./components/ComputerControls";
-import { NativeComputer } from "./components/NativeComputer";
-import { TaskWorkspace, type WorkspaceLayout } from "./components/TaskWorkspace";
-import { actionCursorSource } from "./lib/agentCursorFeed";
-import { describeEvent } from "./lib/events";
-import { api, type AgentTask, type AgentEvent, type HostCapabilities, type ImageStatusPayload, type StatusPayload, type BootLogPayload } from "./lib/tauri";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { AnimatePresence, LayoutGroup, m } from "motion/react";
+import { FluxGlassRoot, type EffectsTier } from "@pegoles/ui";
+import { PresenceGpuShareProvider, PresenceQualityProvider } from "./presence";
+import { useCore } from "./state/useCore";
+import { actionSteps, globalPresence, modelConnected, taskActivity, type TaskActivity } from "./state/agentState";
+import { buildTranscript } from "./state/transcript";
+import { computerModel, withCommandError, type ComputerCommand } from "./state/computerModel";
+import { taskSections } from "./state/taskSections";
+import { eventsForTask } from "./lib/execution";
+import { api, type AgentTask } from "./lib/tauri";
+import { duration, ease } from "./lib/motion";
+import { formatElapsed, shortcutModifier } from "./lib/format";
+import { activityPill } from "./lib/taskState";
+import { useSystemReducedMotion } from "./lib/useSystemReducedMotion";
+import { Sidebar, type Place, type SidebarMode, type TaskGlance } from "./shell/Sidebar";
+import { Toolbar, type ToolbarContext } from "./shell/Toolbar";
+import { CommandPalette } from "./shell/CommandPalette";
+import { useNow } from "./shell/useNow";
+import { useAccessibilityDisplay } from "./shell/useAccessibilityDisplay";
+import { useMediaQuery } from "./shell/useMediaQuery";
+import { useWindowWidth } from "./shell/useWindowWidth";
+import { Announcer } from "./shell/Announcer";
+import { Toast } from "./shell/Toast";
+import { HomeView } from "./home/HomeView";
+import { Composer } from "./composer/Composer";
+import { ComposerControls, ComposerStrip } from "./composer/ComposerContext";
+import { TaskView } from "./task/TaskView";
+import { StatusDock } from "./task/StatusDock";
+import { COMPUTER_PANEL_ID, ComputerPanel } from "./computer/ComputerPanel";
+import { ComputerPeek } from "./computer/ComputerPeek";
+import { columns, stepBack, type ComputerLevel } from "./computer/layout";
+import { useComputerLevel } from "./computer/useComputerLevel";
+import { useScreenSnapshot } from "./computer/useScreenSnapshot";
+import { ActivityView } from "./pages/ActivityView";
+import { SettingsView, type QualityChoice, type SettingsAnchor } from "./pages/SettingsView";
 
-type Page = "Home" | "Agents" | "Computer" | "Activity" | "Settings";
-const pages: Page[] = ["Home", "Agents", "Computer", "Activity", "Settings"];
-const taskLabel = (task: AgentTask) => task.status === "pending" ? "Pending · execution unavailable" : task.status.replaceAll("_", " ");
-function readEffects(): EffectsTier | "auto" {
-  try { const value = localStorage.getItem("pegoles.effects"); return isEffectsTier(value) ? value : "auto"; } catch { return "auto"; }
-}
-function NavIcon({ page }: { page: Page }) {
-  if (page === "Computer") return <MonitorIcon size={19} />;
-  if (page === "Agents") return <PresenceIcon size={19} />;
-  if (page === "Activity") return <TaskIcon size={19} />;
-  return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-    {page === "Home" ? <path d="m3 10 9-7 9 7v10H15v-7H9v7H3Z" strokeLinejoin="round" /> : <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="8" cy="6" r="2" fill="currentColor" /><circle cx="16" cy="12" r="2" fill="currentColor" /><circle cx="10" cy="18" r="2" fill="currentColor" /></>}
-  </svg>;
+type View = { readonly kind: "home" } | { readonly kind: "task"; readonly id: string } | { readonly kind: "place"; readonly place: Place };
+
+const QUALITY_KEY = "pegoles.quality";
+const SIDEBAR_KEY = "pegoles.sidebar";
+/** Long enough for the acknowledgement to be felt, short enough to never stall. */
+const ACK_MIN_MS = 260;
+const ACK_TOTAL_MS = 420;
+const ARRIVAL_MS = 900;
+
+function readQuality(): QualityChoice {
+  try {
+    const stored = localStorage.getItem(QUALITY_KEY) ?? localStorage.getItem("pegoles.effects");
+    if (stored === "full" || stored === "reduced" || stored === "auto") return stored;
+    return stored === "minimal" ? "reduced" : "auto";
+  } catch { return "auto"; }
 }
 
-function elapsedSince(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "0:00";
-  const s = Math.floor(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+function readSidebarHidden(): boolean {
+  try { return localStorage.getItem(SIDEBAR_KEY) === "rail" || localStorage.getItem(SIDEBAR_KEY) === "hidden"; } catch { return false; }
 }
+
+/** "2m" while Pegoles works, "4m" of work once it settles: only from Core's own timestamps. */
+function elapsedOf(task: AgentTask, activity: TaskActivity, now: number): string | undefined {
+  const since = new Date(task.created_at).getTime();
+  if (!Number.isFinite(since)) return undefined;
+  if (task.status === "running" && activity.live) return formatElapsed(now - since);
+  return undefined;
+}
+
+const wait = (delay: number) => new Promise<void>((resolve) => { window.setTimeout(resolve, delay); });
 
 export default function App() {
-  const native = isTauri();
-  const [page, setPage] = useState<Page>("Home");
-  const [layout, setLayout] = useState<WorkspaceLayout>("split");
-  const [status, setStatus] = useState<StatusPayload | null>(null);
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [tasks, setTasks] = useState<AgentTask[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [image, setImage] = useState<ImageStatusPayload | null>(null);
-  const [host, setHost] = useState<HostCapabilities | null>(null);
-  const [bootLog, setBootLog] = useState<BootLogPayload | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
+  const core = useCore();
+  const { connected, status, tasks, events, run, report } = core;
+  const systemReducedMotion = useSystemReducedMotion();
+  useAccessibilityDisplay(core.native);
+  const narrow = useMediaQuery("(max-width: 1099px)");
+  const { width: windowWidth, resizing } = useWindowWidth();
+
+  const [view, setView] = useState<View>({ kind: "home" });
+  const [quality, setQuality] = useState<QualityChoice>(readQuality);
+  const tier: EffectsTier = quality === "auto" ? core.recommendedTier : quality;
+  const animated = !systemReducedMotion && tier !== "minimal";
+  const computerLevel = useComputerLevel(animated);
+  const { level, mounted, motion } = computerLevel;
+  /** The panel was opened by the person (focus moves into it), not by Pegoles. */
+  const [panelFocus, setPanelFocus] = useState(false);
+  const opener = useRef<HTMLElement | null>(null);
+  const [sidebarHidden, setSidebarHidden] = useState(readSidebarHidden);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
-  const [effects, setEffects] = useState<EffectsTier | "auto">(readEffects);
-  const [recommended, setRecommended] = useState<EffectsTier>("reduced");
-  const commandRef = useRef<HTMLInputElement>(null);
+  const [ackTask, setAckTask] = useState<string | null>(null);
+  const [arriving, setArriving] = useState<string | null>(null);
+  const [created, setCreated] = useState<AgentTask | null>(null);
+  const [nudge, setNudge] = useState(0);
+  const [headingVisible, setHeadingVisible] = useState(true);
+  const [anchor, setAnchor] = useState<SettingsAnchor | null>(null);
+  const [peekHidden, setPeekHidden] = useState<ReadonlySet<string>>(new Set());
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const mounted = useRef(false);
-  const refreshFlight = useRef<Promise<void> | null>(null);
-  const refresh = useCallback((): Promise<void> => {
-    if (!native) return Promise.resolve();
-    if (refreshFlight.current) return refreshFlight.current;
-    const pending = (async () => {
-      try {
-        const [s, evts, img, h, ts] = await Promise.all([api.getStatus(), api.listEvents(), api.getImageStatus(), api.getHostCapabilities(), api.listTasks()]);
-        if (!mounted.current) return;
-        setStatus(s); setEvents(evts); setImage(img); setHost(h); setTasks(ts); setConnected(true);
-      } catch (e) { if (mounted.current) { setConnected(false); setError(String(e)); } }
-    })().finally(() => { refreshFlight.current = null; });
-    refreshFlight.current = pending;
-    return pending;
-  }, [native]);
+  const openWidth = useRef(0);
 
-  useEffect(() => {
-    mounted.current = true;
-    void refresh();
-    let disposed = false;
-    const cleanups: (() => void)[] = [];
-    if (native) {
-      void api.suggestedEffects().then((result) => { if (!disposed && isEffectsTier(result.tier)) setRecommended(result.tier); }).catch(() => undefined);
-      for (const event of ["pegoles://event", "pegoles://image-progress"]) {
-        void listen(event, () => void refresh()).then((stop) => { if (disposed) stop(); else cleanups.push(stop); }).catch((e: unknown) => { if (!disposed) setError(`Live updates unavailable: ${String(e)}`); });
-      }
-    }
-    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 2500);
-    return () => { disposed = true; mounted.current = false; cleanups.forEach((stop) => stop()); window.clearInterval(timer); };
-  }, [native, refresh]);
+  // ── Derived state ────────────────────────────────────────────────
+  const modelReady = modelConnected(status);
+  const selected = view.kind === "task"
+    ? tasks.find((task) => task.id === view.id) ?? (created?.id === view.id ? created : undefined)
+    : undefined;
+  const selectedEvents = useMemo(() => (selected ? eventsForTask(events, selected.id) : []), [events, selected]);
+  const activity = useMemo(() => selected && taskActivity({
+    task: selected, events: selectedEvents, status, connected, acknowledging: ackTask === selected.id,
+  }), [selected, selectedEvents, status, connected, ackTask]);
+  const transcript = useMemo(() => (selected ? buildTranscript({ task: selected, events: selectedEvents }) : []), [selected, selectedEvents]);
 
-  useEffect(() => {
-    const shortcut = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault(); setPage("Home"); setSelectedId(null);
-        window.setTimeout(() => commandRef.current?.focus(), 0);
-      }
-    };
-    window.addEventListener("keydown", shortcut);
-    return () => window.removeEventListener("keydown", shortcut);
-  }, []);
-
-  const navigate = (next: Page) => { setPage(next); setSelectedId(null); window.setTimeout(() => headingRef.current?.focus(), 0); };
-  const run = useCallback(async (action: () => Promise<unknown>) => {
-    if (busyRef.current || !native) return;
-    busyRef.current = true; setBusy(true); setError(null);
-    try { await action(); await refresh(); }
-    catch (e) { setError(String(e)); }
-    finally { busyRef.current = false; setBusy(false); }
-  }, [native, refresh]);
-  const selected = tasks.find((task) => task.id === selectedId);
-  const tier = effects === "auto" ? recommended : effects;
-  const taskPresence = usePresence({ online: connected, task: selected?.status ?? null, viewport: status?.viewport_state ?? null, inputFocused: focused });
-  const presence = !connected ? "offline" : error ? "error" : status?.control_owner === "user" ? "waitingForUser" : status?.viewport_state === "agent_active" ? "acting" : taskPresence;
-  // Pegoles visually follows its work: drift toward the computer while it
-  // acts there, toward the command surface while listening, settle otherwise.
-  const lookAt = useMemo(() => {
-    if (presence === "acting") return { x: 120, y: -20 };
-    if (presence === "listening") return { x: 0, y: 160 };
-    if (presence === "waitingForUser") return { x: -80, y: 60 };
-    return null;
-  }, [presence]);
-  const needsImage = status?.backend === "real" && !status.computer_created && image?.status !== "ready";
-  const submit = (title: string) => void run(async () => {
-    const task = await api.createTask(title);
-    setTasks((previous) => [...previous.filter((item) => item.id !== task.id), task]);
-    setSelectedId(task.id); setDraft(""); setLayout("split");
+  const computer = withCommandError(computerModel({ connected, native: core.native, status, image: core.image, events }), !!core.errors.computer);
+  const presence = globalPresence({
+    connected, tasks, status, acknowledging: ackTask === "pending", attentive: focused || draft.trim().length > 0,
+    computerTransitioning: computer.transitioning,
   });
-  const pending = tasks.filter((task) => ["pending", "running", "waiting_for_approval"].includes(task.status));
-  const recent = tasks.filter((task) => !pending.includes(task));
-  const openTask = (task: AgentTask) => { setSelectedId(task.id); setLayout("split"); };
-  const taskRows = (items: AgentTask[], empty: string) => items.length ? <ul className="task-list">{[...items].reverse().map((task) => <li key={task.id}><button className="task-row" onClick={() => openTask(task)}><TaskIcon size={18} /><span><strong>{task.title}</strong><small>{taskLabel(task)}</small></span><time dateTime={task.updated_at}>{new Date(task.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time><span aria-hidden="true">›</span></button></li>)}</ul> : <p className="empty-copy">{empty}</p>;
-  const computerActions = status && connected ? needsImage ? <div className="computer-actions">{image?.preparing ? <div className="image-progress"><span>{image.stage?.replaceAll("_", " ") ?? "Preparing computer"}</span><ProgressLine label="Computer image preparation" value={image.total > 0 ? image.downloaded / image.total : null} showValue={image.total > 0} /></div> : <GlassButton size="sm" disabled={busy} onClick={() => void run(api.prepareImage)}>Prepare Computer</GlassButton>}</div> : <ComputerControls created={status.computer_created} state={status.computer_state} busy={busy} error={error} onCreate={() => void run(api.createComputer)} onStart={() => void run(api.startComputer)} onPause={() => void run(api.pauseComputer)} onResume={() => void run(api.resumeComputer)} onStop={() => void run(api.stopComputer)} /> : null;
-  const userControlling = status?.control_owner === "user";
+
+  const liveWork = tasks.some((task) => task.status === "running");
+  const now = useNow(true, liveWork ? 15_000 : 60_000);
+  const sections = useMemo(() => taskSections(tasks, now), [tasks, now]);
+  const glances = useMemo(() => {
+    const entries: Record<string, TaskGlance | null> = {};
+    for (const task of tasks) {
+      if (task.status === "running") {
+        const live = taskActivity({ task, events: eventsForTask(events, task.id), status, connected });
+        entries[task.id] = { text: live.headline, tone: live.mode === "waiting" ? "attention" : "live" };
+      } else if (task.status === "waiting_for_approval") entries[task.id] = { text: "Needs your approval", tone: "attention" };
+      else entries[task.id] = null;
+    }
+    return entries;
+  }, [tasks, events, status, connected]);
+  const waiting = tasks.find((task) => task.status === "waiting_for_approval");
+
+  const pill = selected && activity ? activityPill(activity.mode, selected.status) : null;
+  const elapsed = selected && activity ? elapsedOf(selected, activity, now) : undefined;
+  const screenUp = computer.running || computer.phase === "paused";
+  const locked = computer.owner === "user";
+  const slotEnabled = core.native && status?.backend === "real" && !!status.display_available &&
+    (status.computer_state === "running" || status.computer_state === "paused");
+
+  // ── Spatial layout ──────────────────────────────────────────────
+  const sidebarMode: SidebarMode = narrow ? (drawerOpen ? "drawer" : "hidden") : sidebarHidden || level === "full" ? "hidden" : "shown";
+  const cols = columns(level, windowWidth, sidebarMode === "shown");
+  if (level !== null && motion !== "close") openWidth.current = cols.computer;
+  const innerOpenWidth = motion === "open" || motion === "close" ? openWidth.current : 0;
+  const shellStyle = { "--col-sidebar": `${cols.sidebar}px`, "--col-computer": `${cols.computer}px` } as CSSProperties;
+
+  const peekVisible = view.kind === "task" && !!selected && activity?.mode === "using-computer" && level === null &&
+    mounted === null && !peekHidden.has(selected.id);
+  const snapshot = useScreenSnapshot({
+    enabled: core.native && computer.running && !slotEnabled && (mounted !== null || peekVisible),
+    trigger: events.length,
+    capture: api.captureScreen,
+  });
+  const panelSteps = useMemo(
+    () => [...(activity ? activity.recent : actionSteps(events).slice(-5))].reverse().slice(0, 5),
+    [activity, events],
+  );
+
+  // ── Navigation ──────────────────────────────────────────────────
+  const focusHeading = useCallback(() => {
+    window.setTimeout(() => headingRef.current?.focus({ preventScroll: true }), 0);
+  }, []);
+  const setLevel = computerLevel.setLevel;
+  const leaveFull = useCallback(() => { if (level === "full") setLevel("focus"); }, [level, setLevel]);
+  const newTask = useCallback(() => {
+    setView({ kind: "home" });
+    setDrawerOpen(false);
+    if (level === "full" && !locked) setLevel("side");
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+  }, [level, locked, setLevel]);
+  const openTask = useCallback((task: AgentTask) => {
+    setView({ kind: "task", id: task.id });
+    setHeadingVisible(true);
+    setDrawerOpen(false);
+    leaveFull();
+    focusHeading();
+  }, [leaveFull, focusHeading]);
+  const openPlace = useCallback((next: Place, section: SettingsAnchor | null = null) => {
+    setView({ kind: "place", place: next });
+    setAnchor(section);
+    setDrawerOpen(false);
+    leaveFull();
+    if (!section) focusHeading();
+  }, [leaveFull, focusHeading]);
+  const openComputer = useCallback((next: ComputerLevel = "side") => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPanelFocus(true);
+    setLevel(next);
+  }, [setLevel]);
+  const closeComputer = useCallback(() => {
+    if (locked) return;
+    const back = opener.current?.isConnected ? opener.current : document.querySelector<HTMLElement>(".toolbar__computer");
+    window.setTimeout(() => back?.focus({ preventScroll: true }), 0);
+    // Retract from wherever the edge is right now, even mid-resize.
+    const width = document.getElementById(COMPUTER_PANEL_ID)?.getBoundingClientRect().width;
+    if (width) openWidth.current = Math.round(width);
+    setLevel(null);
+  }, [locked, setLevel]);
+  const toggleComputer = useCallback(() => {
+    setDrawerOpen(false);
+    if (level) closeComputer(); else openComputer();
+  }, [level, openComputer, closeComputer]);
+  const changeLevel = useCallback((next: ComputerLevel) => {
+    setPanelFocus(next === "full" || level === "full");
+    // Focus and Full only mean something once there is a screen.
+    setLevel(next !== "side" && !screenUp ? "side" : next);
+  }, [screenUp, level, setLevel]);
+  const toggleSidebar = useCallback(() => {
+    if (narrow) { setDrawerOpen((value) => !value); return; }
+    setSidebarHidden((value) => {
+      const next = !value;
+      try { localStorage.setItem(SIDEBAR_KEY, next ? "hidden" : "shown"); } catch { /* applies to this session */ }
+      return next;
+    });
+  }, [narrow]);
+
+  // Focus and Full need a screen: when the machine goes away, step back to Side.
   useEffect(() => {
-    actionCursorSource.setDisplaySize(
-      status?.display_config
-        ? { w: status.display_config.width_px, h: status.display_config.height_px }
-        : null,
+    if (!screenUp && (level === "focus" || level === "full")) setLevel("side");
+  }, [screenUp, level, setLevel]);
+
+  // ── Hand-off: Home → task, as one continuous scene ─────────────
+  const [handing, setHanding] = useState(false);
+  const submit = async (title: string) => {
+    setHanding(true);
+    setAckTask("pending");
+    const [task] = await Promise.all([run("task", () => api.createTask(title)), wait(ACK_MIN_MS)]);
+    setHanding(false);
+    if (!task) {
+      setAckTask(null);
+      window.setTimeout(() => composerRef.current?.focus(), 0);
+      return;
+    }
+    setCreated(task);
+    setDraft("");
+    setFocused(false);
+    setAckTask(task.id);
+    setArriving(task.id);
+    setHeadingVisible(true);
+    setView({ kind: "task", id: task.id });
+    focusHeading();
+  };
+  useEffect(() => {
+    if (!ackTask || ackTask === "pending") return;
+    const timer = window.setTimeout(() => setAckTask(null), ACK_TOTAL_MS - ACK_MIN_MS);
+    return () => window.clearTimeout(timer);
+  }, [ackTask]);
+  useEffect(() => {
+    if (!arriving) return;
+    const timer = window.setTimeout(() => setArriving(null), ARRIVAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [arriving]);
+
+  // ── Computer commands ──────────────────────────────────────────
+  const runComputer = useCallback((command: ComputerCommand) => {
+    const actions: Record<ComputerCommand, () => Promise<unknown>> = {
+      prepare: api.prepareImage,
+      start: async () => {
+        if (!status?.computer_created) await api.createComputer();
+        return api.startComputer();
+      },
+      pause: api.pauseComputer,
+      resume: api.resumeComputer,
+      stop: api.stopComputer,
+      take: api.takeControl,
+      return: api.returnControl,
+    };
+    void run("computer", actions[command]);
+  }, [run, status?.computer_created]);
+  const interrupt = useCallback(() => { void run("general", api.cancelAgentInput); }, [run]);
+  const reportSlot = useCallback((error: unknown) => report("computer", error), [report]);
+
+  // ── Keyboard ───────────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const mod = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (mod && key === "k") { event.preventDefault(); setPaletteOpen((open) => !open); return; }
+      if (mod && key === "n") { event.preventDefault(); setPaletteOpen(false); newTask(); return; }
+      if (mod && event.key === "\\") { event.preventDefault(); toggleSidebar(); return; }
+      if (mod && key === "j") { event.preventDefault(); setPaletteOpen(false); toggleComputer(); return; }
+      if (mod && event.key === "." && status?.agent_busy) { event.preventDefault(); interrupt(); return; }
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (paletteOpen) { setPaletteOpen(false); return; }
+      if (narrow && drawerOpen) { setDrawerOpen(false); return; }
+      // While a person controls the computer, Escape belongs to the guest.
+      if (locked || !level) return;
+      if (level === "side" && document.activeElement instanceof HTMLTextAreaElement) return;
+      const back = stepBack(level);
+      if (back) setLevel(back); else closeComputer();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [newTask, toggleSidebar, toggleComputer, interrupt, status?.agent_busy, narrow, drawerOpen, paletteOpen, level, locked, closeComputer, setLevel]);
+
+  const chooseQuality = (value: QualityChoice) => {
+    setQuality(value);
+    try { localStorage.setItem(QUALITY_KEY, value); } catch { /* the choice still applies to this session */ }
+  };
+
+  const modifier = shortcutModifier();
+
+  // ── The work column's views ─────────────────────────────────────
+  let content: ReactNode;
+  if (view.kind === "task" && selected && activity && pill) {
+    content = (
+      <TaskView
+        key={selected.id}
+        task={selected}
+        items={transcript}
+        activity={activity}
+        state={pill}
+        elapsed={elapsed}
+        animated={animated}
+        arriving={arriving === selected.id}
+        headingRef={headingRef}
+        onHeadingVisible={setHeadingVisible}
+        onOpenComputer={() => openComputer()}
+        onModelSettings={() => openPlace("settings", "pegoles")}
+      />
     );
-  }, [status?.display_config]);
-  const computer = <div className="computer-content" data-control={userControlling ? "user" : "agent"}>
-    {status && connected ? <div className="computer-viewport-wrap"><NativeComputer enabled={native && status.backend === "real" && status.display_available && (status.computer_state === "running" || status.computer_state === "paused")} onError={setError} state={status.viewport_state} display={status.display_config ?? undefined} subtitle={status.spec_os} errorMessage={status.display_error ?? status.display_setup_error ?? image?.error ?? undefined} offActions={computerActions} headerActions={status.viewport_state !== "off" ? computerActions : undefined} onTakeControl={status.display_attached && !busy ? () => void run(api.takeControl) : undefined} onReturnControl={status.control_owner === "user" ? () => void run(api.returnControl) : undefined} placeholder={<div className="display-empty"><MonitorIcon size={30} /><p>{status.display_available ? "Connecting the computer display" : "No graphical display is available"}</p><small>Only the computer’s actual display appears here.</small></div>} /><AgentCursorOverlay source={actionCursorSource} /></div> : <div className="disconnected-computer"><MonitorIcon size={36} /><h2>Computer unavailable</h2><p>{native ? "Waiting for a connection to Pegoles Core." : "Open the desktop app to connect to Pegoles Computer."}</p></div>}
-    {status && <div className="computer-meta"><span>{status.spec_vcpus} CPU · {status.spec_ram_mb / 1024} GB RAM · {status.spec_arch}</span><span>Control: {status.control_owner}</span>{status.backend === "mock" && <span>Backend simulation</span>}</div>}
-    {status?.computer_created && status.backend === "real" && <details className="diagnostics" onToggle={(e) => { if (e.currentTarget.open) void api.readBootLog().then(setBootLog).catch((e: unknown) => setError(String(e))); }}><summary>Computer diagnostics</summary>{bootLog?.available ? <pre>{bootLog.tail.join("\n")}</pre> : <p>No boot log available.</p>}</details>}
-  </div>;
+  } else if (view.kind === "place" && view.place === "activity") {
+    content = <ActivityView events={events} tasks={tasks} headingRef={headingRef} onOpenTask={openTask} />;
+  } else if (view.kind === "place" && view.place === "settings") {
+    content = (
+      <SettingsView
+        headingRef={headingRef} connected={connected} native={core.native} status={status} host={core.host} computer={computer}
+        quality={quality} resolvedQuality={tier === "full" ? "full" : "reduced"} onQuality={chooseQuality}
+        systemReducedMotion={systemReducedMotion} eventCount={events.length} anchor={anchor}
+      />
+    );
+  } else {
+    content = (
+      <HomeView
+        presence={presence}
+        headingRef={headingRef}
+        attentive={focused || draft.trim().length > 0}
+        nudge={nudge}
+        firstRun={tasks.length === 0}
+        onStarter={(prompt) => { setDraft(prompt); window.setTimeout(() => composerRef.current?.focus(), 0); }}
+        onPressPresence={() => composerRef.current?.focus()}
+        animated={animated}
+      />
+    );
+  }
+  const viewKey = view.kind === "task" ? `task-${view.id}` : view.kind === "place" ? view.place : "home";
+  const bar = view.kind === "home" ? "composer" : view.kind === "task" && activity && pill ? "dock" : null;
 
-  const selectedEvents = selected ? events.filter((event) => "task_id" in event && event.task_id === selected.id) : [];
-  const selectedDetail = selectedEvents.length ? describeEvent(selectedEvents[selectedEvents.length - 1] as AgentEvent) : undefined;
-  const inFocus = selected != null && layout === "focus";
+  const composer = (
+    <Composer
+      value={draft}
+      onChange={setDraft}
+      onSubmit={(title) => void submit(title)}
+      onFocusChange={setFocused}
+      onKeystroke={() => setNudge((value) => value + 1)}
+      inputRef={composerRef}
+      placeholder={connected ? "Describe a job for Pegoles…" : "Waiting for Pegoles Core…"}
+      disabled={!connected}
+      busy={core.busy.task || handing}
+      problem={core.errors.task ? `${core.errors.task.title} ${core.errors.task.hint ?? ""}`.trim() : null}
+      strip={connected && <ComposerStrip computer={computer} computerOpen={level !== null} onComputer={toggleComputer} />}
+      controls={connected && (
+        <ComposerControls modelReady={modelReady} modelName={modelReady ? status?.model : undefined}
+          onSafety={() => openPlace("settings", "security")} onModel={() => openPlace("settings", "pegoles")} />
+      )}
+    />
+  );
 
-  return <FluxGlassRoot tier={tier} busy={busy || image?.preparing}>
-    <div className="app-shell" data-focus={inFocus ? "true" : undefined} data-control={userControlling ? "user" : undefined}>
-      <a className="skip-link" href="#main-content">Skip to content</a>
-      <GlassSurface as="aside" className="app-rail" material="regular" auditLabel="Navigation rail">
-        <button className="brand-button" aria-label="Pegoles Home" onClick={() => navigate("Home")}><PegolesMark size={32} state={presence} lookAt={lookAt} decorative /></button>
-        <nav aria-label="Main navigation">{pages.map((item) => <button key={item} className="rail-link" aria-current={page === item && !selected ? "page" : undefined} onClick={() => navigate(item)} title={item}><NavIcon page={item} /><span>{item}</span></button>)}</nav>
-        <span className="rail-version">0.1</span>
-      </GlassSurface>
-      <main id="main-content" className="app-main" tabIndex={-1}>
-        <header className="app-topbar"><div className="breadcrumb"><span>Pegoles</span><span aria-hidden="true">/</span><span>{selected ? "Workspace" : page}</span></div><StatusIndicator label={connected ? "Core connected" : native ? "Core disconnected" : "Desktop preview"} tone={connected ? "success" : "neutral"} size="sm" /></header>
-        {error && <div className="app-error" role="alert"><span>{error}</span><GlassButton size="sm" variant="quiet" onClick={() => { setError(null); void refresh(); }}>Retry connection</GlassButton><GlassButton size="sm" variant="quiet" onClick={() => setError(null)}>Dismiss</GlassButton></div>}
-        {image?.error && <p className="app-error" role="alert">{image.error}</p>}
-        <LayoutGroup id="pegoles-workspace">
-        {selected ? <TaskWorkspace task={selected} layout={layout} onLayoutChange={setLayout} onBack={() => setSelectedId(null)} headingRef={headingRef} status={status} connected={connected} events={events} taskEvents={selectedEvents} computer={computer} taskDetail={selectedDetail} elapsed={elapsedSince(selected.created_at)} />
-        : page === "Home" ? <div className="home-content">
-          <section className="home-hero"><PegolesMark size={64} state={presence} lookAt={lookAt} decorative /><h1 ref={headingRef} tabIndex={-1}>What should I do?</h1><div className="home-command" onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}><CommandBar value={draft} onValueChange={setDraft} onSubmit={submit} inputRef={commandRef} placeholder="Give Pegoles a task…" label="New task" disabled={!connected} isBusy={busy} leading={<PegolesMark size={24} state={focused ? "listening" : "idle"} decorative />} shortcutHint="⌘ / Ctrl K" /></div><p className="command-note">{connected ? "Tasks are saved locally. Autonomous execution is not available yet." : "Open the desktop app to create tasks and use your computer."}</p></section>
-          <section className="home-section"><div className="section-heading"><h2>Active work</h2><span>{pending.length ? `${pending.length} tasks` : "A clear workspace"}</span></div>{taskRows(pending, "No active tasks. Start something above and Pegoles will work here.")}</section>
-          <section className="home-section"><div className="section-heading"><h2>Recent tasks</h2></div>{taskRows(recent, "Your completed tasks will collect here.")}</section>
-          <button className="computer-peek" onClick={() => navigate("Computer")}><MonitorIcon size={20} /><span><strong>Pegoles Computer</strong><small>{connected && status ? VIEWPORT_STATE_SPECS[status.viewport_state].label : "Available in the desktop app"}</small></span><span>Open <span aria-hidden="true">↗</span></span></button>
-        </div> : page === "Computer" ? <section className="page-content"><div className="page-heading"><h1 ref={headingRef} tabIndex={-1}>Your computer, another space.</h1><p>A dedicated computer for Pegoles. Always clear who’s in control.</p></div>{computer}</section> : page === "Activity" ? <section className="page-content narrow"><div className="page-heading"><h1 ref={headingRef} tabIndex={-1}>Activity</h1><p>What happened, as reported by Pegoles.</p></div><ActivityTimeline events={events} /></section> : page === "Agents" ? <section className="page-content narrow"><div className="page-heading"><h1 ref={headingRef} tabIndex={-1}>Agents</h1><p>A quiet space until there’s work to do.</p></div><div className="agent-profile"><PegolesMark size={56} state={presence} lookAt={lookAt} decorative /><div><h2>Pegoles</h2><p>Local agent</p></div><StatusIndicator label="Execution unavailable" tone="neutral" /></div><p className="empty-copy">Autonomous agents are not available in this version. Tasks can be saved from Home and remain pending.</p><GlassButton variant="secondary" onClick={() => navigate("Home")}>Back to Home</GlassButton></section> : <section className="page-content narrow"><div className="page-heading"><h1 ref={headingRef} tabIndex={-1}>Settings</h1><p>Make this space feel right for your computer.</p></div><section className="settings-section"><h2>Appearance</h2><label className="setting-row"><span><strong>Visual effects</strong><small>Glass, depth, and presence. Minimal uses no blur.</small></span><select value={effects} onChange={(e) => { const value = e.target.value; if (value === "auto" || isEffectsTier(value)) { setEffects(value); try { localStorage.setItem("pegoles.effects", value); } catch { setError("Effects changed for this session; preferences could not be saved."); } } }}><option value="auto">Auto ({recommended})</option><option value="full">Full</option><option value="reduced">Reduced</option><option value="minimal">Minimal</option></select></label><div className="setting-row"><span><strong>Reduced motion</strong><small>Follows your system accessibility preference.</small></span><WindowIcon size={20} /></div></section><section className="settings-section"><h2>System</h2><div className="setting-row"><span>Local model</span><span>{status?.model?.replaceAll("_", " ") ?? "Unavailable"}</span></div><div className="setting-row"><span>Computer host</span><span>{host ? `${host.platform} · ${host.architecture}` : "Desktop app required"}</span></div>{host?.required_setup.length ? <div className="setup-notes"><h3>Setup required</h3><ul>{host.required_setup.map((step) => <li key={step}>{step}</li>)}</ul></div> : null}</section></section>}
+  return (
+    <FluxGlassRoot tier={tier} busy={core.busy.computer || !!core.image?.preparing || !!status?.agent_busy || liveWork}>
+      <PresenceQualityProvider quality={quality}>
+        <PresenceGpuShareProvider shared={level !== null}>
+        <LayoutGroup id="pegoles-shell">
+          <div
+            className="shell"
+            style={shellStyle}
+            data-sidebar={sidebarMode}
+            data-computer={level ?? "closed"}
+            data-computer-phase={computer.phase}
+            data-view={view.kind}
+            data-resizing={resizing || undefined}
+          >
+            <a className="skip-link" href="#main-content">Skip to content</a>
+            <Sidebar
+              sections={sections}
+              glances={glances}
+              selectedTaskId={selected?.id ?? null}
+              place={view.kind === "place" ? view.place : null}
+              presence={presence}
+              computer={computer}
+              computerOpen={level !== null}
+              connected={connected}
+              mode={sidebarMode}
+              modifier={modifier}
+              onOpenTask={openTask}
+              onNewTask={newTask}
+              onSearch={() => setPaletteOpen(true)}
+              onPlace={(next) => openPlace(next)}
+              onComputer={toggleComputer}
+              onToggle={toggleSidebar}
+            />
+            {sidebarMode === "drawer" && <button type="button" className="scrim" aria-label="Close sidebar" onClick={() => setDrawerOpen(false)} />}
+
+            <main id="main-content" className="work" tabIndex={-1} aria-hidden={level === "full" || undefined}
+              {...(sidebarMode === "drawer" || level === "full" ? { inert: "" } : {})}>
+              <Toolbar
+                sidebarHidden={sidebarMode !== "shown"}
+                context={view.kind === "task" && selected && pill && !headingVisible ? { title: selected.title, tone: pill.tone, live: pill.live } satisfies ToolbarContext : null}
+                computer={computer}
+                computerOpen={level !== null}
+                showComputerToggle={level !== "full"}
+                modifier={modifier}
+                onToggleSidebar={toggleSidebar}
+                onNewTask={newTask}
+                onToggleComputer={toggleComputer}
+              />
+              <div className="work__views">
+                <AnimatePresence mode="popLayout" initial={false}>
+                  <m.div
+                    key={viewKey}
+                    className="view"
+                    data-view={view.kind}
+                    initial={view.kind === "task" && arriving ? { opacity: 1 } : animated ? { opacity: 0, y: 6 } : { opacity: 0 }}
+                    animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
+                    exit={{ opacity: 0, transition: { duration: duration.micro, ease: ease.exit } }}
+                  >
+                    {content}
+                  </m.div>
+                </AnimatePresence>
+              </div>
+              <div className="workbar" data-empty={bar ? undefined : true}>
+                <AnimatePresence mode="popLayout" initial={false}>
+                  {bar === "composer" && waiting && (
+                    <m.div key="needs-you" className="banner" data-tone="attention" role="status"
+                      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
+                      exit={{ opacity: 0, transition: { duration: duration.micro, ease: ease.exit } }}>
+                      <span className="banner__dot" aria-hidden="true" />
+                      <span className="banner__text">
+                        <span className="banner__title">Pegoles needs your approval</span>
+                        <span className="banner__body">{waiting.title}</span>
+                      </span>
+                      <button type="button" className="btn btn--line btn--small" onClick={() => openTask(waiting)}>Open task</button>
+                    </m.div>
+                  )}
+                  {bar === "composer" && (
+                    <m.div key="composer" className="workbar__composer"
+                      initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
+                      exit={{ opacity: 0, y: 6, scale: 0.985, transition: { duration: duration.micro, ease: ease.exit } }}>
+                      {composer}
+                    </m.div>
+                  )}
+                  {bar === "dock" && selected && activity && pill && (
+                    <m.div key={`dock-${selected.id}`} className="workbar__dock"
+                      exit={{ opacity: 0, y: 6, transition: { duration: duration.micro, ease: ease.exit } }}>
+                      <StatusDock
+                        activity={activity}
+                        state={pill}
+                        elapsed={elapsed}
+                        arriving={arriving === selected.id}
+                        interruptible={!!status?.agent_busy && activity.live}
+                        interrupting={core.busy.general}
+                        computerOpen={level !== null}
+                        modifier={modifier}
+                        onInterrupt={interrupt}
+                        onWatch={() => openComputer()}
+                        onNewTask={newTask}
+                      />
+                    </m.div>
+                  )}
+                </AnimatePresence>
+              </div>
+              <AnimatePresence>
+                {peekVisible && selected && activity && (
+                  <ComputerPeek
+                    key="peek"
+                    model={computer}
+                    snapshot={snapshot}
+                    caption={activity.detail ? `${activity.headline} · ${activity.detail}` : activity.headline}
+                    onOpen={() => openComputer()}
+                    onDismiss={() => setPeekHidden((previous) => new Set([...previous, selected.id]))}
+                  />
+                )}
+              </AnimatePresence>
+            </main>
+
+            {mounted && (
+              <ComputerPanel
+                model={computer}
+                level={mounted}
+                status={status}
+                slotEnabled={slotEnabled}
+                snapshot={core.native ? snapshot : null}
+                steps={panelSteps}
+                busy={core.busy.computer}
+                error={core.errors.computer}
+                moving={motion !== null}
+                obscured={sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
+                focusOnOpen={panelFocus}
+                onCommand={runComputer}
+                onLevel={changeLevel}
+                onClose={closeComputer}
+                onSlotError={reportSlot}
+                onDismissError={() => core.dismiss("computer")}
+                loadBootLog={api.readBootLog}
+                style={innerOpenWidth ? ({ "--open-w": `${innerOpenWidth}px` } as CSSProperties) : undefined}
+              />
+            )}
+            <AnimatePresence>
+              {paletteOpen && (
+                <CommandPalette
+                  key="palette"
+                  tasks={tasks}
+                  computerWord={computer.chip}
+                  computerOpen={level !== null}
+                  modifier={modifier}
+                  onClose={() => setPaletteOpen(false)}
+                  onNewTask={newTask}
+                  onOpenTask={openTask}
+                  onComputer={toggleComputer}
+                  onActivity={() => openPlace("activity")}
+                  onSettings={() => openPlace("settings")}
+                  onToggleSidebar={toggleSidebar}
+                />
+              )}
+            </AnimatePresence>
+            <Toast error={core.errors.general} onDismiss={() => core.dismiss("general")} />
+            <Announcer tasks={tasks} computerPhase={computer.phase} />
+          </div>
         </LayoutGroup>
-        <footer className="app-footer"><span>Your AI. Its own computer.</span><span>Pegoles Flux Glass</span></footer>
-      </main>
-    </div>
-  </FluxGlassRoot>;
+        </PresenceGpuShareProvider>
+      </PresenceQualityProvider>
+    </FluxGlassRoot>
+  );
 }
-
-// Re-exported so tree-shaking keeps the morph pair together in this chunk.
-export { CommandMorph, TaskController };

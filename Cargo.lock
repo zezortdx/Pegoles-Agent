@@ -2227,6 +2227,7 @@ name = "pegoles-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "objc2-app-kit",
  "pegoles-computer",
  "pegoles-core",
  "pegoles-guest-proto",

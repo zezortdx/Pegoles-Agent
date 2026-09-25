@@ -1,0 +1,74 @@
+/* Home: Pegoles, one question, and room. The composer below is the action. */
+.home {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 0 var(--gutter) 188px;
+  overflow-y: auto;
+}
+.home__center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 560px;
+  text-align: center;
+}
+.home__mark {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 20px;
+}
+.home__title {
+  font: var(--type-display);
+  letter-spacing: var(--track-display);
+  color: var(--text-1);
+  text-wrap: balance;
+}
+.home__title:focus-visible { outline: none; }
+.home__lead {
+  margin-top: 8px;
+  color: var(--text-3);
+  font: var(--type-read);
+  letter-spacing: var(--track-read);
+  text-wrap: balance;
+}
+
+/* First run only: a few real jobs, as quiet rows, not cards. */
+.starters {
+  display: grid;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 28px;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--fill-quiet);
+  box-shadow: var(--edge);
+  text-align: left;
+}
+.starter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  color: var(--text-2);
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out), transform var(--dur-micro-fast) var(--ease-out);
+}
+.starter:hover { background: var(--fill-hover); color: var(--text-1); }
+.starter:active { transform: scale(0.99); background: var(--fill-press); }
+.starter__icon { display: inline-grid; place-items: center; width: 18px; color: var(--icon-3); transition: color var(--dur-micro) var(--ease-out); }
+.starter:hover .starter__icon { color: var(--accent-text); }
+.starter__label { flex: 1; text-align: left; }
+
+@media (max-height: 700px) {
+  .home { padding-bottom: 176px; }
+  .home__mark { margin-bottom: 14px; }
+  .starters { margin-top: 18px; }
+}

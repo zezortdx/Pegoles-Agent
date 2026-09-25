@@ -1,0 +1,329 @@
+/*
+ * The window: one grid, three columns that stay put.
+ *   sidebar (navigation material) · work (matte) · its computer (inspector)
+ * Column widths are set from JS in plain pixels and interpolate as one
+ * spatial motion; nothing is overlaid that could be a column instead.
+ */
+.shell {
+  --col-sidebar: var(--sidebar-w);
+  --col-computer: 0px;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: var(--col-sidebar) minmax(0, 1fr) var(--col-computer);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  background: var(--window);
+  transition: grid-template-columns var(--dur-spatial) var(--ease-spatial);
+}
+.shell[data-resizing] { transition: none; }
+
+/* Faint light in the underlay, for the sidebar material to diffuse. */
+.shell::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 420px;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 60% at 0% 0%, rgb(120 170 255 / 0.075), transparent 60%),
+    radial-gradient(90% 50% at 10% 100%, rgb(255 255 255 / 0.03), transparent 70%);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────── */
+.sidebar {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  z-index: var(--z-sidebar);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--material-sidebar);
+  -webkit-backdrop-filter: blur(var(--material-blur)) saturate(var(--material-saturate));
+  backdrop-filter: blur(var(--material-blur)) saturate(var(--material-saturate));
+  transition: opacity var(--dur-surface) var(--ease-out);
+}
+/* Fixed inner width: folding clips the sidebar instead of reflowing it. */
+.sidebar > * { width: var(--sidebar-w); flex: none; }
+.sidebar[data-mode="hidden"] { opacity: 0; pointer-events: none; }
+.sidebar[data-mode="drawer"] {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-w);
+  background: var(--material-sidebar-solid);
+  box-shadow: var(--shadow-float);
+  animation: drawer-in var(--dur-spatial) var(--ease-spatial);
+}
+@keyframes drawer-in { from { transform: translateX(-100%); } }
+
+.sidebar__chrome {
+  display: flex;
+  align-items: center;
+  height: var(--toolbar-h);
+  padding: 0 10px 0 var(--traffic-clear);
+}
+
+/* Tucked under the traffic-light row: one group, not two bands. */
+.sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 10px 0 16px;
+  margin: -6px 0 6px;
+}
+.sidebar__mark { display: inline-grid; place-items: center; width: 20px; height: 20px; }
+.sidebar__name { flex: 1; font: 600 15px/20px var(--font-display); letter-spacing: -0.012em; color: var(--text-1); }
+.sidebar__search { margin-right: -2px; }
+
+.sidebar__nav { display: grid; gap: 1px; padding: 0 8px 10px; }
+
+/* Rows: 30 px, the fill is the only box. Selection is a lens that glides. */
+.nav-row,
+.task-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-row);
+  color: var(--text-2);
+  font: var(--type-nav);
+  letter-spacing: var(--track-nav);
+  text-align: left;
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
+}
+.nav-row:hover,
+.task-row:hover { background: var(--fill-hover); color: var(--text-1); }
+.nav-row:active,
+.task-row:active { background: var(--fill-press); }
+.nav-row[aria-current="page"],
+.task-row[aria-current="page"] { color: var(--text-1); }
+.nav-row__lens {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--fill-selected);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.05);
+}
+.nav-row > *:not(.nav-row__lens),
+.task-row > *:not(.nav-row__lens) { position: relative; }
+.nav-row__icon { display: inline-grid; place-items: center; width: 18px; color: var(--icon-2); flex: none; }
+.nav-row:hover .nav-row__icon,
+.nav-row[aria-current="page"] .nav-row__icon { color: var(--icon-1); }
+.nav-row__label { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nav-row--new { color: var(--text-1); }
+.nav-row--new .nav-row__icon { color: var(--icon-1); }
+.nav-row__kbd {
+  color: var(--text-4);
+  font: var(--type-small);
+  opacity: 0;
+  transition: opacity var(--dur-micro) var(--ease-out);
+}
+.nav-row:hover .nav-row__kbd,
+.nav-row:focus-visible .nav-row__kbd { opacity: 1; }
+
+.sidebar__tasks {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 8px 16px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 28px), transparent 100%);
+}
+.sidebar__section + .sidebar__section { margin-top: 14px; }
+.sidebar__heading {
+  padding: 6px 8px 4px;
+  color: var(--text-3);
+  font: var(--type-small);
+  font-weight: 500;
+}
+.sidebar__section[data-section="needs-you"] .sidebar__heading { color: var(--tone-attention); }
+.sidebar__section[data-section="working"] .sidebar__heading { color: var(--tone-live); }
+.sidebar__list { display: grid; gap: 1px; }
+.sidebar__empty { padding: 8px 8px; color: var(--text-3); font: var(--type-small); }
+
+.task-row { align-items: center; padding-left: 8px; }
+.task-row[data-glance="true"] { align-items: flex-start; padding-top: 6px; padding-bottom: 6px; }
+.task-row[data-glance="true"] .task-dot { margin-top: 6px; }
+.task-row__text { display: grid; flex: 1; min-width: 0; }
+.task-row__title {
+  overflow: hidden;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+}
+.task-row__glance { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: var(--type-small); color: var(--text-3); }
+.task-row__glance[data-tone="live"] { color: var(--tone-live); }
+.task-row__glance[data-tone="attention"] { color: var(--tone-attention); }
+.task-row__glance[data-tone="error"] { color: var(--tone-error); }
+.task-row[data-status="completed"],
+.task-row[data-status="cancelled"] { color: var(--text-2); }
+
+/* The dot slot keeps every title on one vertical. */
+.task-dot { position: relative; flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.task-dot--live { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: dot-breathe 2.2s var(--ease-light) infinite; }
+.task-dot--attention { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.task-dot--error { background: var(--danger); }
+.task-dot--pending { box-shadow: inset 0 0 0 1.25px var(--text-4); }
+
+.sidebar__foot {
+  display: grid;
+  gap: 1px;
+  padding: 8px 8px 10px;
+  box-shadow: inset 0 0.5px 0 var(--hairline-soft);
+}
+.sidebar__offline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 8px;
+  color: var(--tone-error);
+  font: var(--type-small);
+}
+.machine-row { height: 34px; }
+.machine-row[aria-pressed="true"] { background: var(--fill-selected); color: var(--text-1); }
+.machine-row__glyph { width: 18px; }
+.machine-row__state { font: var(--type-small); color: var(--text-3); transition: color var(--dur-agent-slow) var(--ease-light); }
+.machine-row__state[data-phase="agent"],
+.machine-row__state[data-phase="starting"],
+.machine-row__state[data-phase="preparing"] { color: var(--tone-live); }
+.machine-row__state[data-phase="user"] { color: var(--tone-attention); }
+.machine-row__state[data-phase="ready"] { color: var(--tone-done); }
+.machine-row__state[data-phase="error"] { color: var(--tone-error); }
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: rgb(0 0 0 / 0.38);
+  animation: fade-in var(--dur-surface) var(--ease-out);
+}
+.sidebar[data-mode="drawer"] { z-index: calc(var(--z-scrim) + 1); }
+@keyframes fade-in { from { opacity: 0; } }
+
+/* ── Work column ─────────────────────────────────────────────────── */
+.work {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: -0.5px 0 0 var(--hairline);
+}
+
+.toolbar {
+  position: relative;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: var(--toolbar-h);
+  padding: 0 12px 0 20px;
+}
+.toolbar[data-sidebar-hidden] { padding-left: var(--traffic-clear); }
+.toolbar__lead { display: flex; gap: 2px; margin-left: -6px; }
+.toolbar__context { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; }
+.toolbar__title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: var(--text-1);
+  font: var(--type-ui);
+  font-weight: 600;
+}
+.toolbar__title-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.toolbar__actions { display: flex; align-items: center; gap: 2px; }
+.toolbar__light {
+  position: absolute;
+  top: 6px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--surface);
+  transition: background-color var(--dur-agent-slow) var(--ease-light);
+}
+.toolbar__light[data-light="live"] { background: var(--accent); }
+.toolbar__light[data-light="attention"] { background: var(--warn); }
+.toolbar__light[data-light="ready"] { background: var(--success); }
+.toolbar__light[data-light="error"] { background: var(--danger); }
+
+.work__views { position: relative; flex: 1 1 auto; min-height: 0; }
+.view { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; }
+
+/* The bottom of the work: the composer on Home, the job's status bar on a task. One place. */
+.workbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px var(--gutter) 20px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgb(23 24 26 / 0), var(--surface) 42%);
+}
+.workbar > * { pointer-events: auto; width: 100%; max-width: var(--composer-max); }
+.workbar[data-empty] { display: none; }
+
+/* Banners above the composer: only what needs you. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px 10px 14px;
+  border-radius: 16px;
+  background: var(--surface-2);
+  box-shadow: var(--edge), var(--shadow-raised);
+}
+.banner[data-tone="attention"] { background: linear-gradient(var(--warn-wash), var(--warn-wash)), var(--surface-2); box-shadow: inset 0 0 0 0.5px var(--warn-line), var(--shadow-raised); }
+.banner__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); flex: none; }
+.banner__text { flex: 1; min-width: 0; display: grid; }
+.banner__title { font-weight: 600; color: var(--text-1); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.banner__body { font: var(--type-small); color: var(--text-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* ── Toast ───────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: var(--z-toast);
+  display: flex;
+  gap: 12px;
+  width: min(380px, calc(100vw - 32px));
+  padding: 12px 12px 12px 16px;
+  border-radius: 16px;
+  background: var(--material-float);
+  -webkit-backdrop-filter: blur(var(--material-blur)) saturate(var(--material-saturate));
+  backdrop-filter: blur(var(--material-blur)) saturate(var(--material-saturate));
+  box-shadow: var(--material-rim), var(--shadow-float);
+}
+.toast__text { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.toast__title { font-weight: 600; }
+.toast__hint { color: var(--text-2); font: var(--type-small); }
+
+/* ── Reduce Transparency: materials go solid, still layered by their rim ── */
+:root[data-reduce-transparency] .sidebar,
+[data-effects-tier="minimal"] .sidebar { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-sidebar-solid); }
+:root[data-reduce-transparency] .toast,
+[data-effects-tier="minimal"] .toast { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-float-solid); }
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-sidebar-solid); }
+  .toast { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-float-solid); }
+}

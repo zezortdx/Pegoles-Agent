@@ -198,6 +198,31 @@ pub fn suggested_effects(
     )
 }
 
+/// System display accessibility options the web view can't read itself:
+/// WKWebView ignores `prefers-reduced-transparency`, so glass surfaces ask
+/// here and turn solid when Reduce Transparency is on.
+#[derive(serde::Serialize)]
+pub struct AccessibilityDisplay {
+    pub reduce_transparency: bool,
+    pub increase_contrast: bool,
+}
+
+#[tauri::command]
+pub fn accessibility_display() -> AccessibilityDisplay {
+    #[cfg(target_os = "macos")]
+    {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        AccessibilityDisplay {
+            reduce_transparency: workspace.accessibilityDisplayShouldReduceTransparency(),
+            increase_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        AccessibilityDisplay { reduce_transparency: false, increase_contrast: false }
+    }
+}
+
 /// Platform and virtualization capabilities of THIS host, reported by
 /// Rust. The frontend never detects the platform itself (no user-agent).
 /// Lock-free (never touches AppState), so it may stay sync.

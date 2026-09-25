@@ -1,9 +1,92 @@
-# Pegoles Flux Glass — design system
+# Pegoles design system
 
-Source of truth: `packages/ui` (`@pegoles/ui`). Everything below is backed
-by TypeScript tokens and covered by tests (`pnpm --filter @pegoles/ui test`).
-Live reference: the dev-only design lab at `#/dev/design` (see the last
-section).
+## 0. Desktop shell (September 26 2026 rebuild) — canonical
+
+The production desktop shell has its own token set in
+`apps/desktop/src/styles/tokens.css`, mirrored for Motion in
+`apps/desktop/src/lib/motion.ts`. Everything from §1 on describes the
+Flux Glass library in `@pegoles/ui`, which the shell uses only for runtime
+services (`FluxGlassRoot`: effects tier, ambient gate, reduced motion; the
+agent cursor overlay). Its glass components remain for the design lab.
+
+**Product truth.** Pegoles is an agent working on its own isolated
+computer; the person supervises a worker, they don't chat with one. Every
+surface serves the loop *give a job → it works (maybe on its computer) →
+you watch, step in or approve → result*.
+
+**Information architecture** (Codex-grade structure, Pegoles identity):
+
+| Region | Contents |
+|---|---|
+| Sidebar (left, 260 px, navigation material) | traffic-light row + hide toggle · Pegoles (living mark = global state) + Search ⌘K · New task ⌘N · Activity · tasks grouped *Needs you → Working → Today → Yesterday → Previous 7 days → Earlier* (`state/taskSections.ts`) · foot: Computer (device row with live state; toggles the panel) · Settings |
+| Work (centre, matte) | 52 px toolbar (drag region; task title once the objective scrolls away; Computer toggle ⌘J with a state light) · the view · the **work bar** at the bottom: the composer on Home, the job's status bar on a task — one place, never both |
+| Computer (right, contextual) | one mounted panel for Side / Focus / Full; closed it lives in the sidebar row, the toolbar toggle, the composer's context tab and (while Pegoles uses it) a corner **peek** |
+
+**Screens.** Home is a work surface: the mark, "What should Pegoles do?",
+one line of product truth, starters only on first run, the composer
+anchored at the bottom, a *Needs you* banner above it when relevant. A
+task is a work session: objective (h1) · state and facts · the narrative
+(finished runs fold into one sentence such as "Looked at the screen,
+clicked and typed text · 6 actions · 2.1s", consequential and failed steps
+stay visible, the run in progress stays open) · files it made · where it
+stopped to ask · how it ended. What Pegoles is doing *now* lives only in
+the status bar (mark, one held line with a light passing through it while
+live, elapsed time, and only real interventions: Stop = `cancel_agent_input`
+while input is in flight, Watch, New task). No reply box on a task: Core
+has no follow-up command. No Approve button: Core has no approval command.
+
+**Computer levels** (`computer/layout.ts`, `useComputerLevel.ts`).
+Widths are pixels computed from the window width and applied as the shell
+grid's columns (`--col-sidebar`, `--col-computer`), so Side ↔ Focus ↔ Full
+is one interpolated spatial motion of the same object (`--dur-spatial`
+420 ms, `--ease-spatial`, a sampled critically damped spring). Opening and
+closing keep the panel's contents at their open width, so it slides with
+its edge instead of reflowing. The native framebuffer slot stays mounted
+across levels and is hidden (`obscured`) while the workspace moves. When
+there is no live native view, the screen shows a real snapshot from
+`capture_screen` (refreshed at most every 1.5 s after Pegoles acts, every
+8 s otherwise, only while visible) with its age; no picture, no mock.
+
+**Colour.** Surfaces `--window` #111214 (underlay) · `--surface` #17181A
+(work) · `--surface-2` #1D1E21 (inspector, grouped forms) · `--raised`
+#25262A (composer, cards) · `--raised-2` #2E2F34 (menus). Text #E6E7E9 at
+100 / 66 / 48 % (4.6:1 minimum for meta). Hairlines 8 % (0.5 px where the
+platform draws them). Fills: hover 6 %, pressed 10 %, selected 7.5 %.
+
+**Signal.** Colour is light with a meaning: Pegoles blue `#3591FF`
+(text-safe `#86BFFF`) = Pegoles is acting, and focus; amber = you
+(approvals, your hands on its computer); green done; red failed; grey
+idle / not started. One vocabulary (`lib/taskState.ts`).
+
+**Material.** Only the navigation layer is translucent: the sidebar
+(tint over the window underlay, 28 px blur), the status bar, palette and
+toast (floating material), the composer (a 92 % raised fill with a light
+blur). Content — the narrative, files, the computer's screen, settings
+groups — is matte. Never material on material. Reduce Transparency and
+the Minimal tier make every material solid.
+
+**Type.** System face. Home question 26/32 medium; objective and page
+titles 20/26 semibold; UI 13/18; sidebar rows 13.5; reading 14/21; meta
+12/16; mono 11.5/16 for paths and durations. Sentence case everywhere; no
+eyebrow capitals.
+
+**Radius** (concentric). Composer 22 → its controls 14; screen frame 12 →
+screen 8; rows 8 inside an 8 px gutter; cards 12; menus 14.
+
+**Motion** (`lib/motion.ts`). *Micro* 90–180 ms (hover, press scale
+0.97 / icons 0.92, selection lens spring 0.2 s with a trace of bounce) ·
+*surface* 220 ms (things appearing or changing in place: narrative items
+rise 8 px, status line swaps, approval pulse once, outcome tile pops) ·
+*spatial* 420 ms (columns, Computer levels, the drawer). Home → task is one
+scene: Pegoles' mark travels from Home into the status bar (shared
+`layoutId`), the composer yields its place to the status bar, the
+objective rises in. Nothing animates `layout` inside a column that is
+itself moving. Reduced motion removes movement and keeps fades.
+
+**Honest-state constraints.** No model runner (tasks stay *Not started*,
+said once, with the real ways forward), no approval or follow-up command,
+no native live view (snapshots instead; taking over says why it isn't
+offered).
 
 ## 1. Philosophy
 
@@ -468,6 +551,30 @@ compact 11–15 px supporting hierarchy.
 
 The dev lab is available at `/dev/design` as well as `#/dev/design`; both
 remain guarded by `import.meta.env.DEV` and absent from production bundles.
+
+- Shell v2 (monochrome, Codex layout + Grok atmosphere): a 268 px task
+  sidebar (New task / Cmd+K, live search, Active and Recent groups with
+  status glyph + relative time, a spinner only on `running`), places
+  (Computer, Activity, Settings) and the Core connection at the bottom.
+  Below 860 px the sidebar is a drawer. The shell is black/white/grey;
+  colour is only the Pegoles mark and status (never colour-only).
+- Home: companion mark (128 px) that floats, follows the pointer with its
+  eyes, looks at the composer and hops when listening; greeting by time
+  of day; the title resolves word by word out of a blur; a composer with a
+  light that circles its edge while focused (faster while creating);
+  suggestion chips that only fill the composer. Ambient: drifting stars,
+  a slow sheen and an eclipse horizon that brightens with presence, plus
+  static grain. All loops ride the ambient gate; Minimal/reduced motion
+  remove them.
+- Task thread: your request as a bubble, Pegoles' turn with the live
+  action (shimmer only while really working, `.pg-work-anim`), the steps
+  timeline (chronological; only in-flight actions are current), the honest
+  pending notice, and the computer beside it (Split / Compact / Focus with
+  a gliding pill).
+- Views enter by rising out of a soft blur; no exit animations, so
+  navigation stays instant. Settings uses a `SegmentedControl` (radio
+  group, arrows, gliding thumb) and shows the live system reduced-motion
+  value.
 
 ### Integration limits
 

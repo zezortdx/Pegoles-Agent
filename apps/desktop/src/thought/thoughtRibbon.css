@@ -1,0 +1,140 @@
+/*
+ * Thought Ribbon — thin strands of light to the right of a mini Presence,
+ * one per real action. Strokes are 1–1.25px; only the active strand is
+ * luminous (white with a hint of blue). The only loop is the running
+ * signal (pg-work-anim). One-shots run through Web Animations.
+ */
+.thought-ribbon {
+  position: relative;
+  flex: none;
+  max-width: 100%;
+  contain: layout paint;
+  pointer-events: none;
+  --ribbon-lit: rgb(236 243 255);
+  --ribbon-trace: rgb(245 245 243 / 0.2);
+}
+
+.thought-ribbon__mark {
+  position: absolute;
+  left: 0;
+  top: calc(50% - var(--ribbon-mark) / 2);
+}
+
+.thought-ribbon__svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.thought-ribbon__svg path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── Trunk: the task itself ─────────────────────────────────────── */
+.thought-ribbon__trunk {
+  stroke: rgb(245 245 243);
+  stroke-width: 1.25px;
+  opacity: 0.14;
+  transition: opacity var(--dur-micro-slow, 160ms) var(--ease-light), stroke var(--dur-micro-slow, 160ms) var(--ease-light);
+}
+
+.thought-ribbon[data-trunk="thinking"] .thought-ribbon__trunk { opacity: 0.38; }
+.thought-ribbon[data-trunk="working"] .thought-ribbon__trunk { stroke: var(--ribbon-lit); opacity: 0.7; }
+.thought-ribbon[data-trunk="waiting"] .thought-ribbon__trunk { stroke: var(--warn, #f5b545); opacity: 0.55; }
+.thought-ribbon[data-trunk="done"] .thought-ribbon__trunk { opacity: 0.24; }
+
+/* ── Strands ────────────────────────────────────────────────────── */
+.thought-ribbon__base {
+  stroke: var(--ribbon-trace);
+  stroke-width: 1px;
+  stroke-dasharray: 100 100;
+  stroke-dashoffset: 0;
+  transition: stroke var(--dur-agent, 320ms) var(--ease-light);
+}
+
+.thought-ribbon__strand[data-phase="sprouting"] .thought-ribbon__base,
+.thought-ribbon__strand[data-phase="running"] .thought-ribbon__base { stroke: rgb(245 245 243 / 0.34); }
+.thought-ribbon__strand[data-phase="approval"] .thought-ribbon__base { stroke: rgb(245 181 69 / 0.62); }
+
+/* A cut: the strand stops short of its end. */
+.thought-ribbon__strand:is([data-phase="failed"], [data-phase="blocked"], [data-phase="interrupted"]) .thought-ribbon__base {
+  stroke-dasharray: 86 100;
+}
+
+.thought-ribbon__lit,
+.thought-ribbon__lit-ghost {
+  stroke: var(--ribbon-lit);
+  stroke-width: 1.25px;
+  stroke-dasharray: 100 100;
+  stroke-dashoffset: 0;
+}
+
+.thought-ribbon__lit-ghost { stroke-dashoffset: 100; opacity: 0; }
+
+.thought-ribbon__strand[data-phase="approval"] .thought-ribbon__lit { stroke: rgb(255 226 176); }
+
+.thought-ribbon__glow {
+  stroke: rgb(170 205 255 / 0.55);
+  stroke-width: 3px;
+}
+
+.thought-ribbon__strand[data-phase="approval"] .thought-ribbon__glow { stroke: rgb(245 181 69 / 0.45); }
+
+.thought-ribbon__signal {
+  stroke: #ffffff;
+  stroke-width: 1.75px;
+  stroke-dasharray: 7 100;
+  stroke-dashoffset: 7;
+  animation: thought-ribbon-signal 1400ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes thought-ribbon-signal {
+  from { stroke-dashoffset: 7; }
+  to { stroke-dashoffset: -100; }
+}
+
+.thought-ribbon__node { fill: var(--warn, #f5b545); }
+
+.thought-ribbon__cap {
+  stroke: var(--danger, #ff6f66);
+  stroke-width: 1.5px;
+}
+
+/* ── Labels: small DOM text ─────────────────────────────────────── */
+.thought-ribbon__labels {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.thought-ribbon__label {
+  position: absolute;
+  right: 0;
+  height: 16px;
+  overflow: hidden;
+  font: 400 12px/16px var(--font-sans, system-ui);
+  color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: color var(--dur-micro-slow, 160ms) var(--ease-light);
+}
+
+.thought-ribbon__label[data-active] { color: var(--text-2); }
+.thought-ribbon__label[data-phase="approval"] { color: rgb(245 181 69 / 0.85); }
+
+.thought-ribbon__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thought-ribbon__signal { animation: none; }
+}

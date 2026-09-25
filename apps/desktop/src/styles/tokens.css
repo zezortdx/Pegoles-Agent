@@ -1,0 +1,188 @@
+/*
+ * Pegoles design tokens — the single source for the desktop shell.
+ *
+ * Graphite work surfaces, a quiet material for navigation, and one
+ * restrained blue that means "Pegoles is acting" (and focus). Amber means
+ * you: approvals and your hands on its computer. Green is done, red failed.
+ * Scale and density follow serious desktop tools: 13 px UI, 4 px rhythm,
+ * hairlines rather than boxes. Values mirror src/lib/motion.ts.
+ * See docs/DESIGN_SYSTEM.md.
+ */
+:root {
+  color-scheme: dark;
+
+  /* ── Surfaces: matte graphite, from the window up ─────────────────── */
+  --window: #111214;                       /* underlay: seen through the sidebar */
+  --surface: #17181a;                      /* the work */
+  --surface-2: #1d1e21;                    /* inspector (its computer), grouped forms */
+  --raised: #25262a;                       /* composer, cards on the work */
+  --raised-2: #2e2f34;                     /* menus, raised on raised */
+  --well: #0d0e10;                         /* screens and wells, below the surface */
+
+  /* ── Ink ──────────────────────────────────────────────────────────── */
+  --text-1: #e6e7e9;                       /* ≈ 14:1 on surface */
+  --text-2: rgb(230 231 233 / 0.66);       /* ≈ 7:1 */
+  --text-3: rgb(230 231 233 / 0.48);       /* ≈ 4.6:1 — meta, placeholders */
+  --text-4: rgb(230 231 233 / 0.32);       /* decoration only, never sole carrier */
+  --text-disabled: rgb(230 231 233 / 0.28);
+  --text-inverse: #0d0e10;
+  --icon-1: rgb(230 231 233 / 0.9);
+  --icon-2: rgb(230 231 233 / 0.7);
+  --icon-3: rgb(230 231 233 / 0.5);
+
+  --hairline: rgb(255 255 255 / 0.08);
+  --hairline-soft: rgb(255 255 255 / 0.045);
+  --hairline-strong: rgb(255 255 255 / 0.15);
+
+  --fill-hover: rgb(255 255 255 / 0.06);
+  --fill-press: rgb(255 255 255 / 0.1);
+  --fill-selected: rgb(255 255 255 / 0.075);
+  --fill-quiet: rgb(255 255 255 / 0.04);
+
+  /* ── Signal ───────────────────────────────────────────────────────── */
+  --accent: #3591ff;                       /* Pegoles blue: Pegoles acting, focus, send */
+  --accent-strong: #4a9dff;
+  --accent-text: #86bfff;                  /* blue words on graphite, ≈ 8:1 */
+  --accent-soft: rgb(53 145 255 / 0.14);
+  --accent-wash: rgb(53 145 255 / 0.07);
+  --accent-line: rgb(53 145 255 / 0.5);
+  --accent-glow: rgb(53 145 255 / 0.32);
+
+  --success: #4cc98a;
+  --success-soft: rgb(76 201 138 / 0.13);
+  --warn: #f2b14c;                         /* you: approvals, your control */
+  --warn-text: #f5c472;
+  --warn-soft: rgb(242 177 76 / 0.11);
+  --warn-wash: rgb(242 177 76 / 0.055);
+  --warn-line: rgb(242 177 76 / 0.36);
+  --danger: #ff6b61;
+  --danger-text: #ff8b83;
+  --danger-soft: rgb(255 107 97 / 0.12);
+  --danger-line: rgb(255 107 97 / 0.36);
+
+  /* One vocabulary for state wherever it appears. */
+  --tone-live: var(--accent-text);
+  --tone-attention: var(--warn-text);
+  --tone-done: var(--success);
+  --tone-error: var(--danger-text);
+  --tone-quiet: var(--text-3);
+
+  /* ── Material (navigation layer only) ────────────────────────────────
+   * The sidebar and floating controls are a tint over the window
+   * underlay, blurred where something is behind them. Never on content,
+   * never glass on glass. Reduce Transparency swaps in the solid value. */
+  --material-sidebar: rgb(30 31 35 / 0.74);
+  --material-sidebar-solid: #1c1d20;
+  --material-float: rgb(38 39 44 / 0.82);
+  --material-float-solid: #26272b;
+  --material-blur: 28px;
+  --material-saturate: 150%;
+  --material-rim: inset 0 0 0 0.5px rgb(255 255 255 / 0.1), inset 0 1px 0 rgb(255 255 255 / 0.07);
+
+  /* ── Depth ───────────────────────────────────────────────────────── */
+  --shadow-raised: 0 0 0 0.5px rgb(0 0 0 / 0.5), 0 1px 2px rgb(0 0 0 / 0.24), 0 8px 24px -8px rgb(0 0 0 / 0.5);
+  --shadow-float: 0 0 0 0.5px rgb(0 0 0 / 0.6), 0 3px 8px rgb(0 0 0 / 0.3), 0 24px 64px -12px rgb(0 0 0 / 0.66);
+  --shadow-composer: 0 0 0 0.5px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.22), 0 12px 48px -8px rgb(0 0 0 / 0.55);
+  --highlight-top: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --edge: inset 0 0 0 0.5px rgb(255 255 255 / 0.09);
+
+  /* Presence and machine material (presence.css, MachineScreen). */
+  --presence-white: #f5f5f3;
+  --presence-silver: #a7abb0;
+  --presence-face: #000000;
+  --presence-eye: #ffffff;
+  --presence-cold: #cfe3ff;
+  --presence-halo: rgb(245 245 243 / 0.08);
+  --machine-bezel: #0b0c0e;
+  --machine-glass: #030304;
+  --machine-off: rgb(255 255 255 / 0.05);
+
+  /* ── Type: the system face (SF Pro on macOS) ─────────────────────── */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+
+  --type-display: 500 26px/32px var(--font-display);   --track-display: -0.022em;   /* Home question */
+  --type-title: 600 20px/26px var(--font-display);     --track-title: -0.016em;     /* task objective, page titles */
+  --type-heading: 600 13px/18px var(--font-sans);      --track-heading: -0.003em;   /* section titles */
+  --type-read: 400 14px/21px var(--font-sans);         --track-read: -0.005em;      /* reading text */
+  --type-ui: 400 13px/18px var(--font-sans);           --track-ui: -0.002em;        /* rows, buttons, most UI */
+  --type-nav: 400 13.5px/18px var(--font-sans);        --track-nav: -0.004em;       /* sidebar rows */
+  --type-small: 400 12px/16px var(--font-sans);        --track-small: 0em;          /* meta */
+  --type-micro: 500 11px/14px var(--font-sans);        --track-micro: 0.01em;
+  --type-mono: 400 11.5px/16px var(--font-mono);
+  --weight-ui: 450;
+
+  /* ── Space (4 px rhythm) ─────────────────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ── Radius: concentric (inner = outer − inset) ──────────────────── *
+   * composer 22 → controls 14 (inset 8); screen frame 12 → screen 8 (inset 4);
+   * rows 8 inside an 8px sidebar gutter; menus 14 → items 10 (inset 4). */
+  --radius-xs: 5px;
+  --radius-sm: 7px;
+  --radius-row: 8px;
+  --radius-control: 8px;
+  --radius-md: 10px;
+  --radius-card: 12px;
+  --radius-menu: 14px;
+  --radius-composer: 22px;
+  --radius-composer-inner: 14px;
+  --radius-pill: 999px;
+  --radius-bezel: 12px;
+  --radius-viewport-slot: 8px;             /* the native view clips to this */
+
+  /* ── Layers (the native framebuffer sits above all DOM) ───────────── */
+  --z-raised: 1;
+  --z-sticky: 10;
+  --z-sidebar: 20;
+  --z-peek: 30;
+  --z-scrim: 40;
+  --z-overlay: 50;
+  --z-toast: 70;
+  --z-skiplink: 80;
+
+  /* ── Motion: micro · surface · spatial ────────────────────────────── */
+  --dur-micro-fast: 90ms;                  /* press */
+  --dur-micro: 140ms;                      /* hover, colour */
+  --dur-micro-slow: 180ms;                 /* exits */
+  --dur-surface: 220ms;                    /* appear, state change in place */
+  --dur-layout: 240ms;
+  --dur-agent: 240ms;                      /* Pegoles changes state */
+  --dur-agent-slow: 260ms;
+  --dur-spatial: 420ms;                    /* panels, columns, levels */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-enter: cubic-bezier(0.19, 1, 0.22, 1);
+  --ease-move: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-light: cubic-bezier(0.37, 0, 0.63, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-expand: cubic-bezier(0.33, 1, 0.68, 1);
+  /* A critically damped spring, sampled: 1 − (1 + ωt)·e^(−ωt). Starts fast, lands soft. */
+  --ease-spatial: linear(0, 0.079 5%, 0.236 10%, 0.403 15%, 0.551 20%, 0.764 30%, 0.883 40%, 0.944 50%, 0.974 60%, 0.995 80%, 1);
+
+  /* ── Focus ───────────────────────────────────────────────────────── */
+  --focus-width: 2px;
+  --focus-offset: 2px;
+  --focus-color: rgb(134 191 255 / 0.8);
+
+  /* ── Layout ──────────────────────────────────────────────────────── */
+  --sidebar-w: 260px;
+  --toolbar-h: 52px;
+  --traffic-clear: 84px;                   /* traffic lights (x 20) + breathing room */
+  --column-max: 760px;                     /* the task's reading column */
+  --composer-max: 740px;
+  --gutter: 28px;
+}
+
+@media (min-width: 1600px) {
+  :root { --gutter: 36px; --column-max: 800px; --composer-max: 780px; }
+}
