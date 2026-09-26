@@ -52,10 +52,11 @@ MAIN="$APP/Contents/MacOS/pegoles-desktop"
 HELPER="$APP/Contents/MacOS/pegoles-vm-host"
 PY="$APP/Contents/Resources/runtime/python/bin/python3.12"
 WORKER="$APP/Contents/Resources/workers/mlx/pegoles_mlx_worker.py"
-for f in "$MAIN" "$HELPER" "$PY" "$WORKER" "$APP/Contents/Resources/runtime/runtime-manifest.json"; do
+for f in "$MAIN" "$HELPER" "$PY" "$WORKER" "$APP/Contents/Resources/runtime/runtime-manifest.json" \
+  "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/LICENSE"; do
   [ -f "$f" ] || fail "missing $f"
 done
-ok "layout (app, helper, runtime, worker, manifest)"
+ok "layout (app, helper, runtime, worker, manifest, licenses)"
 
 codesign --verify --deep --strict --verbose=2 "$APP" >/dev/null 2>&1 \
   || { codesign --verify --deep --strict --verbose=2 "$APP"; fail "bundle signature"; }

@@ -112,6 +112,8 @@ jobs:
           tar -xzf "$dir/syft.tar.gz" -C "$dir" syft
           echo "$dir" >> "$GITHUB_PATH"
 
+      - name: Install cargo-about (license notices, pinned)
+        run: cargo install --locked cargo-about --version 0.9.2
       - name: Install dependencies from lockfiles
         run: |
           set -euo pipefail

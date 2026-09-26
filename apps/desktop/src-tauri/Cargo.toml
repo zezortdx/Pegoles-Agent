@@ -1,8 +1,9 @@
 [package]
 name = "pegoles-desktop"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2021"
 publish = false
+license = "MIT"
 
 [lib]
 name = "pegoles_desktop"

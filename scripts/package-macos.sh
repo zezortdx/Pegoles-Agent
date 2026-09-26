@@ -75,6 +75,10 @@ build() {
   cp -R "$ROOT/target/pegoles-runtime/python" "$APP/Contents/Resources/runtime/python"
   install -m 0644 "$ROOT/target/pegoles-runtime/runtime-manifest.json" workers/mlx/requirements.lock \
     "$APP/Contents/Resources/runtime/"
+  # Licenses of everything the bundle redistributes (Python runtime,
+  # frontend packages, Rust crates) plus the app's own license.
+  bash scripts/release/third-party-notices.sh "$ROOT/target/THIRD_PARTY_NOTICES.md"
+  install -m 0644 "$ROOT/target/THIRD_PARTY_NOTICES.md" "$ROOT/LICENSE" "$APP/Contents/Resources/"
   echo "assembled (unsigned): $APP"
 }
 
