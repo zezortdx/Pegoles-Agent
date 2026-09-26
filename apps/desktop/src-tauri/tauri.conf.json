@@ -26,7 +26,8 @@
           "x": 20,
           "y": 27
         },
-        "backgroundColor": "#111214"
+        "backgroundColor": "#111214",
+        "dragDropEnabled": false
       }
     ],
     "security": {
