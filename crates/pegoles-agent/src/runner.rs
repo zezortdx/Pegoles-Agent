@@ -230,6 +230,26 @@ impl Run<'_> {
         }
     }
 
+    /// A turn's narration, bounded: a planner (any provider) cannot flood
+    /// the activity feed and push the run's actions out of its history.
+    fn progress_notes(&self, notes: &[String]) {
+        const HEAD: usize = 3;
+        if notes.len() <= HEAD + 1 {
+            for n in notes {
+                self.message(AgentMessageKind::Progress, n);
+            }
+            return;
+        }
+        for n in &notes[..HEAD] {
+            self.message(AgentMessageKind::Progress, n);
+        }
+        let last = &notes[notes.len() - 1];
+        self.message(
+            AgentMessageKind::Progress,
+            &format!("({} notes omitted) {last}", notes.len() - HEAD - 1),
+        );
+    }
+
     fn message(&self, kind: AgentMessageKind, text: &str) {
         // Planner text is hostile whichever provider wrote it: invisible
         // formatting (bidi overrides, zero-width) and control characters
@@ -343,15 +363,14 @@ impl Run<'_> {
                     return (RunEnd::Failed, reason);
                 }
                 PlannerTurn::Calls { notes, calls } => {
-                    for n in &notes {
-                        self.message(AgentMessageKind::Progress, n);
-                    }
+                    self.progress_notes(&notes);
                     if calls.is_empty() {
                         return (
                             RunEnd::Failed,
                             "The planner returned neither actions nor a result.".to_string(),
                         );
                     }
+                    let looked_only = observe_only(&calls);
                     let batch = self.execute(calls);
                     if let Some(end) = self.cancelled() {
                         return end;
@@ -360,7 +379,13 @@ impl Run<'_> {
                         return (RunEnd::Failed, reason);
                     }
                     let any_failed = batch.iter().any(|o| o.result.is_err());
-                    failed_turns = if any_failed { failed_turns + 1 } else { 0 };
+                    // A turn that only looks at the screen (e.g. the local
+                    // planner's re-observe after a failed action) is not a
+                    // decision: it neither resets nor extends the streak,
+                    // so alternating fail/observe still trips the brake.
+                    if !looked_only || any_failed {
+                        failed_turns = if any_failed { failed_turns + 1 } else { 0 };
+                    }
                     if failed_turns >= self.limits.max_failed_turns {
                         return (
                             RunEnd::Failed,
@@ -500,6 +525,14 @@ fn planner_failure(e: &PlannerError) -> String {
         }
         other => format!("The model could not continue: {other}"),
     }
+}
+
+/// Whether a batch only observes the screen (no action, no reply).
+fn observe_only(calls: &[PlannedCall]) -> bool {
+    !calls.is_empty()
+        && calls.iter().all(|c| {
+            matches!(&c.steps, Ok(steps) if !steps.is_empty() && steps.iter().all(|s| matches!(s, Step::Observe)))
+        })
 }
 
 #[cfg(test)]
@@ -1016,6 +1049,95 @@ mod tests {
         assert_eq!(report.end, RunEnd::Failed);
         assert!(report.summary.contains("consecutive"));
         assert_eq!(report.turns, 6);
+    }
+
+    #[test]
+    fn observe_only_turns_do_not_reset_the_failure_brake() {
+        // Fail, look, fail, look...: the pattern the local planner produces
+        // (a re-observe after every failed action) must still trip the brake.
+        let computer = FakeComputer {
+            deny_clicks: true,
+            ..Default::default()
+        };
+        let observe = |id: &str| PlannedCall {
+            call_id: format!("o{id}"),
+            label: "screenshot".into(),
+            steps: Ok(vec![Step::Observe]),
+        };
+        let turns: Vec<Vec<PlannedCall>> = (0..40)
+            .map(|i| {
+                if i % 2 == 0 {
+                    vec![click(&i.to_string())]
+                } else {
+                    vec![observe(&i.to_string())]
+                }
+            })
+            .collect();
+        let mut planner = ScriptedPlanner::new(turns, |_| Ok("unused".to_string()));
+        let report = run_task(
+            TaskId::new(),
+            "x",
+            &mut planner,
+            &computer,
+            &RunLimits::default(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(report.end, RunEnd::Failed);
+        assert!(report.summary.contains("consecutive"), "{}", report.summary);
+        // 6 failing turns and the 5 observe-only turns between them.
+        assert_eq!(report.turns, 11);
+    }
+
+    #[test]
+    fn a_turn_cannot_flood_the_activity_feed_with_notes() {
+        struct Chatty(Option<PlannerTurn>);
+        impl Planner for Chatty {
+            fn name(&self) -> String {
+                "chatty".into()
+            }
+            fn start(&mut self, _o: &str, _s: &Screenshot) -> Result<(), PlannerError> {
+                Ok(())
+            }
+            fn next(
+                &mut self,
+                _o: Vec<CallOutcome>,
+                _c: &CancellationToken,
+            ) -> Result<PlannerTurn, PlannerError> {
+                self.0
+                    .take()
+                    .ok_or(PlannerError::Protocol("done already".into()))
+            }
+        }
+        let computer = FakeComputer::default();
+        let notes: Vec<String> = (0..5000).map(|i| format!("note {i}")).collect();
+        let mut planner = Chatty(Some(PlannerTurn::Calls {
+            notes,
+            calls: vec![click("1")],
+        }));
+        run_task(
+            TaskId::new(),
+            "x",
+            &mut planner,
+            &computer,
+            &RunLimits::default(),
+            &CancellationToken::new(),
+        );
+        let progress: Vec<String> = computer
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::AgentMessage { text, .. }
+                    if text.starts_with("note") || text.starts_with('(') =>
+                {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(progress.len(), 4, "{progress:?}");
+        assert_eq!(progress[3], "(4996 notes omitted) note 4999");
     }
 
     #[test]
