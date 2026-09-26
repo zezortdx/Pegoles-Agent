@@ -194,7 +194,6 @@
 .machine-row__state { font: var(--type-small); color: var(--text-3); transition: color var(--dur-agent-slow) var(--ease-light); }
 .machine-row__state[data-phase="agent"],
 .machine-row__state[data-phase="starting"],
-.machine-row__state[data-phase="preparing"] { color: var(--tone-live); }
 .machine-row__state[data-phase="user"] { color: var(--tone-attention); }
 .machine-row__state[data-phase="ready"] { color: var(--tone-done); }
 .machine-row__state[data-phase="error"] { color: var(--tone-error); }

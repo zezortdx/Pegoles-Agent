@@ -1,5 +1,6 @@
 import type { TaskStatusWire } from "@pegoles/ui";
 import { describeAction, describePast } from "../lib/events";
+import { agentMessageOf, firstLine } from "../lib/execution";
 import type { ActionRequestWire, AgentEvent, AgentTask } from "../lib/tauri";
 
 /**
@@ -116,11 +117,6 @@ export function actionLabel(action: ActionRequestWire["action"], voice: Voice = 
   return { text: base, context: null };
 }
 
-/** Past tense with the target (kept for callers that want one string). */
-export function actionPast(action: ActionRequestWire["action"]): string {
-  return actionLabel(action, "past").text;
-}
-
 const TERMINAL = new Set(["action_completed", "action_denied", "action_failed"]);
 
 function atOf(event: AgentEvent): string | undefined {
@@ -175,6 +171,13 @@ function sentence(event: AgentEvent): { text: string; tone: EntryTone } | null {
         default: return null;
       }
     case "approval_requested": return { text: typeof e.reason === "string" ? `Asked for approval: ${e.reason}` : "Asked for your approval", tone: "attention" };
+    case "agent_message": {
+      // Pegoles' own words, first line only (the whole note is in its task and under Details).
+      const message = agentMessageOf(event);
+      if (!message) return null;
+      const line = firstLine(message.text, 120);
+      return { text: line, tone: message.kind === "summary" ? "done" : message.kind === "error" ? "error" : "normal" };
+    }
     case "computer_created": return { text: "Set up its computer", tone: "normal" };
     case "computer_state_changed":
       switch (e.to) {

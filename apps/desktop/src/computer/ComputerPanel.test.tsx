@@ -16,14 +16,14 @@ const status: StatusPayload = {
   image_status: "ready", spec_os: "Debian 13", spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "ready",
   guest_ready_ms: 4000, viewport_state: "agent_active", viewport_issue: null, display_available: false, display_attached: true,
   display_config: { width_px: 1440, height_px: 900 }, display_error: null, display_setup_error: null, control_owner: "agent",
-  input_available: true, agent_busy: true,
+  input_available: true, agent_busy: true, active_task: null,
 };
 const props = (patch: Partial<StatusPayload> = {}, rest: Partial<ComputerPanelProps> = {}): ComputerPanelProps => {
   const next = { ...status, ...patch };
   return {
-    model: computerModel({ connected: true, native: true, status: next, image: null, events: [] }),
-    level: "side", status: next, slotEnabled: false, snapshot: null, steps: [], busy: false, error: null, moving: false, focusOnOpen: false,
-    onCommand: vi.fn(), onLevel: vi.fn(), onClose: vi.fn(), onSlotError: vi.fn(), onDismissError: vi.fn(),
+    model: computerModel({ connected: true, native: true, status: next, events: [] }),
+    level: "side", status: next, slotEnabled: false, snapshot: null, steps: [], busy: false, managing: false, error: null, moving: false, focusOnOpen: false,
+    onCommand: vi.fn(), onManage: vi.fn(), onLevel: vi.fn(), onClose: vi.fn(), onSlotError: vi.fn(), onDismissError: vi.fn(),
     loadBootLog: vi.fn().mockResolvedValue({ available: false, total_lines: 0, tail: [] }), ...rest,
   };
 };
@@ -122,6 +122,47 @@ describe("ComputerPanel", () => {
     expect(geometry).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true }));
     await act(async () => { view.unmount(); await vi.runAllTimersAsync(); });
     vi.useRealTimers();
+  });
+
+  it("asks inline before resetting or removing its computer", () => {
+    const onManage = vi.fn();
+    render(<ComputerPanel {...props({ computer_state: "stopped", viewport_state: "off", control_owner: "none" }, { onManage })} />);
+    const reset = screen.getByRole("button", { name: "Reset computer…" });
+    fireEvent.click(reset);
+    const question = screen.getByRole("group", { name: "Reset its computer?" });
+    expect(question.textContent).toMatch(/Everything done inside it is erased/);
+    // The safe answer has focus; Escape takes the question back without doing anything.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(question, { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Reset its computer?" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Reset computer…" }));
+    expect(onManage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove computer…" }));
+    expect(screen.getByRole("group", { name: "Remove its computer?" }).textContent).toMatch(/disk and everything on it are deleted/);
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(onManage).toHaveBeenCalledExactlyOnceWith("remove");
+  });
+
+  it("won't reset or remove its computer while a task is running on it", () => {
+    render(<ComputerPanel {...props({ active_task: "t1" })} />);
+    expect((screen.getByRole("button", { name: "Reset computer…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Remove computer…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Stop the running task to reset or remove its computer.")).toBeTruthy();
+  });
+
+  it("closes an open question when a task starts under it", () => {
+    const view = render(<ComputerPanel {...props()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reset computer…" }));
+    expect(screen.getByRole("group", { name: "Reset its computer?" })).toBeTruthy();
+    view.rerender(<ComputerPanel {...props({ active_task: "t1" })} />);
+    expect(screen.queryByRole("group", { name: "Reset its computer?" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
+  });
+
+  it("has nothing to reset before its computer exists", () => {
+    render(<ComputerPanel {...props({ computer_created: false, computer_state: null, viewport_state: "off", control_owner: "none" })} />);
+    expect(screen.queryByRole("button", { name: /Reset computer|Remove computer/ })).toBeNull();
   });
 
   it("keeps specs behind Details", () => {

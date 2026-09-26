@@ -1,63 +1,41 @@
-# Platform Matrix (honest status, Phase 3.6)
+# Platform Matrix (honest status, 2026-09-26)
 
-## macOS Apple Silicon (arm64)
+Tiers: **VERIFIED** = exercised on real hardware in this repo's E2E;
+**IMPLEMENTED** = code + unit tests, not run on real hardware;
+**NOT IMPLEMENTED** = absent.
 
-| Area | Status |
-|---|---|
-| VM lifecycle (create/validate/start/pause/resume/stop) | VERIFIED on hardware |
-| Guest protocol v1 (vsock handshake/heartbeat/reconnect) | VERIFIED on hardware (Phase 3) |
-| Base image (Debian 13 arm64 raw, verified, derived v0.1) | VERIFIED |
-| Kernel transports (virtio + hyperv vsock modules) | VERIFIED (`universal_ready: true`) |
-| UI (status, guest runtime, timeline) | IMPLEMENTED (visual run = local `tauri dev`) |
-| Graphical display / computer-use | NOT IN SCOPE |
-
-## Windows 11 Pro x86_64 (Hyper-V / HCS target)
+## macOS Apple Silicon (arm64) — reference platform
 
 | Area | Status |
 |---|---|
-| Portable architecture (enums, paths, factory, capabilities) | IMPLEMENTED, tested |
-| `WindowsHcsBackend` skeleton | COMPILES everywhere; lifecycle = explicit `BackendFeatureNotImplemented` |
-| Host capability probe + support states | IMPLEMENTED, live OS APIs (classify tested; behavior unverified without hardware) |
-| Hyper-V socket design + service GUID derivation | SPECIFIED + tested (`00000FD2-…` for 4050) |
-| `pegoles-vm-host.exe` (HCS session, config builder, error mapping) | IMPLEMENTED, compiles; lifecycle calls are real FFI, unverified on hardware |
-| `HyperVSocketTransport` (AF_HYPERV, framing, reconnect) | IMPLEMENTED + unit-tested via byte streams; socket syscalls unverified on hardware |
-| `pegoles-windows-setup` (check/explain/register) | IMPLEMENTED; register path unverified on hardware |
-| Privileged setup model | SPECIFIED (`WINDOWS_SETUP.md`); runtime verify-only |
-| HCS lifecycle on real VM / hardware validation | NOT VERIFIED (no Windows hardware in this phase) |
-| Windows Debian VHDX artifact | BUILT (unprovisioned, real hash, kernel-gated) — see WINDOWS_IMAGE.md |
-| Windows CI compile gate | IMPLEMENTED (this repo) |
+| VM lifecycle (create/start/pause/resume/stop/reset/destroy) | VERIFIED (reset restores the sealed disk: unit-tested; stop/destroy/second boot: E2E) |
+| Guest control plane (authenticated vsock, handshake, heartbeat, reconnect) | VERIFIED (`agent_e2e`: runtime killed → recovered ≈ 3 s) |
+| Computer use (observe, click, type incl. dead-key chars, keys, wait) | VERIFIED (`agent_e2e`, pixel-checked) |
+| Drag, scroll, double-click, key chords | IMPLEMENTED end to end; exercised by the older fixture harness on image v0.2, not by `agent_e2e` |
+| Agent orchestrator with a scripted planner | VERIFIED (`agent_e2e`) |
+| Agent orchestrator with Claude (Anthropic API) | IMPLEMENTED (request/response/translation unit-tested); NOT run against the live API in this environment (no key) |
+| Desktop UI wiring (tasks, settings, computer controls) | IMPLEMENTED (vitest); live app not visually verified by the agent |
+| Native VM display embed (human takes control) | NOT IMPLEMENTED (`pegoles-macos-embed` is a stub); the UI shows captured frames instead |
+| Image distribution (download a sealed Pegoles image) | NOT IMPLEMENTED — images are built locally (`scripts/build-guest-image`) |
 
-## What IMPLEMENTED vs VERIFIED means here
+## Windows 11 (Hyper-V / HCS)
 
-- IMPLEMENTED: code written, reviewed against official docs, unit-tested
-  where hardware-independent.
-- CI VERIFIED: compiles + tests pass on Windows/Linux/macOS runners.
-- REAL HARDWARE VERIFIED: only macOS rows below. NOTHING in the Windows
-  rows claims hardware verification — see DoD honesty rule.
+| Area | Status |
+|---|---|
+| HCS backend, Hyper-V socket transport, setup tool | Code exists behind `cfg(windows)`. Never booted. Two compile errors and two Windows-API bugs were fixed by inspection on 2026-09-26; the crate was **not compiled** for Windows in this environment. |
+| Guest image for Windows | amd64 VHDX is unprovisioned; the runtime is built for arm64 only |
 
-## Windows Home
+**Not supported.** The UI must not claim Windows support.
 
-NOT SUPPORTED by the HCS backend. Future `WindowsWhpBackend` is
-FUTURE / RESEARCH only. No hacks, no unsupported install scripts.
+## Linux host
 
-## Windows ARM64
-
-NOT IMPLEMENTED. Possible by design: `GuestArchitecture::Arm64` is
-platform-independent (not a Mac synonym); no code assumes Arm64 ⇒ Mac.
-
-## Linux (host)
-
-NOT IMPLEMENTED (future KVM backend). Shared crates compile + test on
-Linux CI; Mock backend works; no hypervisor code exists.
+NOT IMPLEMENTED (Mock backend only, for tests). Shared crates compile and
+test on Linux CI.
 
 ## Guest images
 
-| Logical image | Artifact | Status |
-|---|---|---|
-| Pegoles Base Image v0.1 | macOS/arm64 `.raw` (Debian 13 + runtime 0.1 + protocol 1) | BUILT, verified, booted |
-| Pegoles Base Image v0.1 | Windows/amd64 `.vhdx` (Debian 13 generic, UNPROVISIONED) | BUILT (real hash, kernel-gated); runtime provisioning happens on first Windows boot |
-
-## Performance baseline (this phase, macOS)
-
-See `docs/PERFORMANCE.md` + `scripts/bench.sh`: GuestReady ~6 s,
-ping 0 ms, helper ~9 MiB RSS / 0.0% idle CPU, sparse RAW + dynamic VHDX.
+| Image | Status |
+|---|---|
+| `pegoles-base-0.3` (Debian 13 arm64, weston + foot, runtime 0.2.0, authenticated channel, workspace terminal) | VERIFIED; product default |
+| `pegoles-base-0.2` | Superseded (runtime cannot authenticate; the host rejects it) |
+| `pegoles-base-0.1` | Superseded (headless, no input/frame) |

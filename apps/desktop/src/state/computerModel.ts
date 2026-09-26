@@ -1,14 +1,15 @@
-import type { AgentEvent, ImageStatusPayload, StatusPayload } from "../lib/tauri";
+import type { AgentEvent, StatusPayload } from "../lib/tauri";
 
 /**
  * Pegoles Computer as people see it. Pure: derived only from Core's
- * status, image and boot events; the UI never guesses a state.
+ * status and boot events; the UI never guesses a state.
  */
 export type ComputerPhase =
-  | "unavailable" | "needs-setup" | "preparing" | "off" | "starting"
+  | "unavailable" | "needs-setup" | "off" | "starting"
   | "ready" | "agent" | "user" | "paused" | "stopping" | "error";
 
-export type ComputerCommand = "prepare" | "start" | "pause" | "resume" | "stop" | "take" | "return";
+/** `reset` returns it to the sealed image; `remove` deletes it and its disk. */
+export type ComputerCommand = "start" | "pause" | "resume" | "stop" | "take" | "return" | "reset" | "remove";
 
 export interface ComputerAction {
   readonly command: ComputerCommand;
@@ -33,6 +34,8 @@ export interface ComputerModel {
   /** Headline inside the preview when there is no screen to show. */
   readonly headline: string;
   readonly body?: string;
+  /** A line for developers (how to fix a missing image), shown under the body. */
+  readonly devNote?: string;
   readonly primary?: ComputerAction;
   /** Less frequent actions, disclosed in an overflow. */
   readonly secondary: readonly ComputerAction[];
@@ -42,8 +45,6 @@ export interface ComputerModel {
   /** Something is in motion (setup, boot): the chip may animate. */
   readonly transitioning: boolean;
   readonly steps: readonly BootStep[];
-  /** 0..1 for determinate setup progress, null otherwise. */
-  readonly progress: number | null;
   /** Technical facts, disclosed under Details only. */
   readonly specs: readonly string[];
   /** A few human facts shown in the panel so it is never a void. */
@@ -54,7 +55,6 @@ export interface ComputerInputs {
   readonly connected: boolean;
   readonly native: boolean;
   readonly status: StatusPayload | null;
-  readonly image: ImageStatusPayload | null;
   readonly events: readonly AgentEvent[];
 }
 
@@ -97,8 +97,11 @@ function factsOf(status: StatusPayload, up: boolean): ComputerFact[] {
 const STOP: ComputerAction = { command: "stop", label: "Stop computer" };
 const PAUSE: ComputerAction = { command: "pause", label: "Pause" };
 
-export function computerModel({ connected, native, status, image, events }: ComputerInputs): ComputerModel {
-  const base = { secondary: [] as ComputerAction[], owner: "none" as const, running: false, transitioning: false, steps: [] as BootStep[], progress: null, specs: [] as string[], facts: [] as ComputerFact[] };
+/** How to get the sealed image onto this Mac; for developers, in the panel only. */
+const IMAGE_HOW = "with scripts/build-guest-image (see docs/PROJECT_STATE.md).";
+
+export function computerModel({ connected, native, status, events }: ComputerInputs): ComputerModel {
+  const base = { secondary: [] as ComputerAction[], owner: "none" as const, running: false, transitioning: false, steps: [] as BootStep[], specs: [] as string[], facts: [] as ComputerFact[] };
   if (!connected || !status) {
     return { ...base, phase: "unavailable", chip: "Offline", headline: "Computer unavailable",
       body: native ? "Waiting for Pegoles Core to connect." : "Open the Pegoles app to use its computer." };
@@ -112,16 +115,13 @@ export function computerModel({ connected, native, status, image, events }: Comp
       body: "Its isolated computer ran into a problem. Details has what engineers need.",
       primary: { command: "start", label: "Try again" } };
   }
-  const needsImage = status.backend === "real" && !status.computer_created && image?.status !== "ready";
-  if (needsImage && image?.preparing) {
-    return { ...base, specs, facts, phase: "preparing", chip: "Setting up", transitioning: true, headline: "Setting up its computer",
-      body: "A one-time download of Pegoles’ isolated workspace.",
-      progress: image.total > 0 ? Math.min(1, image.downloaded / image.total) : null };
-  }
-  if (needsImage) {
-    return { ...base, specs, facts, phase: "needs-setup", chip: "Not set up", headline: "Pegoles doesn’t have its computer yet.",
-      body: "A one-time download prepares an isolated Debian workspace that only Pegoles uses.",
-      primary: { command: "prepare", label: "Set up computer" } };
+  // The sealed Pegoles image is installed by building it, not from the app:
+  // say so plainly and offer nothing that can't fix it.
+  if (status.backend === "real" && !status.computer_created && status.image_status !== "ready") {
+    const incomplete = status.image_status === "invalid";
+    return { ...base, specs, facts, phase: "needs-setup", chip: incomplete ? "Image incomplete" : "Not installed",
+      headline: incomplete ? "The Pegoles computer image on this Mac is incomplete." : "The Pegoles computer image isn’t installed on this Mac.",
+      body: "Without it, Pegoles can’t create its isolated computer or work on tasks.", devNote: `${incomplete ? "Rebuild" : "Build"} it ${IMAGE_HOW}` };
   }
   if (!status.computer_created || status.computer_state === "stopped" || status.computer_state === null) {
     return { ...base, specs, facts, phase: "off", chip: "Off", headline: "Off",

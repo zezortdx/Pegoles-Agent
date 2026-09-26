@@ -236,9 +236,12 @@ pub fn start_run(
         t.title.clone()
     };
     let cancel = supervisor.claim(task)?;
+    let slot = supervisor.clone();
     std::thread::Builder::new()
         .name(format!("pegoles-task-{task}"))
         .spawn(move || {
+            // Frees the run slot even if the run panics.
+            let _slot = SlotGuard(slot, task);
             let mut planner =
                 AnthropicPlanner::new(AnthropicConfig::new(key, &settings.model, &settings.effort));
             let computer = CoreComputer::new(AppCore(shared), bus);
@@ -250,10 +253,20 @@ pub fn start_run(
                 &RunLimits::default(),
                 &cancel,
             );
-            supervisor.release(task);
         })
         .map(|_| ())
-        .map_err(|e| format!("could not start the task thread: {e}"))
+        .map_err(|e| {
+            supervisor.release(task);
+            format!("could not start the task thread: {e}")
+        })
+}
+
+struct SlotGuard(AgentSupervisor, TaskId);
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0.release(self.1);
+    }
 }
 
 #[cfg(test)]

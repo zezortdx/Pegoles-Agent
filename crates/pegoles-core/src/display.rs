@@ -179,7 +179,7 @@ impl ComputerRegistry {
         if self.display.link != DisplayLink::Detached {
             let mut out = Vec::new();
             // Best effort: failures are recorded in `last_error`.
-            let _ = self.release_control(&mut out);
+            let _ = self.release_human_control(&mut out);
             let _ = self.detach_internal("display_replaced", &mut out);
         }
         self.display.backend = display;
@@ -369,9 +369,10 @@ impl ComputerRegistry {
     /// the UI sends a new geometry.
     pub fn detach_display(&mut self) -> Result<Vec<AgentEvent>> {
         let mut out = Vec::new();
-        // Input goes back first; a native failure there is recorded and
-        // does not block removing the view.
-        let _ = self.release_control(&mut out);
+        // A human's input goes back first; a native failure there is
+        // recorded and does not block removing the view. An agent run
+        // does not depend on the view and keeps control.
+        let _ = self.release_human_control(&mut out);
         self.display.desired = None;
         self.detach_internal("explicit", &mut out)?;
         Ok(out)
@@ -416,8 +417,8 @@ impl ComputerRegistry {
     /// non-interactive from Core's point of view regardless).
     pub fn return_control(&mut self) -> Result<ControlOwner> {
         let mut out = Vec::new();
-        self.release_control(&mut out)?;
-        Ok(ControlOwner::None)
+        self.release_human_control(&mut out)?;
+        Ok(self.display.control)
     }
 
     /// Drain native display facts into AgentEvents (DisplayAttached /
@@ -670,7 +671,7 @@ impl ComputerRegistry {
                         DisplayLink::Attaching(id) | DisplayLink::Attached(id) if id == computer_id
                     );
                     if ours {
-                        let _ = self.release_control(out);
+                        let _ = self.release_human_control(out);
                         // Native-initiated: do not auto-reattach; the UI
                         // sends a new geometry when it wants the view back.
                         self.display.desired = None;
@@ -681,7 +682,7 @@ impl ComputerRegistry {
                     // The human asked (native pill / escape shortcut); Core
                     // decides — and returning control is always allowed.
                     if current == Some(computer_id) {
-                        let _ = self.release_control(out);
+                        let _ = self.release_human_control(out);
                     }
                 }
                 DisplayEvent::Reconfigured { .. } => {
@@ -706,7 +707,7 @@ impl ComputerRegistry {
                         self.display.failure = Some(message.clone());
                         let link = self.display.link;
                         if link != DisplayLink::Detached {
-                            let _ = self.release_control(out);
+                            let _ = self.release_human_control(out);
                             self.mark_detached(link, &format!("display_failed: {message}"), out);
                         }
                     }
@@ -719,9 +720,26 @@ impl ComputerRegistry {
     /// controls. Ownership ALWAYS becomes None; a native failure to stop
     /// routing input is recorded in `last_error` and returned after the
     /// state change.
+    /// Release control only if a HUMAN holds it (view-related paths:
+    /// detach, return, native view failures). Agent input never uses the
+    /// host view, so view changes must not end an agent run.
+    pub(crate) fn release_human_control(&mut self, out: &mut Vec<AgentEvent>) -> Result<()> {
+        if self.display.control == ControlOwner::User {
+            self.release_control(out)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn release_control(&mut self, out: &mut Vec<AgentEvent>) -> Result<()> {
         if self.display.control == ControlOwner::None {
             return Ok(());
+        }
+        if self.display.control == ControlOwner::Agent {
+            // Control leaving the agent for any reason (VM paused,
+            // stopped, failed) ends its run: nothing it queued may run
+            // after the fact.
+            self.agent_cancel.cancel();
         }
         let native = if self.display.link != DisplayLink::Detached {
             self.display.backend.set_interactive(false)

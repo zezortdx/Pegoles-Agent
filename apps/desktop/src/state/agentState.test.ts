@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionSteps, globalPresence, taskActivity, taskGlance } from "./agentState";
+import { actionSteps, globalPresence, modelConnected, taskActivity } from "./agentState";
 import type { ActionRequestWire, AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
 
 const at = "2026-09-24T10:00:00Z";
@@ -7,7 +7,7 @@ const task: AgentTask = { id: "t1", title: "Read report", status: "running", cre
 const request: ActionRequestWire = { action_id: "a1", task_id: "t1", computer_id: "vm1", action: { type: "click" }, requested_at: at };
 const start: AgentEvent = { type: "action_started", request, action_id: "a1", at };
 const done: AgentEvent = { type: "action_completed", request, result: { action_id: "a1", success: true, outcome: "executed", message: "", duration_ms: 20 } };
-const busy = { agent_busy: true, control_owner: "agent", model: "local" } as StatusPayload;
+const busy = { agent_busy: true, control_owner: "agent", model: "configured" } as StatusPayload;
 const idle = { agent_busy: false, control_owner: "none", model: "not_configured" } as StatusPayload;
 
 const activity = (overrides: Partial<Parameters<typeof taskActivity>[0]>) =>
@@ -23,9 +23,36 @@ describe("taskActivity: real state in, presence out", () => {
 
   it("is honest about pending tasks when no model is connected", () => {
     const pending = activity({ task: { ...task, status: "pending" }, status: idle });
-    expect(pending).toMatchObject({ mode: "blocked", headline: "Can’t start yet", offerComputer: true, live: true });
-    expect(pending.detail).toMatch(/No model is connected/);
-    expect(activity({ task: { ...task, status: "pending" }, status: busy, events: [] }).mode).toBe("waiting");
+    expect(pending).toMatchObject({ mode: "blocked", headline: "Can’t start yet", offerComputer: true, live: true, start: "needs-model" });
+    expect(pending.detail).toMatch(/Anthropic API key in Settings/);
+  });
+
+  it("says a pending task hasn't started once a model is connected, and why it can't start yet", () => {
+    const pending = { ...task, status: "pending" as const };
+    const ready = { ...busy, agent_busy: false, control_owner: "none", active_task: null } as StatusPayload;
+    expect(activity({ task: pending, status: ready })).toMatchObject({ mode: "idle", headline: "Not started", live: false, start: "ready" });
+    expect(activity({ task: pending, status: { ...ready, active_task: "other" } })).toMatchObject({ start: "busy", detail: "Pegoles is working on another task" });
+    // Starting: the request is in flight, or Core has claimed the run but not moved the task yet.
+    const starting = activity({ task: pending, status: ready, starting: true });
+    expect(starting).toMatchObject({ mode: "thinking", headline: "Starting", live: true });
+    expect(starting.start).toBeUndefined();
+    expect(activity({ task: pending, status: { ...ready, active_task: "t1" } })).toMatchObject({ mode: "thinking", headline: "Starting" });
+  });
+
+  it("only believes Core about the model", () => {
+    expect(modelConnected({ model: "configured" } as StatusPayload)).toBe(true);
+    expect(modelConnected({ model: "not_configured" } as StatusPayload)).toBe(false);
+    expect(modelConnected(null)).toBe(false);
+  });
+
+  it("shows Pegoles' latest note between actions, and why a finished run stopped", () => {
+    const note = (kind: string, text: string, s: number): AgentEvent =>
+      ({ type: "agent_message", task_id: "t1", kind, text, at: `2026-09-24T10:00:0${s}Z` }) as AgentEvent;
+    const thinking = activity({ events: [note("progress", "Opening the browser", 1), note("progress", "  \nSearching for pricing pages\nthen comparing", 2)], status: { ...busy, agent_busy: false } });
+    expect(thinking).toMatchObject({ mode: "thinking", headline: "Working on it", detail: "Searching for pricing pages" });
+    const stopped = activity({ task: { ...task, status: "cancelled" }, events: [note("error", "Stopped by the user.", 3)] });
+    expect(stopped).toMatchObject({ mode: "idle", headline: "Cancelled", reason: "Stopped by the user." });
+    expect(activity({ task: { ...task, status: "failed" }, events: [note("error", "The model service refused the key.", 3)] }).reason).toBe("The model service refused the key.");
   });
 
   it("acknowledges a new hand-off but never hides real work behind it", () => {
@@ -77,13 +104,5 @@ describe("globalPresence", () => {
     expect(globalPresence({ ...base, computerTransitioning: true })).toBe("working");
     expect(globalPresence({ ...base, attentive: true })).toBe("attentive");
     expect(globalPresence(base)).toBe("idle");
-  });
-});
-
-describe("taskGlance", () => {
-  it("says something only when a task deserves a glance", () => {
-    expect(taskGlance({ ...task, status: "pending" }, idle)).toBe("Not started");
-    expect(taskGlance({ ...task, status: "waiting_for_approval" }, idle)).toBe("Needs your approval");
-    expect(taskGlance({ ...task, status: "completed" }, idle)).toBeNull();
   });
 });

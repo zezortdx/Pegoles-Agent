@@ -2,7 +2,7 @@ import type { ReactNode, Ref } from "react";
 import { m } from "motion/react";
 import { PegolesPresence, type PresenceMode } from "../presence";
 import { duration, ease } from "../lib/motion";
-import { FolderIcon, GlobeIcon, TerminalIcon } from "../ui/icons";
+import { ComputerIcon, FolderIcon, TerminalIcon } from "../ui/icons";
 
 /** Pegoles' mark travels from Home into the task's status bar. */
 export const PRESENCE_LAYOUT_ID = "pegoles-presence";
@@ -13,10 +13,13 @@ export interface Starter {
   readonly icon: ReactNode;
 }
 
+// Real jobs for the computer Pegoles has today: a Linux desktop with a
+// terminal and no network, so nothing here depends on the web or on files
+// from this Mac.
 export const STARTERS: readonly Starter[] = [
-  { label: "Research something on the web", prompt: "Research the three most popular note-taking apps and summarize how their pricing compares", icon: <GlobeIcon size={15} /> },
-  { label: "Organize a folder", prompt: "Sort the files in Downloads into folders by type and list anything that looks like a duplicate", icon: <FolderIcon size={15} /> },
-  { label: "Write and test a script", prompt: "Write a Python script that renames photos by the date they were taken, then test it on a sample folder", icon: <TerminalIcon size={15} /> },
+  { label: "Write and test a script", prompt: "Write a Python script that prints the first 20 prime numbers, run it in the terminal and show me the output", icon: <TerminalIcon size={15} /> },
+  { label: "Organize a folder", prompt: "Create a folder called notes with three short Markdown files on different topics, then list them with their sizes", icon: <FolderIcon size={15} /> },
+  { label: "Check its computer", prompt: "Find out which operating system, CPU count and memory your computer has, and summarize them", icon: <ComputerIcon size={15} /> },
 ];
 
 export interface HomeViewProps {
@@ -49,7 +52,7 @@ export function HomeView({ presence, headingRef, attentive, nudge, firstRun, onS
             interactive pressable onPress={onPressPresence} field={false} />
         </m.div>
         <m.h1 id="home-title" ref={headingRef} tabIndex={-1} className="home__title" {...enter(0.04)}>What should Pegoles do?</m.h1>
-        <m.p className="home__lead" {...enter(0.08)}>It works on its own computer. Watch, step in or take over whenever you like.</m.p>
+        <m.p className="home__lead" {...enter(0.08)}>It works on its own computer, never yours. Watch it work and stop it whenever you like.</m.p>
         {firstRun && (
           <m.ul className="starters" aria-label="A few places to start" {...enter(0.12)}>
             {STARTERS.map((starter) => (

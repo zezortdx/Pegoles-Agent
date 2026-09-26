@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { api, type AgentEvent, type AgentTask, type StatusPayload } from "./lib/tauri";
+import { api, type AgentEvent, type AgentTask, type ModelSettings, type StatusPayload } from "./lib/tauri";
 
 const bridge = vi.hoisted(() => ({ native: true }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => bridge.native, invoke: vi.fn() }));
@@ -13,10 +13,15 @@ const status: StatusPayload = {
   spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "unavailable",
   guest_ready_ms: null, viewport_state: "off", viewport_issue: null, display_available: false,
   display_attached: false, display_config: null, display_error: null, display_setup_error: null, control_owner: "none",
-  input_available: false, agent_busy: false,
+  input_available: false, agent_busy: false, active_task: null,
 };
 const running: Partial<StatusPayload> = { computer_created: true, computer_state: "running", viewport_state: "ready", guest_state: "ready" };
 const task: AgentTask = { id: "task-1", title: "Organize my notes", status: "pending", created_at: "2026-09-22T10:00:00Z", updated_at: "2026-09-22T10:00:00Z" };
+const noModel: ModelSettings = {
+  configured: false, key_source: null, model: "claude-opus-5", effort: "high",
+  models: ["claude-opus-5", "claude-sonnet-5", "claude-opus-5-5"], efforts: ["low", "medium", "high", "xhigh", "max"],
+};
+const withKey: ModelSettings = { ...noModel, configured: true, key_source: "keychain" };
 
 beforeEach(() => {
   bridge.native = true;
@@ -28,7 +33,9 @@ beforeEach(() => {
   vi.spyOn(api, "getStatus").mockResolvedValue(status);
   vi.spyOn(api, "listEvents").mockResolvedValue([]);
   vi.spyOn(api, "listTasks").mockResolvedValue([]);
-  vi.spyOn(api, "getImageStatus").mockResolvedValue({ status: "ready", preparing: false, stage: null, downloaded: 0, total: 0, error: null });
+  vi.spyOn(api, "getModelSettings").mockResolvedValue(noModel);
+  vi.spyOn(api, "runTask").mockResolvedValue(null);
+  vi.spyOn(api, "cancelTask").mockResolvedValue(null);
   vi.spyOn(api, "getHostCapabilities").mockResolvedValue({ platform: "macos", architecture: "arm64", backend: "real", backend_available: true, backend_detail: "", guest_transport: "virtio_socket", guest_transport_available: true, required_setup: [], supported: true });
   vi.spyOn(api, "suggestedEffects").mockResolvedValue({ tier: "reduced" });
   vi.spyOn(api, "accessibilityDisplay").mockResolvedValue({ reduce_transparency: false, increase_contrast: false });
@@ -74,7 +81,7 @@ describe("desktop shell", () => {
     render(<App />);
     await ready();
     fireEvent.click(screen.getByRole("button", { name: "Organize a folder" }));
-    expect(composer().value).toMatch(/^Sort the files in Downloads/);
+    expect(composer().value).toMatch(/^Create a folder called notes/);
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -90,6 +97,9 @@ describe("desktop shell", () => {
     expect(await screen.findByRole("heading", { level: 1, name: task.title })).toBeTruthy();
     expect(api.createTask).toHaveBeenCalledExactlyOnceWith(task.title);
     expect(await screen.findByText("Waiting for a model")).toBeTruthy();
+    // Without a model nothing is started behind the person's back.
+    expect(api.runTask).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     await waitFor(() => expect(screen.getByRole("region", { name: "Now" }).textContent).toContain("Not started"));
     // No reply box on a task: there is no command for follow-ups.
     expect(screen.queryByRole("textbox", { name: "New task" })).toBeNull();
@@ -101,6 +111,55 @@ describe("desktop shell", () => {
     expect(within(panel()).queryByRole("button", { name: "Focus its computer" })).toBeNull();
     fireEvent.click(within(panel()).getByRole("button", { name: "Close computer" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Computer" })).toBeNull());
+  });
+
+  it("starts the job at once when a model is connected, and stops it with the task's own Stop", async () => {
+    const connected = { ...status, model: "configured" as const };
+    vi.mocked(api.getStatus).mockResolvedValue(connected);
+    vi.mocked(api.getModelSettings).mockResolvedValue(withKey);
+    vi.spyOn(api, "createTask").mockImplementation(async () => {
+      vi.mocked(api.listTasks).mockResolvedValue([task]);
+      return task;
+    });
+    vi.mocked(api.runTask).mockImplementation(async () => {
+      vi.mocked(api.listTasks).mockResolvedValue([{ ...task, status: "running" }]);
+      vi.mocked(api.getStatus).mockResolvedValue({ ...connected, active_task: task.id });
+      vi.mocked(api.listEvents).mockResolvedValue([
+        { type: "agent_message", task_id: task.id, kind: "progress", text: "Looking at the notes folder first", at: "2026-09-22T10:00:02Z" },
+      ]);
+      return null;
+    });
+    render(<App />);
+    await ready();
+    // The composer names the model Core will use.
+    expect(await screen.findByRole("button", { name: "Model: Claude Opus 5" })).toBeTruthy();
+    fireEvent.change(composer(), { target: { value: task.title } });
+    fireEvent.submit(screen.getByRole("form", { name: "New task" }));
+    expect(await screen.findByRole("heading", { level: 1, name: task.title })).toBeTruthy();
+    await waitFor(() => expect(api.runTask).toHaveBeenCalledExactlyOnceWith(task.id));
+    const now = screen.getByRole("region", { name: "Now" });
+    await waitFor(() => expect(now.textContent).toContain("Looking at the notes folder first"));
+    expect(screen.getByRole("article", { name: "Note from Pegoles" }).textContent).toBe("Looking at the notes folder first");
+    expect(screen.queryByText("Waiting for a model")).toBeNull();
+
+    fireEvent.click(within(now).getByRole("button", { name: /Stop/ }));
+    await waitFor(() => expect(api.cancelTask).toHaveBeenCalledExactlyOnceWith(task.id));
+  });
+
+  it("keeps a task whose start was refused, says why on the task, and offers Start again", async () => {
+    vi.mocked(api.getStatus).mockResolvedValue({ ...status, model: "configured" });
+    vi.mocked(api.listTasks).mockResolvedValue([task]);
+    vi.mocked(api.runTask).mockRejectedValue("task 0199 is already running");
+    render(<App />);
+    await ready();
+    fireEvent.click(await within(sidebar()).findByRole("button", { name: /Organize my notes/ }));
+    expect(await screen.findByText("Not started yet")).toBeTruthy();
+    // Pending tasks never start on their own: only the person's Start does.
+    expect(api.runTask).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(api.runTask).toHaveBeenCalledExactlyOnceWith(task.id));
+    expect(await screen.findByText(/^Pegoles is working on another task\. It works on one task at a time/, { selector: ".notice__problem" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
   });
 
   it("keeps a failed hand-off's words and says so beside the prompt", async () => {
@@ -163,7 +222,7 @@ describe("desktop shell", () => {
     const using: AgentTask = { ...task, status: "running" };
     const request = { action_id: "a1", task_id: using.id, computer_id: "vm", action: { type: "click", x: 0.2, y: 0.4 }, requested_at: "2026-09-22T10:00:05Z" };
     const events: AgentEvent[] = [{ type: "action_started", action_id: "a1", request, at: "2026-09-22T10:00:05Z" }];
-    vi.mocked(api.getStatus).mockResolvedValue({ ...status, ...running, model: "local", viewport_state: "agent_active", control_owner: "agent", agent_busy: true });
+    vi.mocked(api.getStatus).mockResolvedValue({ ...status, ...running, model: "configured", viewport_state: "agent_active", control_owner: "agent", agent_busy: true });
     vi.mocked(api.listTasks).mockResolvedValue([using]);
     vi.mocked(api.listEvents).mockResolvedValue(events);
     render(<App />);

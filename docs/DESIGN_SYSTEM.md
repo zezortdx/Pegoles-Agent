@@ -83,10 +83,14 @@ scene: Pegoles' mark travels from Home into the status bar (shared
 objective rises in. Nothing animates `layout` inside a column that is
 itself moving. Reduced motion removes movement and keeps fades.
 
-**Honest-state constraints.** No model runner (tasks stay *Not started*,
-said once, with the real ways forward), no approval or follow-up command,
-no native live view (snapshots instead; taking over says why it isn't
-offered).
+**Honest-state constraints (2026-09-26).** Tasks run through the agent
+orchestrator once a model key is connected (Settings → Model); without
+one they stay *Waiting for a model*, said once, with the way forward.
+The agent's own notes appear in the task as plain text. There is no
+approval or follow-up command (the policy fails closed instead), no
+native live view (snapshots instead; taking over says why it isn't
+offered), and the computer has no network: starters and copy never
+promise web access or access to the Mac's files.
 
 ## 1. Philosophy
 

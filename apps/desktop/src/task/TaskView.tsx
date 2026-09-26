@@ -2,6 +2,7 @@ import { useEffect, useRef, type Ref } from "react";
 import { m } from "motion/react";
 import type { AgentTask } from "../lib/tauri";
 import type { TaskActivity } from "../state/agentState";
+import type { HumanError } from "../state/errors";
 import type { TranscriptItem } from "../state/transcript";
 import type { ActivityPill } from "../lib/taskState";
 import { duration, ease } from "../lib/motion";
@@ -22,20 +23,45 @@ export interface TaskViewProps {
   readonly onHeadingVisible: (visible: boolean) => void;
   readonly onOpenComputer: () => void;
   readonly onModelSettings: () => void;
+  /** Start the agent on this task (only offered while it hasn't started). */
+  readonly onStart: () => void;
+  /** A start is in flight. */
+  readonly starting?: boolean;
+  /** Why the last start of this task didn't happen. */
+  readonly startError?: HumanError | null;
 }
 
 function actionCount(items: readonly TranscriptItem[]): number {
   return items.reduce((sum, item) => sum + (item.kind === "actions" ? item.steps.length : item.kind === "file" ? 1 : 0), 0);
 }
 
-/** Pegoles can't start: said once, where the work would be, with the real ways forward. */
-function NotStarted({ activity, onOpenComputer, onModelSettings }: { activity: TaskActivity; onOpenComputer: () => void; onModelSettings: () => void }) {
+type NotStartedProps = Pick<TaskViewProps, "activity" | "onOpenComputer" | "onModelSettings" | "onStart" | "starting" | "startError">;
+
+const NOT_STARTED_TITLE = { "needs-model": "Waiting for a model", ready: "Not started yet", busy: "Pegoles is busy" } as const;
+const NOT_STARTED_BODY = {
+  ready: "Pegoles will do this on its own computer once you start it.",
+  busy: "Pegoles is working on another task. It works on one at a time, so start this one when that one ends.",
+} as const;
+
+/** The task hasn't started: said once, where the work would be, with the real ways forward. */
+function NotStarted({ activity, onOpenComputer, onModelSettings, onStart, starting = false, startError }: NotStartedProps) {
+  const start = activity.start ?? "ready";
+  const needsModel = start === "needs-model";
   return (
     <div className="notice" data-tone="quiet">
-      <p className="notice__title">Waiting for a model</p>
-      <p className="notice__body">{activity.detail}</p>
+      <p className="notice__title">{NOT_STARTED_TITLE[start]}</p>
+      <p className="notice__body">{needsModel ? activity.detail : NOT_STARTED_BODY[start]}</p>
+      {startError && (
+        <p className="notice__problem" role="alert">{startError.hint ? `${startError.title} ${startError.hint}` : startError.title}</p>
+      )}
       <div className="notice__actions">
-        <button type="button" className="btn btn--line btn--small" onClick={onModelSettings}>Model settings</button>
+        {needsModel ? (
+          <button type="button" className="btn btn--line btn--small" onClick={onModelSettings}>Model settings</button>
+        ) : (
+          <button type="button" className="btn btn--primary btn--small" disabled={start === "busy" || starting} onClick={onStart}>
+            {starting ? <><span className="spinner" aria-hidden="true" />Starting…</> : "Start"}
+          </button>
+        )}
         <button type="button" className="btn btn--quiet btn--small" onClick={onOpenComputer}>Open its computer</button>
       </div>
     </div>
@@ -60,7 +86,7 @@ export function TaskView(props: TaskViewProps) {
   }, [onHeadingVisible]);
 
   const actions = actionCount(items);
-  const notStarted = activity.mode === "blocked" && !!activity.offerComputer;
+  const notStarted = task.status === "pending" && !!activity.start;
   const waitingFirst = activity.live && !notStarted && activity.mode !== "needs-user" && items.length <= 1;
   const facts = [
     `${task.status === "pending" ? "Created" : "Started"} ${timeOf(task.created_at)}`,
@@ -86,7 +112,10 @@ export function TaskView(props: TaskViewProps) {
             </p>
           </m.header>
 
-          {notStarted && <NotStarted activity={activity} onOpenComputer={props.onOpenComputer} onModelSettings={props.onModelSettings} />}
+          {notStarted && (
+            <NotStarted activity={activity} onOpenComputer={props.onOpenComputer} onModelSettings={props.onModelSettings}
+              onStart={props.onStart} starting={props.starting} startError={props.startError} />
+          )}
           <Narrative items={items} animated={props.animated} live={activity.live} failedAt={task.status === "failed" ? activity.detail : undefined} />
           {waitingFirst && <p className="narrative__waiting"><span className="narrative__pulse pg-work-anim" aria-hidden="true" />Waiting for the first action</p>}
         </div>

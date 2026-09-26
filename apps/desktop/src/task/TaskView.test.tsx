@@ -6,15 +6,25 @@ import type { TaskActivity } from "../state/agentState";
 import type { TranscriptItem, TranscriptStep } from "../state/transcript";
 import { activityPill } from "../lib/taskState";
 import type { AgentTask } from "../lib/tauri";
+import type { HumanError } from "../state/errors";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const at = "2026-09-24T10:00:00Z";
 const task: AgentTask = { id: "t", title: "Research competitors", status: "pending", created_at: at, updated_at: at };
 const request: TranscriptItem = { kind: "request", id: "r", text: task.title, at };
-const quiet: TaskActivity = { mode: "blocked", headline: "Can’t start yet", detail: "No model is connected in this build.", recent: [], pulse: 0, live: true, offerComputer: true };
+const quiet: TaskActivity = { mode: "blocked", headline: "Can’t start yet", detail: "Pegoles needs a model to work on tasks.", recent: [], pulse: 0, live: true, offerComputer: true, start: "needs-model" };
+const ready: TaskActivity = { mode: "idle", headline: "Not started", recent: [], pulse: 0, live: false, start: "ready" };
 const working: TaskActivity = { mode: "working", headline: "Working with files", recent: [], pulse: 1, live: true };
 
-const view = (activity: TaskActivity, items: readonly TranscriptItem[] = [request], patch: Partial<AgentTask> = {}, handlers: { onOpenComputer?: () => void; onHeadingVisible?: (visible: boolean) => void } = {}) => {
+interface Extra {
+  onOpenComputer?: () => void;
+  onHeadingVisible?: (visible: boolean) => void;
+  onStart?: () => void;
+  starting?: boolean;
+  startError?: HumanError | null;
+}
+
+const view = (activity: TaskActivity, items: readonly TranscriptItem[] = [request], patch: Partial<AgentTask> = {}, handlers: Extra = {}) => {
   const current = { ...task, ...patch };
   return render(
     <TaskView
@@ -27,6 +37,9 @@ const view = (activity: TaskActivity, items: readonly TranscriptItem[] = [reques
       onHeadingVisible={handlers.onHeadingVisible ?? (() => undefined)}
       onOpenComputer={handlers.onOpenComputer ?? (() => undefined)}
       onModelSettings={() => undefined}
+      onStart={handlers.onStart ?? (() => undefined)}
+      starting={handlers.starting}
+      startError={handlers.startError}
     />,
   );
 };
@@ -55,6 +68,59 @@ describe("TaskView", () => {
     expect(screen.getByText("Waiting for a model")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open its computer" }));
     expect(open).toHaveBeenCalledOnce();
+  });
+
+  it("offers Start once a model is connected, and says why a start didn't happen", () => {
+    const onStart = vi.fn();
+    const refused: HumanError = { scope: "run", title: "Pegoles is working on another task.", hint: "It works on one task at a time.", detail: "task x is already running", retryable: true };
+    view(ready, [request], {}, { onStart, startError: refused });
+    expect(screen.getByText("Not started yet")).toBeTruthy();
+    expect(screen.queryByText("Waiting for a model")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toBe("Pegoles is working on another task. It works on one task at a time.");
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+
+  it("holds Start while Pegoles works on another task, or while a start is in flight", () => {
+    const view1 = view({ ...ready, start: "busy", detail: "Pegoles is working on another task" });
+    expect(screen.getByText("Pegoles is busy")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+    view1.unmount();
+    view(ready, [request], {}, { starting: true });
+    expect((screen.getByRole("button", { name: /Starting/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("never offers Start without a model", () => {
+    view(quiet);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Model settings" })).toBeTruthy();
+  });
+
+  it("tells Pegoles' own words as plain text, never markup", () => {
+    const items: TranscriptItem[] = [
+      request,
+      { kind: "message", id: "m1", variant: "progress", text: "Opening <b>the</b> <img src=x onerror=alert(1)> browser", at },
+      { kind: "message", id: "m2", variant: "summary", text: "Found three plans.\nThe cheapest is Free.", at },
+      { kind: "message", id: "m3", variant: "error", text: "Stopped by the user.", at },
+    ];
+    view({ ...working, live: false, mode: "idle" }, items, { status: "cancelled" });
+    const note = screen.getByRole("article", { name: "Note from Pegoles" });
+    expect(note.textContent).toBe("Opening <b>the</b> <img src=x onerror=alert(1)> browser");
+    expect(note.querySelector("b, img")).toBeNull();
+    expect(screen.getByRole("article", { name: "Pegoles’ summary" }).textContent).toContain("The cheapest is Free.");
+    expect(screen.getByRole("article", { name: "Why Pegoles stopped" }).textContent).toBe("Stopped by the user.");
+  });
+
+  it("folds a long note until asked", () => {
+    const long = Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of what Pegoles found.`).join("\n");
+    view(working, [request, { kind: "message", id: "m", variant: "summary", text: long, at }], { status: "running" });
+    const text = screen.getByText(/Line 1 of what/);
+    expect(text.hasAttribute("data-folded")).toBe(true);
+    const more = screen.getByRole("button", { name: "Show more" });
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(more);
+    expect(text.hasAttribute("data-folded")).toBe(false);
+    expect(screen.getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("shows an honest empty state before any work has happened", () => {
@@ -149,6 +215,19 @@ describe("StatusDock", () => {
     dock({ mode: "using-computer", headline: "Using its computer", recent: [], pulse: 1, live: true }, { onWatch });
     fireEvent.click(screen.getByRole("button", { name: /Watch/ }));
     expect(onWatch).toHaveBeenCalledOnce();
+  });
+
+  it("says why a stopped run ended, in Pegoles' words", () => {
+    dock({ mode: "idle", headline: "Cancelled", recent: [], pulse: 2, live: false, at, reason: "Stopped by the user." });
+    expect(screen.getByRole("region", { name: "Now" }).textContent).toContain("Stopped by the user.");
+  });
+
+  it("says a task hasn't started, and why, without offering Stop", () => {
+    dock({ mode: "idle", headline: "Not started", detail: "Pegoles is working on another task", recent: [], pulse: 0, live: false, start: "busy" });
+    const now = screen.getByRole("region", { name: "Now" });
+    expect(now.textContent).toContain("Not started");
+    expect(now.textContent).toContain("Pegoles is working on another task");
+    expect(screen.queryByRole("button", { name: /Stop/ })).toBeNull();
   });
 
   it("offers the next job once the work has settled", () => {

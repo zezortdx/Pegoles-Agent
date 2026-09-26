@@ -28,7 +28,7 @@ export interface ToolbarProps {
 /** Colour of the small light on the Computer toggle: who is acting on it. */
 function lightOf(model: ComputerModel): string | undefined {
   switch (model.phase) {
-    case "agent": case "starting": case "preparing": return "live";
+    case "agent": case "starting": return "live";
     case "user": return "attention";
     case "ready": return "ready";
     case "error": return "error";

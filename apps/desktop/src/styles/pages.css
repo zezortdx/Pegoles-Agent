@@ -185,7 +185,50 @@ button.activity-quiet__row:hover { background: var(--fill-hover); }
 .security-value { font-weight: 500; }
 .security-value[data-tone="on"] { color: var(--tone-done); }
 .security-value[data-tone="blocked"] { color: var(--danger-text); }
-.security-value[data-tone="ask"] { color: var(--warn-text); }
+.settings__problem { padding: 0 2px; color: var(--danger-text); font: var(--type-small); max-width: 64ch; overflow-wrap: anywhere; }
+.settings__ok { padding: 0 2px; color: var(--tone-done); font: var(--type-small); }
+
+/* A key goes in once and is never shown again: the field is a password field. */
+.setting--form { flex-wrap: wrap; row-gap: 8px; }
+.setting__field { display: flex; align-items: center; gap: 6px; flex: 1 1 260px; max-width: 360px; }
+.field {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+  color: var(--text-1);
+  font: var(--type-mono);
+  transition: box-shadow var(--dur-micro) var(--ease-out);
+}
+.field::placeholder { color: var(--text-4); }
+.field:hover:not(:disabled) { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.22); }
+.field:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent-line), 0 0 0 3px var(--accent-soft); }
+.field:disabled { color: var(--text-disabled); }
+
+/* A native select in the grouped-form style: the menu stays the system's. */
+.select { position: relative; display: inline-flex; align-items: center; }
+.select select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 26px;
+  padding: 0 28px 0 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--fill-quiet);
+  box-shadow: var(--edge);
+  color: var(--text-1);
+  font: var(--type-ui);
+  font-weight: 500;
+  transition: background-color var(--dur-micro) var(--ease-out);
+}
+.select select:hover:not(:disabled) { background: var(--fill-hover); }
+.select select:disabled { color: var(--text-disabled); }
+.select__chevron { position: absolute; right: 9px; color: var(--icon-3); pointer-events: none; }
+
 .settings__dev { margin-top: 28px; }
 .settings__dev-summary { list-style: none; padding: 0 2px 8px; color: var(--text-3); }
 .settings__dev-summary::-webkit-details-marker { display: none; }

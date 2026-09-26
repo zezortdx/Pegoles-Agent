@@ -5,6 +5,7 @@
 //! `MacOSVirtualizationBackend`, `LinuxKvmBackend`, `WindowsHyperVBackend`.
 //! Phase 1 ships [`MockComputerBackend`] for development and tests.
 
+pub mod computer_store;
 pub mod config;
 pub mod coords;
 pub mod display;

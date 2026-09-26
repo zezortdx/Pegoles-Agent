@@ -56,6 +56,7 @@ trap 'rm -rf "$STAGE"' EXIT
 cp "$RUNTIME" "$STAGE/pegoles-guest-runtime"
 mkdir "$STAGE/units"
 cp "$UNITS"/*.service "$STAGE/units/"
+cp "$ROOT/scripts/build-guest-image/seed/sysctl/60-pegoles-hardening.conf" "$STAGE/sysctl.conf"
 put() { # put <local> <guest path> <mode>
   {
     echo "rm $2"
@@ -69,6 +70,8 @@ put "$STAGE/pegoles-guest-runtime" /usr/local/bin/pegoles-guest-runtime 755
 for unit in "$STAGE"/units/*.service; do
   put "$unit" "/etc/systemd/system/$(basename "$unit")" 644
 done
+
+put "$STAGE/sysctl.conf" /etc/sysctl.d/60-pegoles-hardening.conf 644
 
 WANTS=/etc/systemd/system/multi-user.target.wants
 enable() { # enable <unit>

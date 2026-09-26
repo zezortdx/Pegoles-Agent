@@ -34,9 +34,9 @@ export interface ComposerControlsProps {
 export function ComposerControls({ modelReady, modelName, onSafety, onModel }: ComposerControlsProps) {
   return (
     <>
-      <button type="button" className="composer-chip" onClick={onSafety} title="Pegoles asks before risky steps. See the rules.">
+      <button type="button" className="composer-chip" onClick={onSafety} title="Pegoles acts only inside its own isolated computer. See the rules.">
         <ShieldIcon size={14} />
-        <span>Asks before risky steps</span>
+        <span>Stays inside its computer</span>
       </button>
       <button type="button" className="composer-chip" data-tone={modelReady ? undefined : "attention"} onClick={onModel}
         aria-label={modelReady ? `Model: ${modelName ?? "connected"}` : "No model connected. Open settings"}>

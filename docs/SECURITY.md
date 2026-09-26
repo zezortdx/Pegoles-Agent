@@ -1,149 +1,125 @@
 # Security
 
-These invariants are architectural, not aspirational. Violating any of them is a bug.
+Pegoles runs a model-driven agent against a computer. The design goal is
+that a fully prompt-injected model, a hostile web page or file inside
+the guest, or a compromised guest OS cannot reach the user's Mac. This
+document states what is enforced today, where, and what is not.
 
-## 1. Model-generated commands never execute directly on the host
+## Trust boundaries
 
-There is no code path from a model (or an action) to `std::process::Command` on the host. `Shell` means "inside Pegoles Computer". The`ComputerBackend` trait exposes lifecycle operations only (`start/stop/pause/…`), never host execution.
+```text
+ user ─▶ webview UI ─(Tauri commands)─▶ Pegoles Core (Rust, host)
+                                           │  typed ComputerAction only
+          model (Anthropic API) ◀─HTTPS─ agent runner ─▶ Policy ─▶ executor
+                                           │
+                                  pegoles-vm-host (Swift, child process)
+                                           │  Virtualization.framework
+                                 ┌─────────┴──────────────── hypervisor ──┐
+                                 │ guest: Debian + weston + foot + runtime │
+                                 └─────────────────────────────────────────┘
+```
 
-## 2. All agent actions pass through structured actions
+| Boundary | Trust | Enforcement |
+|---|---|---|
+| Model → host | untrusted | model output is parsed into typed actions only (`pegoles-agent/src/anthropic.rs::translate`); unknown tools, out-of-screen coordinates and unsupported members become error results, never actions |
+| Action → execution | untrusted | `pegoles-policy::evaluate` (exhaustive, deterministic) on every action, then Core's executor (rate limit, control arbitration) |
+| Guest → host | hostile | vsock frames ≤ 64 KiB, UTF-8, typed parse, bounded fields; frame reassembly caps; per-connection line-rate limit; bounded queues everywhere between guest and Core |
+| Guest process → host channel | hostile | the helper accepts a vsock peer only from a reserved source port (≤ 1023), which only the runtime (CAP_NET_BIND_SERVICE via its unit) can bind |
+| Webview → Core | semi-trusted UI | fixed command set, no path/URL/process arguments; strict CSP in release; Design Lab commands compiled only in debug builds |
+| Host → model provider | external service | HTTPS only; sends the objective, screenshots of the VM and the model's own history; never host files, host screen, or the key in content |
 
-The future LLM may only emit `ComputerAction` (`crates/pegoles-protocol/src/actions.rs`). Raw shell strings from a model are data until classified — never commands. Any PR adding `HostShell` / `ExecuteOnHost` / `RawHostCommand` must be rejected.
+## Invariants (enforced)
 
-## 3. Every structured action passes through Pegoles Policy
+1. **No model-to-host execution path.** There is no host shell, file,
+   process, or URL action anywhere in the protocol. The action
+   vocabulary is observe / pointer / keyboard / wait inside the VM
+   (`pegoles-protocol/src/actions.rs`); unknown `type` tags fail to
+   deserialize. Removed in 2026-09: `shell`, `read_file`, `write_file`,
+   `open_url` (they were never implemented in the guest and used to
+   report false success).
+2. **Every action passes policy.** `evaluate` is an exhaustive match
+   (a new variant does not compile without a rule): unit-square
+   coordinates, drag/scroll/wait/text caps, key vocabulary, no control
+   characters in typed text, a key-material tripwire. Waits pass
+   policy and audit too (`begin_wait`/`end_wait`). `RequireApproval`
+   is reserved and treated as a denial (fail closed): no current action
+   produces it.
+3. **The VM has no network device, no shared folders, no clipboard, no
+   host input devices** (`VmManager.swift::buildConfiguration`). With no
+   network, nothing the agent does inside the VM can have an external
+   side effect; that is why in-VM actions need no approval prompts.
+4. **The guest is untrusted.** All guest frames are parsed as data with
+   bounds; malformed or oversized input drops the connection, never the
+   host (a char-boundary panic in error truncation was fixed and
+   regression-tested). Frames larger than 64 MiB or with inconsistent
+   stride are rejected. A guest that stops reading, floods, or hangs is
+   disconnected; a helper that stops answering is killed (and its VM
+   with it) instead of wedging the app.
+5. **Only the runtime can speak for the guest.** Reserved-port peer
+   authentication (above) plus a non-dumpable runtime process
+   (`PR_SET_DUMPABLE 0`) and Yama `ptrace_scope=2` mean an app running
+   inside the guest cannot impersonate the runtime, forge
+   acknowledgements, tamper with the compositor, or read typed input.
+   The agent's terminal additionally has no vsock sockets and no device
+   nodes beyond the basics (no `/dev/uinput`). An app can still kill the
+   runtime (same user): the host sees the disconnect, systemd restarts
+   it without a start limit, measured recovery ≈ 3 s.
+6. **Control ownership is checked atomically.** Agent input reaches the
+   guest only while the agent owns control, checked under the same lock
+   as the dispatch; any path that takes control from the agent (pause,
+   stop, failure, human takeover) cancels its run. Typed text is sent in
+   64-character slices so Stop interrupts a long paste within ~1 s, and
+   Stop/Pause/Take Control cancel the run before waiting for the state.
+7. **Reset is a real reset**: fresh disk clone and a fresh EFI variable
+   store (a guest root cannot persist boot entries through NVRAM).
+8. **No orphan VMs.** The helper exits on stdin EOF and on parent death
+   (kqueue process watch), stopping every VM it owns first.
+9. **Host filesystem.** VM state lives only under
+   `~/Library/Application Support/Pegoles` (0700 dirs, 0600 disks).
+   The sealed image is read-only; each computer gets an APFS clone.
+   Image downloads are HTTPS-only, archive members must be regular
+   files (no symlink following), extraction ignores archive ownership
+   and modes. A normal create boots only a sealed Pegoles image; booting
+   plain Debian is a debug-build image-builder path.
+10. **Secrets.** The Anthropic key is stored in the macOS Keychain
+   (service `dev.pegoles.agent`) or read from `ANTHROPIC_API_KEY`; it is
+   never returned to the webview, never logged (`Debug` redacts it),
+   never placed in model context, and never sent to the guest. No
+   credentials are baked into the guest image (root and `pegoles`
+   accounts are locked; sshd and its vsock/unix socket activation are
+   masked).
+11. **Child processes** get a scrubbed environment (`env_clear`) and fixed
+   arguments: the VM helper and `/usr/bin/tar` (image builder path).
 
-`pegoles-policy::evaluate()` is deterministic code, not AI. `Allow` / `Deny` / `RequireApproval` is computed from the action + `PolicyContext` before anything runs.
+## Prompt injection
 
-## 4. Pegoles Computer is treated as untrusted
+Screen content is data. The system prompt says so, and Anthropic's
+server-side classifiers flag injections in screenshots, but neither is
+relied on: the policy and the missing network bound what a fully
+injected model can do to "type, click and look inside a disposable,
+offline VM". Reset returns the VM to the sealed image.
 
-Guest output is data, never trusted instructions. Future guest-runtime messages must be validated against `pegoles-protocol` schemas and capability-checked.
+## Residual risks (known, accepted for now)
 
-## 5. Host filesystem is inaccessible unless an explicit Host Bridge capability is granted
+- A compromised guest can kill or starve the runtime (denial of service
+  of the agent, not host access).
+- Weston runs with `--debug` (required for `weston_capture_v1`); any
+  guest client of the same user can capture the guest screen.
+- The GUI apps and the runtime share one guest user; a dedicated runtime
+  user (Wayland access through a group) is future work.
+- The key-material tripwire in policy is a heuristic, not a boundary.
+- Hypervisor escape is out of scope (Apple Virtualization.framework is
+  the boundary).
+- Windows (HCS) code has not been compiled or run in this environment;
+  its security properties are unverified.
 
-No `HostBridge` exists in Phase 1. `VirtualPath` (guest path) and host paths are different concepts; `is_host_path()` denies `/Users/`, `/etc/`, `~`, `C:\`, `..` escapes, and `.ssh` access. A future bridge would be an explicit, auditable, per-grant capability — not a default.
+## Tests that pin these properties
 
-## 6. Secrets must never be placed directly in LLM context
-
-Policy denies typing or reading credential patterns (`AWS_SECRET*`, `PRIVATE KEY`, `*.pem`, `*_TOKEN`). Future work: a secret vault + redaction at the Core boundary.
-
-## 7. Network access will be policy-controlled
-
-Phase 1: `OpenUrl` and network-adjacent shell (`curl`, `wget`, `apt`, `pip`) yield `RequireApproval`. Default-deny networking at the VM boundary arrives with the real backend.
-
-## 8. The VM boundary is part of the security model, not merely a convenience
-
-Isolation is enforced by the hypervisor (`Virtualization.framework` on macOS), not by good intentions in userspace. The Mock backend exists for development only and provides zero isolation — it must never be mistaken for a security boundary.
-
-## Where each invariant lives in code
-
-| Invariant | Enforcement point |
-|---|---|
-| 1, 2 | `pegoles-protocol/src/actions.rs` (enum shape + guard test); `vmhost_proto.rs::no_shell_command_exists` (wire protocol has no host execution) |
-| 3 | `pegoles-policy/src/engine.rs` (`evaluate`) |
-| 4 | `pegoles-computer/src/traits.rs` (trait docs), guest output treated as data |
-| 5 | `VirtualPath` type + `is_host_path()` in policy; Phase 2: no shared directories, no clipboard, VM data confined to Application Support |
-| 6 | `looks_like_secret()` in policy |
-| 7 | `classify_shell()` + `OpenUrl` rule; Phase 2: VM has no network device attached |
-| 8 | `MacOSVirtualizationBackend` + `native/macos/pegoles-vm-host` (hypervisor isolation; Mock is dev-only) |
-
-## Phase 2 notes
-
-- `pegoles-vm-host` is a lifecycle-only helper: its command set is
-  `version/validate/create/start/pause/resume/stop/state/destroy`. Any other
-  command is rejected. The model cannot reach this channel.
-- Spawning `/usr/bin/tar` (verified-archive extraction) and the `curl`-free
-  `ureq` download in `image.rs` are first-party installer behavior with
-  fixed arguments — not model-generated host execution (invariant 1 covers
-  model actions; no model exists yet and no path will be added).
-- Helper crash/disconnect forces backend state to `Error`
-  (`BackendDisconnected`); Core never shows a stale Running.
-- No sudo is required at any point.
-
-## Phase 3.5 notes: Windows threat model
-
-The same invariants hold on every host; only the mechanism names change:
-
-- **Hyper-V VM = security boundary** (same role as the
-  Virtualization.framework VM on macOS). Guest escape is out of scope;
-  hypervisor isolation is the assumption, not userspace goodwill.
-- **Hyper-V socket = untrusted guest input boundary** (same role as the
-  virtio socket). Every frame is length-bounded, version-checked, and
-  parsed as data. A compromised guest gains NO access to: host
-  filesystem, Windows credentials, registry, user profile, DPAPI, SSH
-  keys, browser profile, or arbitrary host process execution — the
-  socket is a protocol interface, not a privilege passage.
-- **No HCS process execution, ever.** HCS can spawn processes inside
-  compute systems; Pegoles must not use that as an LLM shortcut. Flow
-  stays Model → Structured Action → Policy → Guest Protocol → Guest
-  Runtime → guest action. Never Model → host process (any OS).
-- **Privileged setup ≠ privileged runtime.** Socket-service registration
-  and group membership are one-time installer steps; the runtime only
-  verifies. Pegoles never runs as Administrator for daily use and never
-  silently changes group membership.
-- Socket-service GUIDs are derived deterministically from the logical
-  port (`hyperv_service_guid_for_port`, tested) — never scattered
-  hardcoded GUIDs, never registry writes from the runtime.
-
-## Phase 5 notes: Eyes & Hands (structured guest input + observation)
-
-Computer input targets the guest only:
-
-- The ONLY input path is `ComputerAction` → Policy → `ComputerInputBackend`
-  → vsock `HostMessage::Input`/`GetFrame` → guest runtime → compositor
-  devices (uinput touchscreen/keyboard, Wayland screenshooter client).
-- No host input API exists: no global event synthesis, no host process
-  control, no clipboard bridge (typing uses the guest input path;
-  `input.rs::no_host_input_or_capture_apis` fails the build on
-  `CGEvent`/`SendInput`/clipboard tokens).
-- No host screen capture API exists: `ObserveScreen` captures the VM
-  framebuffer inside the guest; pixels never include host windows
-  (`stride_consistent` + dimension caps enforced on receipt).
-
-Observation captures the guest only:
-
-- Frames carry metadata (`ObservedFrameMeta`: id, timestamp, dimensions,
-  encoding) in events; pixels travel out-of-band and are cached with
-  dedup (`FrameCache`), never streamed at 60 fps.
-
-Control ownership prevents human/agent conflicts:
-
-- `ControlArbiter`: agent acts only under `None`/`Agent`; a human
-  `take_control` from `Agent` cancels the agent sequence and releases
-  pressed state BEFORE granting `User` (never simultaneous).
-- Cancellation (takeover, pause, stop, destroy, shutdown) always
-  releases held buttons/modifiers on both host (`PressedState`) and
-  guest (runtime `release_all` on disconnect/drop).
-
-Actions are structured and pass policy:
-
-- New pointer/keyboard/observation actions are allow-listed in
-  `pegoles-policy` with static caps (unit square, drag/scroll/text/wait
-  limits, key vocabulary); out-of-range or unknown input is `Deny`.
-- The guest re-validates every op (`validate_op`) and advertises
-  capabilities (`input`/`frame` in `GuestHello`); old guests get an
-  honest `UnsupportedOperation`, never a silent pretend.
-- The guest wire stays free of shell/file/process verbs
-  (`no_capability_creep_in_v01` guard, Phase 5 allowlist).
-
-## Phase 3.6 review (Windows real code + performance)
-
-Re-reviewed with the HCS backend, Hyper-V transport, setup tool, and
-governor in place. No new host capabilities were introduced:
-
-- The HCS backend exposes lifecycle + vsock only. `HcsCreateProcess`
-  exists in the API surface but is NEVER called — no code path exists
-  from model/action/policy to guest process creation, on either OS.
-  (`direction_tests` forbids shell-out patterns in `windows.rs`.)
-- The setup tool's registry write is confined to one subkey
-  (ElementName under our own service GUID), requires elevation, explains
-  before acting (`explain`), and verifies after writing. It cannot run
-  arbitrary commands by construction (fixed command set, no args).
-- Hyper-V socket frames are untrusted guest input with the same bounds
-  as virtio (64 KiB, UTF-8, version-checked, unknown types ignored).
-- `ResourceGovernor`, `IdlePolicy`, balloon policy, and `bench.sh` read
-  host facts (sysctl/disk/process table) and never change host state.
-- Builder tooling (`qemu-img`, `debugfs` read-only, Docker) runs on the
-  build machine only; the Windows runtime needs none of it.
-- VHDX non-determinism note: container bytes embed creation metadata,
-  so verification is convert+gate+boot, never cross-build byte compare.
-  Hashes always describe the bytes on disk, never an expectation.
+`pegoles-policy` (vocabulary sweep, caps, control chars, tripwire),
+`pegoles-protocol` (forbidden verbs never deserialize),
+`pegoles-computer` (hostile frames, bounded helper lines, https-only,
+symlinked base, fail-closed create, reset restores disk),
+`pegoles-core` (policy short-circuit, stuck-input release, agent session
+vs display), `pegoles-agent` (translation errors, batch halt, budgets,
+cancellation, append-only history, real executor + policy with Mock),
+and the hardware E2E `crates/pegoles-agent/examples/agent_e2e.rs`.

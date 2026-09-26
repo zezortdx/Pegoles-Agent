@@ -1,9 +1,30 @@
-# Performance (Phase 3.6 foundation)
+# Performance
 
 Pegoles must run smoothly on modest consumer hardware while eventually
 hosting: UI + isolated VM + compositor + browser + runtime + local model
 + orchestration. Performance is architecture, not cleanup. Security
 boundaries are never traded for speed anywhere below.
+
+## Agent path, measured (M4 Pro, image v0.3, release build, 2026-09-26)
+
+`cargo run --release -p pegoles-agent --example agent_e2e` (real VM, the
+product orchestrator; helper copied beside the binary). Before = same
+harness against the pre-session code paths where comparable.
+
+| Metric | Before | After | Change |
+|---|---|---|---|
+| Cold boot → agent-ready (input + frame caps) | 15.1 s | 3.7 s | runtime waits for the Wayland socket before its first hello; idle capability re-probe 10 s → 2 s |
+| Guest runtime killed → Ready again | 31.3 s | 3.2 s | host waits fail fast on channel loss (was: full 30 s capture timeout); reconnect backoff cap 30 s → 5 s |
+| Observe (capture + PNG) p50 / p95 | — | 114 / 157 ms | RGB PNG, fast deflate, encoded with Core unlocked |
+| Cancel → run stopped | — | 2–32 ms | cancel token checked in 50 ms wait slices and between steps |
+| Scripted task (click, type 70 chars, Enter, wait 1.2 s, verify) | — | 2.3 s | |
+| stop + destroy | — | 0.9 s | |
+| Second session boot → ready | — | 3.1 s | |
+
+Structural changes behind these: status reads never queue behind the
+VM (cached status + a background pump that uses `try_lock`); waits never
+hold Core; guest heartbeats no longer depend on the UI polling; bounded
+helper→Core queue (1024 lines) replaces an unbounded channel.
 
 ## Budgets (measured baseline, MacBook Pro Apple Silicon, 2026-09-21)
 

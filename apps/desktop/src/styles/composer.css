@@ -41,7 +41,6 @@
 .strip-item__state[data-phase="ready"] { color: var(--tone-done); }
 .strip-item__state[data-phase="agent"],
 .strip-item__state[data-phase="starting"],
-.strip-item__state[data-phase="preparing"] { color: var(--tone-live); }
 .strip-item__state[data-phase="user"] { color: var(--tone-attention); }
 .strip-item__state[data-phase="error"] { color: var(--tone-error); }
 .strip-note { margin-left: auto; color: var(--text-4); }

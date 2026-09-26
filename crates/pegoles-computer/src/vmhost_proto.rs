@@ -76,10 +76,10 @@ pub struct CreateParams {
     /// normal lifecycle; the guest boots from disk_path alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_iso_path: Option<String>,
-    /// Phase 4: guest framebuffer. When present the helper attaches a
-    /// virtio graphics device (one scanout of this size) plus USB keyboard
-    /// and absolute pointing devices for HUMAN input. Absent = headless
-    /// (Phase 3 behavior). There is no command to inject input.
+    /// Requested guest framebuffer. Informational today: the macOS helper
+    /// always attaches one virtio-gpu scanout (1440x900) and NO host
+    /// keyboard/pointing devices; agent input travels the guest channel
+    /// (uinput inside the guest). There is no command to inject input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<DisplayParams>,
 }

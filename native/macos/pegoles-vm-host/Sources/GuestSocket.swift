@@ -117,6 +117,10 @@ final class GuestLink {
         let wasCurrent = target === current
         if wasCurrent { current = nil }
         lock.unlock()
+        // Wake the reader and fail pending writes BEFORE the fd number is
+        // released: a closed fd can be reused (reconnect, log rotation)
+        // while the old pump or a queued write still holds the number.
+        _ = Foundation.shutdown(target.fd, Int32(SHUT_RDWR))
         closeConnectionOnMainQueue(target.vz)
         if wasCurrent {
             emit(HostEvent(event: "guest_disconnected", computer_id: computerId,
@@ -144,8 +148,12 @@ final class GuestLink {
         conn.backlog += data.count
         lock.unlock()
         conn.writeQueue.async { [weak self] in
-            let ok = GuestLink.writeAll(fd: conn.fd, data: data)
             guard let self else { return }
+            self.lock.lock()
+            let closed = conn.closed
+            self.lock.unlock()
+            if closed { return }
+            let ok = GuestLink.writeAll(fd: conn.fd, data: data)
             self.lock.lock()
             conn.backlog -= data.count
             self.lock.unlock()
@@ -187,9 +195,17 @@ final class GuestLink {
                 if line.last == UInt8(ascii: "\r") { line = line.dropLast() }
                 let text = String(data: Data(line), encoding: .utf8)
                 let tooLarge = line.count > guestFrameMax
+                // Valid JSON Lines never carry raw control bytes (JSON
+                // escapes them); refusing them also bounds how much the
+                // relayed JSON can grow when re-escaped for the host.
+                let hasControl = line.contains { $0 < 0x20 && $0 != 0x09 }
                 pending.removeSubrange(pending.startIndex...nl)
                 if tooLarge {
                     detach(conn, reason: "frame_too_large")
+                    return
+                }
+                if hasControl {
+                    detach(conn, reason: "invalid_frame")
                     return
                 }
                 guard let text else {

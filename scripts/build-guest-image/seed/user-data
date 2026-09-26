@@ -134,6 +134,7 @@ runcmd:
   # Units live as files in the repo (scripts/build-guest-image/seed/units):
   # the same bytes feed this build and patch-image.sh.
   - install -m 0644 -o root -g root /mnt/pegoles-seed/units/*.service /etc/systemd/system/
+  - install -m 0644 -o root -g root /mnt/pegoles-seed/sysctl/60-pegoles-hardening.conf /etc/sysctl.d/
   - /usr/local/bin/pegoles-guest-runtime --version
   # Version-pinned graphical stack (dpkg fails fast on missing deps —
   # extend the seed bundle and rebuild the ISO, never apt online here).

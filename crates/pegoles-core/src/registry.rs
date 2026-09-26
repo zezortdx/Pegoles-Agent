@@ -154,8 +154,10 @@ impl ComputerRegistry {
         self.data_dir.join("images")
     }
 
+    /// Status of the sealed Pegoles image this computer boots (the only
+    /// image a normal create accepts).
     pub fn image_status(&self) -> ImageStatus {
-        self.images.status()
+        self.images.derived_status()
     }
 
     /// Download + verify + extract the base image, reporting real progress.

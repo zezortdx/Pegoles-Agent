@@ -23,32 +23,29 @@ Argument names: Tauri maps top-level JS keys from camelCase
 
 | Command | Args | Returns |
 |---|---|---|
-| `get_status` | — | `StatusPayload` (pumps guest + display first) |
-| `pump` | — | `{ events: AgentEvent[], status: StatusPayload }` — same work as `get_status` plus the events THIS pump published. Call on `pegoles://display-activity`. |
-| `create_computer` | — | `{ info: ComputerInfo \| null }` — product default config: headless, or a `desktop_large` framebuffer when the ready image is graphical and this host can show it (Core decides) |
-| `start_computer` / `pause_computer` / `resume_computer` / `stop_computer` | — | `{ info: ComputerInfo \| null }` |
+| `get_status` | — | `StatusPayload`. Pumps Core when it is free; while a long operation holds Core it returns the cached status (a background thread pumps every 500 ms) |
+| `pump` | — | `{ events: AgentEvent[], status: StatusPayload }` — same work as `get_status` plus the events THIS pump published |
+| `create_computer` | — | `{ info }` — resumes the computer built from the current image, or clones a fresh one |
+| `start_computer` / `resume_computer` | — | `{ info }` |
+| `pause_computer` / `stop_computer` | — | `{ info }` — cancels any agent run first |
+| `reset_computer` | — | `{ info }` — fresh disk + EFI store from the sealed image; refused during a run |
+| `destroy_computer` | — | `{ info: null }` — removes the computer; refused during a run |
 | `list_events` | — | `AgentEvent[]` (history, oldest first, capped at 200) |
-| `get_image_status` | — | `{ status, preparing, stage, downloaded, total, error }` |
-| `prepare_image` | — | starts background download+verify+extract, returns `ImageStatusPayload` immediately |
-| `read_boot_log` | — | `{ available, total_lines, tail }` (last 50 serial lines) |
-| `guest_info` | — | `{ available, info }` (last guest SystemInfo, no UI event) |
-| `guest_ping` | — | `{ latency_ms }` (blocking Ping→Pong off the main thread; fails fast when not Ready) |
-| `get_host_capabilities` | — | `{ platform, architecture, backend, backend_available, backend_detail, guest_transport, guest_transport_available, required_setup, supported }` |
-| `suggested_config` | `profile?: "eco" \| "balanced" \| "performance" \| "custom"` | `{ vcpus, memory_mb, profile, warnings }` |
-| `suggested_effects` | `prefersReducedMotion?: boolean`, `profile?: …` | `EffectsRecommendation` |
-| `display_set_geometry` | `geometry: DisplayGeometry` | `{ outcome: GeometryOutcome }` |
-| `display_detach` | — | `ComputerView` |
-| `take_control` | — | `ComputerView` (from `ready`, or takeover from agent: cancels the agent sequence + releases pressed state first) |
-| `return_control` | — | `ComputerView` (idempotent) |
-| `create_task` | `title: string` | `AgentTask` |
-| `list_tasks` | — | `AgentTask[]` (oldest first) |
-| `execute_action` | `action: ComputerAction`, `taskId?: string`, `observeAfter?: boolean` | `ActionResult` (policy → control → guest dispatch; lifecycle on `pegoles://event`) |
-| `cancel_agent_input` | — | `null` (cooperative cancel + pressed release) |
-| `capture_screen` | — | `{ meta: ObservedFrameMeta, png_base64: string }` (guest framebuffer only) |
-| `run_input_script` | `steps: ScriptStep[]`, `taskId?: string` | `ScriptReport` (deterministic, aborts on first failure) |
-| `demo_script_steps` | — | `ScriptStep[]` (smoke demo; needs the input fixture fullscreen) |
-| `input_status` | — | `{ available, agent_busy, pressed_clean, audit_len, last_frame }` |
-| `input_audit` | `limit?: number` | content-free audit rows (verbs + lengths, never text) |
+| `read_boot_log` | — | `{ available, total_lines, tail }` |
+| `guest_info` / `guest_ping` | — | diagnostics (not used by the product UI) |
+| `get_host_capabilities`, `suggested_config`, `suggested_effects`, `accessibility_display` | … | host facts |
+| `display_set_geometry` / `display_detach` | … | native view (stub on macOS today) |
+| `take_control` / `return_control` | — | `ComputerView`; take_control cancels any agent run first |
+| `create_task` | `title` | `AgentTask` (pending) |
+| `list_tasks` | — | `AgentTask[]` |
+| `run_task` | `taskId` | starts the agent on a pending task (one run at a time) |
+| `cancel_task` | `taskId` | stops the run, or cancels a pending task |
+| `get_model_settings` / `set_api_key` / `clear_api_key` / `set_model_settings` | … | `{ configured, key_source, model, effort, models, efforts }` — the key is never returned |
+| `cancel_agent_input` | — | stops any agent run and releases held input |
+| `capture_screen` | — | `{ meta, png_base64 }` (guest framebuffer only; encoded with Core unlocked) |
+| `input_status` / `input_audit` | … | input plane facts; content-free audit rows |
+| `get_image_status` | — | status of the sealed Pegoles image |
+| debug builds only: `prepare_image`, `execute_action`, `run_input_script`, `demo_script_steps` | … | Design Lab / image-builder helpers; absent from release builds |
 
 ### `StatusPayload`
 
@@ -242,7 +239,8 @@ Wire format: `AgentEvent` serialized with serde, tagged by `type`
 | `display_attached` | `computer_id, at` | native view CONFIRMED attached (native fact, FIFO-matched to Core's latest attach) |
 | `display_ready` | `computer_id, ready_in_ms, at` | graphical session Ready AND view attached — exactly once per boot |
 | `display_detached` | `computer_id, reason, at` | a confirmed view went away. `reason`: `computer_stopped`, `computer_reset`, `computer_destroyed`, `computer_error`, `explicit`, `display_replaced`, `display_failed: …`, or the native reason for native-initiated detaches |
-| `control_ownership_changed` | `computer_id, from, to, at` | take / return / every automatic return |
+| `control_ownership_changed` | `computer_id, from, to, at` | take / return / every automatic return; an agent run holds `agent` for its whole duration |
+| `agent_message` | `task_id, kind (progress/summary/error), text, at` | the agent's narration: notes between actions, the final summary, or why the run stopped. Untrusted model text: render as plain text only |
 
 Guest lifecycle events (`guest_runtime_*`, `computer_*`, `task_*`) are
 unchanged. Starting/Unavailable graphical reports only move

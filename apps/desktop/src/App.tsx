@@ -10,7 +10,7 @@ import { taskSections } from "./state/taskSections";
 import { eventsForTask } from "./lib/execution";
 import { api, type AgentTask } from "./lib/tauri";
 import { duration, ease } from "./lib/motion";
-import { formatElapsed, shortcutModifier } from "./lib/format";
+import { formatElapsed, modelLabel, shortcutModifier } from "./lib/format";
 import { activityPill } from "./lib/taskState";
 import { useSystemReducedMotion } from "./lib/useSystemReducedMotion";
 import { Sidebar, type Place, type SidebarMode, type TaskGlance } from "./shell/Sidebar";
@@ -32,6 +32,8 @@ import { ComputerPeek } from "./computer/ComputerPeek";
 import { columns, stepBack, type ComputerLevel } from "./computer/layout";
 import { useComputerLevel } from "./computer/useComputerLevel";
 import { useScreenSnapshot } from "./computer/useScreenSnapshot";
+import type { ManageCommand } from "./computer/ComputerManage";
+import { useModelSettings } from "./state/useModelSettings";
 import { ActivityView } from "./pages/ActivityView";
 import { SettingsView, type QualityChoice, type SettingsAnchor } from "./pages/SettingsView";
 
@@ -95,6 +97,9 @@ export default function App() {
   const [headingVisible, setHeadingVisible] = useState(true);
   const [anchor, setAnchor] = useState<SettingsAnchor | null>(null);
   const [peekHidden, setPeekHidden] = useState<ReadonlySet<string>>(new Set());
+  /** The task the last start was for: its failure is shown on that task only. */
+  const [startedFor, setStartedFor] = useState<string | null>(null);
+  const modelSettings = useModelSettings(core.native && connected, core.refresh);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const openWidth = useRef(0);
@@ -105,12 +110,13 @@ export default function App() {
     ? tasks.find((task) => task.id === view.id) ?? (created?.id === view.id ? created : undefined)
     : undefined;
   const selectedEvents = useMemo(() => (selected ? eventsForTask(events, selected.id) : []), [events, selected]);
+  const starting = !!selected && core.busy.run && startedFor === selected.id;
   const activity = useMemo(() => selected && taskActivity({
-    task: selected, events: selectedEvents, status, connected, acknowledging: ackTask === selected.id,
-  }), [selected, selectedEvents, status, connected, ackTask]);
+    task: selected, events: selectedEvents, status, connected, acknowledging: ackTask === selected.id, starting,
+  }), [selected, selectedEvents, status, connected, ackTask, starting]);
   const transcript = useMemo(() => (selected ? buildTranscript({ task: selected, events: selectedEvents }) : []), [selected, selectedEvents]);
 
-  const computer = withCommandError(computerModel({ connected, native: core.native, status, image: core.image, events }), !!core.errors.computer);
+  const computer = withCommandError(computerModel({ connected, native: core.native, status, events }), !!core.errors.computer);
   const presence = globalPresence({
     connected, tasks, status, acknowledging: ackTask === "pending", attentive: focused || draft.trim().length > 0,
     computerTransitioning: computer.transitioning,
@@ -135,6 +141,8 @@ export default function App() {
   const pill = selected && activity ? activityPill(activity.mode, selected.status) : null;
   const elapsed = selected && activity ? elapsedOf(selected, activity, now) : undefined;
   const screenUp = computer.running || computer.phase === "paused";
+  /** A run is working on the task in view: Stop cancels that task. */
+  const selectedRunning = !!selected && (selected.status === "running" || status?.active_task === selected.id);
   const locked = computer.owner === "user";
   const slotEnabled = core.native && status?.backend === "real" && !!status.display_available &&
     (status.computer_state === "running" || status.computer_state === "paused");
@@ -221,6 +229,16 @@ export default function App() {
     if (!screenUp && (level === "focus" || level === "full")) setLevel("side");
   }, [screenUp, level, setLevel]);
 
+  // ── Runs ────────────────────────────────────────────────────────
+  const startTask = useCallback((taskId: string) => {
+    setStartedFor(taskId);
+    void run("run", () => api.runTask(taskId));
+  }, [run]);
+  /** Stop a task's run; with none, interrupt whatever input is in flight (which also stops any run). */
+  const stopTask = useCallback((taskId: string | null) => {
+    void run("general", () => (taskId ? api.cancelTask(taskId) : api.cancelAgentInput()));
+  }, [run]);
+
   // ── Hand-off: Home → task, as one continuous scene ─────────────
   const [handing, setHanding] = useState(false);
   const submit = async (title: string) => {
@@ -241,6 +259,8 @@ export default function App() {
     setHeadingVisible(true);
     setView({ kind: "task", id: task.id });
     focusHeading();
+    // With a model connected the job starts at once; otherwise it waits, and says why.
+    if (modelReady && !status?.active_task) startTask(task.id);
   };
   useEffect(() => {
     if (!ackTask || ackTask === "pending") return;
@@ -254,9 +274,12 @@ export default function App() {
   }, [arriving]);
 
   // ── Computer commands ──────────────────────────────────────────
+  // Starting over is refused while a task runs; a failure is said in a toast, not as "can't start".
+  const manageComputer = useCallback((command: ManageCommand) => {
+    void run("general", command === "reset" ? api.resetComputer : api.destroyComputer);
+  }, [run]);
   const runComputer = useCallback((command: ComputerCommand) => {
-    const actions: Record<ComputerCommand, () => Promise<unknown>> = {
-      prepare: api.prepareImage,
+    const actions: Record<Exclude<ComputerCommand, ManageCommand>, () => Promise<unknown>> = {
       start: async () => {
         if (!status?.computer_created) await api.createComputer();
         return api.startComputer();
@@ -267,9 +290,10 @@ export default function App() {
       take: api.takeControl,
       return: api.returnControl,
     };
+    if (command === "reset" || command === "remove") { manageComputer(command); return; }
     void run("computer", actions[command]);
-  }, [run, status?.computer_created]);
-  const interrupt = useCallback(() => { void run("general", api.cancelAgentInput); }, [run]);
+  }, [run, status?.computer_created, manageComputer]);
+  const interrupt = useCallback(() => { stopTask(status?.active_task ?? null); }, [stopTask, status?.active_task]);
   const reportSlot = useCallback((error: unknown) => report("computer", error), [report]);
 
   // ── Keyboard ───────────────────────────────────────────────────
@@ -281,7 +305,7 @@ export default function App() {
       if (mod && key === "n") { event.preventDefault(); setPaletteOpen(false); newTask(); return; }
       if (mod && event.key === "\\") { event.preventDefault(); toggleSidebar(); return; }
       if (mod && key === "j") { event.preventDefault(); setPaletteOpen(false); toggleComputer(); return; }
-      if (mod && event.key === "." && status?.agent_busy) { event.preventDefault(); interrupt(); return; }
+      if (mod && event.key === "." && (status?.agent_busy || status?.active_task)) { event.preventDefault(); interrupt(); return; }
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (paletteOpen) { setPaletteOpen(false); return; }
       if (narrow && drawerOpen) { setDrawerOpen(false); return; }
@@ -293,7 +317,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [newTask, toggleSidebar, toggleComputer, interrupt, status?.agent_busy, narrow, drawerOpen, paletteOpen, level, locked, closeComputer, setLevel]);
+  }, [newTask, toggleSidebar, toggleComputer, interrupt, status?.agent_busy, status?.active_task, narrow, drawerOpen, paletteOpen, level, locked, closeComputer, setLevel]);
 
   const chooseQuality = (value: QualityChoice) => {
     setQuality(value);
@@ -318,7 +342,10 @@ export default function App() {
         headingRef={headingRef}
         onHeadingVisible={setHeadingVisible}
         onOpenComputer={() => openComputer()}
-        onModelSettings={() => openPlace("settings", "pegoles")}
+        onModelSettings={() => openPlace("settings", "model")}
+        onStart={() => startTask(selected.id)}
+        starting={starting}
+        startError={startedFor === selected.id ? core.errors.run : null}
       />
     );
   } else if (view.kind === "place" && view.place === "activity") {
@@ -327,7 +354,7 @@ export default function App() {
     content = (
       <SettingsView
         headingRef={headingRef} connected={connected} native={core.native} status={status} host={core.host} computer={computer}
-        quality={quality} resolvedQuality={tier === "full" ? "full" : "reduced"} onQuality={chooseQuality}
+        model={modelSettings} quality={quality} resolvedQuality={tier === "full" ? "full" : "reduced"} onQuality={chooseQuality}
         systemReducedMotion={systemReducedMotion} eventCount={events.length} anchor={anchor}
       />
     );
@@ -362,14 +389,14 @@ export default function App() {
       problem={core.errors.task ? `${core.errors.task.title} ${core.errors.task.hint ?? ""}`.trim() : null}
       strip={connected && <ComposerStrip computer={computer} computerOpen={level !== null} onComputer={toggleComputer} />}
       controls={connected && (
-        <ComposerControls modelReady={modelReady} modelName={modelReady ? status?.model : undefined}
-          onSafety={() => openPlace("settings", "security")} onModel={() => openPlace("settings", "pegoles")} />
+        <ComposerControls modelReady={modelReady} modelName={modelReady && modelSettings.settings ? modelLabel(modelSettings.settings.model) : undefined}
+          onSafety={() => openPlace("settings", "security")} onModel={() => openPlace("settings", "model")} />
       )}
     />
   );
 
   return (
-    <FluxGlassRoot tier={tier} busy={core.busy.computer || !!core.image?.preparing || !!status?.agent_busy || liveWork}>
+    <FluxGlassRoot tier={tier} busy={core.busy.computer || !!status?.agent_busy || !!status?.active_task || liveWork}>
       <PresenceQualityProvider quality={quality}>
         <PresenceGpuShareProvider shared={level !== null}>
         <LayoutGroup id="pegoles-shell">
@@ -459,11 +486,11 @@ export default function App() {
                         state={pill}
                         elapsed={elapsed}
                         arriving={arriving === selected.id}
-                        interruptible={!!status?.agent_busy && activity.live}
+                        interruptible={activity.live && (selectedRunning || (!!status?.agent_busy && !status?.active_task))}
                         interrupting={core.busy.general}
                         computerOpen={level !== null}
                         modifier={modifier}
-                        onInterrupt={interrupt}
+                        onInterrupt={() => stopTask(selectedRunning ? selected.id : null)}
                         onWatch={() => openComputer()}
                         onNewTask={newTask}
                       />
@@ -494,11 +521,13 @@ export default function App() {
                 snapshot={core.native ? snapshot : null}
                 steps={panelSteps}
                 busy={core.busy.computer}
+                managing={core.busy.general}
                 error={core.errors.computer}
                 moving={motion !== null}
                 obscured={sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
                 focusOnOpen={panelFocus}
                 onCommand={runComputer}
+                onManage={manageComputer}
                 onLevel={changeLevel}
                 onClose={closeComputer}
                 onSlotError={reportSlot}

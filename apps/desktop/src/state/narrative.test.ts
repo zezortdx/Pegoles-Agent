@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pinnedSteps, runSentence, runSummary } from "./narrative";
+import { NOTE_FOLD_CHARS, NOTE_FOLD_LINES, noteIsLong, pinnedSteps, runSentence, runSummary } from "./narrative";
 import type { TranscriptStep } from "./transcript";
 
 const step = (id: string, patch: Partial<TranscriptStep> = {}): TranscriptStep => ({
@@ -26,5 +26,15 @@ describe("pinnedSteps", () => {
   it("keeps consequential and unsuccessful steps visible", () => {
     const steps = [step("look"), step("write", { consequential: true }), step("denied", { outcome: "blocked" })];
     expect(pinnedSteps(steps).map((item) => item.id)).toEqual(["write", "denied"]);
+  });
+});
+
+describe("noteIsLong", () => {
+  it("folds notes past a few lines or a few hundred characters", () => {
+    expect(noteIsLong("Opened the pricing page.")).toBe(false);
+    expect(noteIsLong("x".repeat(NOTE_FOLD_CHARS))).toBe(false);
+    expect(noteIsLong("x".repeat(NOTE_FOLD_CHARS + 1))).toBe(true);
+    expect(noteIsLong(Array.from({ length: NOTE_FOLD_LINES + 1 }, () => "line").join("\n"))).toBe(true);
+    expect(noteIsLong(Array.from({ length: NOTE_FOLD_LINES }, () => "line").join("\r\n"))).toBe(false);
   });
 });

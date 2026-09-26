@@ -425,8 +425,8 @@ mod imp {
             let (stop_tx, stop_rx) = mpsc::channel::<()>();
             let (event_tx, event_rx) = mpsc::channel::<TransportEvent>();
             // Current accepted connection, shared with the writer closure.
-            let current: std::sync::Arc<Mutex<Option<usize>>> =
-                std::sync::Arc::new(Mutex::new(None));
+            let current: std::sync::Arc<std::sync::Mutex<Option<usize>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
             let current_accept = current.clone();
             std::thread::spawn(move || {
                 loop {

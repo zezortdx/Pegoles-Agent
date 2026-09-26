@@ -1,7 +1,8 @@
 import { useEffect, useId, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
 import type { TranscriptItem, TranscriptStep } from "../state/transcript";
-import { FOLD_FROM, pinnedSteps, runSummary } from "../state/narrative";
+import { FOLD_FROM, noteIsLong, pinnedSteps, runSummary } from "../state/narrative";
+import type { AgentMessageKind } from "../lib/tauri";
 import { CapabilityGlyph } from "../artifacts/glyphs";
 import { basename, formatDuration, parentOf, plural, timeOf } from "../artifacts/format";
 import { duration, ease } from "../lib/motion";
@@ -113,6 +114,35 @@ function Approval({ reason, open, at }: { reason?: string; open: boolean; at: st
   );
 }
 
+const NOTE_LABEL: Record<AgentMessageKind, string> = {
+  progress: "Note from Pegoles",
+  summary: "Pegoles’ summary",
+  error: "Why Pegoles stopped",
+};
+
+/**
+ * Pegoles' own words. Model text is untrusted: it is only ever a text node
+ * (never markup), and long notes fold to a few lines until asked.
+ */
+function Note({ item }: { item: Extract<Item, { kind: "message" }> }) {
+  const [open, setOpen] = useState(false);
+  const textId = useId();
+  const long = noteIsLong(item.text);
+  return (
+    <article className="note" data-variant={item.variant} aria-label={NOTE_LABEL[item.variant]}>
+      {item.variant === "error" && <span className="note__icon" aria-hidden="true"><AlertIcon size={14} /></span>}
+      <div className="note__body">
+        <p id={textId} className="note__text" data-folded={(long && !open) || undefined}>{item.text}</p>
+        {long && (
+          <button type="button" className="note__more" aria-expanded={open} aria-controls={textId} onClick={() => setOpen((value) => !value)}>
+            {open ? "Show less" : "Show more"}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
 const OUTCOME_TITLE = { completed: "Done", failed: "Couldn’t finish", cancelled: "Cancelled" } as const;
 
 function Outcome({ item, detail }: { item: Extract<Item, { kind: "outcome" }>; detail?: string }) {
@@ -135,6 +165,7 @@ function ItemView({ item, failedAt, current }: { item: Item; failedAt?: string; 
     case "actions": return <Run steps={item.steps} at={item.at} current={current} />;
     case "file": return <FileItem path={item.path} at={item.at} />;
     case "approval": return <Approval reason={item.reason} open={item.open} at={item.at} />;
+    case "message": return <Note item={item} />;
     case "outcome": return <Outcome item={item} detail={failedAt} />;
   }
 }
@@ -149,9 +180,10 @@ export interface NarrativeProps {
 }
 
 /**
- * The work as a readable story, oldest first: runs of actions (folded when
- * long, never hiding what changed), files it made, where it stopped to ask,
- * and how it ended. New items rise in; nothing reflows under the reader.
+ * The work as a readable story, oldest first: what Pegoles wrote, runs of
+ * actions (folded when long, never hiding what changed), files it made,
+ * where it stopped to ask, and how it ended. New items rise in; nothing
+ * reflows under the reader.
  */
 export function Narrative({ items, animated, failedAt, live }: NarrativeProps) {
   const body = items.filter((item): item is Item => item.kind !== "request");

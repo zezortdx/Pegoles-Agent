@@ -45,6 +45,8 @@ pub struct RunLimits {
     pub max_duration: Duration,
     /// Consecutive turns in which some call failed before giving up.
     pub max_failed_turns: u32,
+    /// Calls executed per turn; the rest are answered "not executed".
+    pub max_calls_per_turn: usize,
 }
 
 impl Default for RunLimits {
@@ -54,6 +56,7 @@ impl Default for RunLimits {
             max_actions: 400,
             max_duration: Duration::from_secs(30 * 60),
             max_failed_turns: 6,
+            max_calls_per_turn: 50,
         }
     }
 }
@@ -255,7 +258,22 @@ impl Run<'_> {
     fn execute(&mut self, calls: Vec<PlannedCall>) -> Vec<CallOutcome> {
         let mut out = Vec::with_capacity(calls.len());
         let mut halted = false;
-        for call in calls {
+        for (i, call) in calls.into_iter().enumerate() {
+            if i >= self.limits.max_calls_per_turn {
+                out.push(CallOutcome {
+                    call_id: call.call_id,
+                    result: Err(format!(
+                        "Not executed: at most {} actions run per turn.",
+                        self.limits.max_calls_per_turn
+                    )),
+                    skipped: true,
+                });
+                continue;
+            }
+            // The time budget holds inside a turn too.
+            if !halted && self.started.elapsed() > self.limits.max_duration {
+                halted = true;
+            }
             if halted || self.cancel.is_cancelled() {
                 out.push(CallOutcome {
                     call_id: call.call_id,

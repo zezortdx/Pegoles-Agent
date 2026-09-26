@@ -1,75 +1,66 @@
 # Pegoles Agent
 
-**Local brain. Isolated computer. Anywhere.**
+**AI gets its own computer. Not your computer.**
 
-Pegoles is a local-first autonomous agent that runs AI models on your hardware and gives them an isolated computer to work inside.
+Pegoles is a computer-use agent for macOS. You give it an objective; a
+model plans; every action it proposes is a typed, policy-checked input
+to an isolated Linux VM (no network, no shared folders, no clipboard).
+You watch the VM and the agent's activity, stop it at any time, and
+reset the VM to a sealed image.
 
-> **AI gets its own computer. Not your computer.**
+## Status (2026-09-26)
 
-- **Local models** — inference on your hardware (roadmap)
-- **Isolated computer** — agent acts inside a VM, never directly on your host
-- **Mobile control** — phone as encrypted thin client (roadmap)
-- **Open source** — MIT
-- **Security-first** — deterministic policy engine, structured actions, VM boundary ([docs/SECURITY.md](docs/SECURITY.md))
+- macOS Apple Silicon is the reference platform and the only supported
+  one. Windows code exists but is unverified; Linux has no backend.
+  Details: [docs/PLATFORM_MATRIX.md](docs/PLATFORM_MATRIX.md).
+- Real end to end on hardware: boot → authenticated guest channel →
+  orchestrated task (click, type, keys, observe, pixel verification) →
+  cancel → guest-runtime crash recovery → reset/teardown → second boot
+  (`crates/pegoles-agent/examples/agent_e2e.rs`).
+- The model planner uses Claude through the Anthropic API (key in the
+  macOS Keychain). It is unit-tested but has not been run against the
+  live API from this environment.
+- Security model and residual risks: [docs/SECURITY.md](docs/SECURITY.md).
+  Engineering state and next steps: [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
-## What works today (Phase 3.6)
-
-- [x] Everything from 3.5, plus:
-- [x] **Real Windows backend structure**: `WindowsHcsBackend` on the shared engine (create/start/pause/resume/stop/state/destroy, VHDX-only, no Mock fallback) — compiles everywhere, runs on Windows hardware (not available in this phase)
-- [x] **HCS bindings**: ComputeCore.dll FFI declarations (verified signatures), RAII handles, operation runner, Secure Boot (Linux CA template) VM config builder
-- [x] **Real Windows probe**: registry/SCM/security/LibLoader detection, honest Unknowns, 10 support states
-- [x] **`pegoles-vm-host.exe`**: HCS session, HyperVSocketTransport (AF_HYPERV), same JSONL protocol
-- [x] **`pegoles-windows-setup`**: check/explain/register (narrow, verify-after-write)
-- [x] **VHDX artifact**: real bytes + real hash + kernel gate (`universal_ready: true` on amd64 too), manifest with per-artifact records
-- [x] **Windows e2e test** (`PEGOLES_REAL_WINDOWS_VM_TEST=1`, incl. second-start instance check) — runs on hardware only
-- [x] **Performance foundation**: ResourceGovernor + profiles, balloon device + policy, log rotation, `bench.sh`, PERFORMANCE.md baseline, reduced-motion, model-router contract
-- [x] Minimal Windows UI (Hyper-V line + setup steps), `suggested_config` API
-
-## Honesty tiers used in this repo
-
-- IMPLEMENTED: written, doc-sourced, unit-tested where hardware-independent.
-- CI VERIFIED: green on Windows/Linux/macOS runners (no real VMs there).
-- REAL HARDWARE VERIFIED: macOS Apple Silicon rows only (VM + guest e2e re-run this phase).
-
-## Roadmap (not built yet)
-
-Windows hardware validation · Local model router · Agent Engine · VM streaming · computer-use · browser automation · Weston/Chromium guest UI · remote access · mobile app · Host Bridge.
-
-## Run
+## Run (development)
 
 ```bash
 bash scripts/setup.sh
-cargo test
+bash scripts/check.sh                                  # all gates
+
+# VM helper (Swift) + virtualization entitlement for dev binaries
+(cd native/macos/pegoles-vm-host && swift build -c release)
+cargo build -p pegoles-desktop && bash scripts/codesign-dev.sh
+
+# Guest image: see scripts/build-guest-image (build or patch, then seal)
+# Desktop app (dev)
 pnpm --filter @pegoles/desktop tauri dev
+
+# Real hardware E2E (release; helper beside the binary, as in a bundle)
+cargo build --release -p pegoles-agent --example agent_e2e
+cp native/macos/pegoles-vm-host/.build/release/pegoles-vm-host target/release/examples/
+./target/release/examples/agent_e2e
 ```
 
-Real VM on macOS arm64:
-
-```bash
-cd native/macos/pegoles-vm-host && swift build -c release && cd -
-bash scripts/codesign-dev.sh   # ad-hoc entitlement for `tauri dev`
-pnpm --filter @pegoles/desktop tauri dev  # Prepare Computer -> Create -> Start
-PEGOLES_REAL_VM_TEST=1 cargo test -p pegoles-computer real_vm  # hardware smoke
-```
-
-Full gates: `bash scripts/check.sh` (fmt + clippy + cargo test + frontend lint/typecheck/build).
-
-Requires: Rust stable, Node ≥ 20, pnpm 9. macOS for the desktop app.
+Requires: Rust stable, Node ≥ 20, pnpm 9, Xcode command line tools
+(Swift), Apple Silicon Mac for VMs. Image building also needs Docker,
+qemu and e2fsprogs.
 
 ## Layout
 
 ```text
-apps/desktop        Tauri 2 + React + TypeScript
-crates/             pegoles-protocol, pegoles-policy, pegoles-computer, pegoles-core,
-                    pegoles-guest-proto
-guest/runtime       pegoles-guest-runtime (Linux ARM64) + systemd unit
-native/macos        Swift pegoles-vm-host (Virtualization.framework)
-native/windows      Rust pegoles-vm-host (HCS session + AF_HYPERV) + pegoles-windows-setup
-packages/ui         Shared design tokens
-scripts/            check.sh, bench.sh, build-guest-image/
-docs/               ARCHITECTURE, SECURITY, PEGOLES_COMPUTER, TAURI_IPC,
-                    VM_HOST_PROTOCOL, GUEST_PROTOCOL, GUEST_RUNTIME,
-                    DEBIAN_IMAGE, WINDOWS_IMAGE, PORTABILITY_AUDIT,
-                    WINDOWS_BACKEND, WINDOWS_SETUP, PLATFORM_MATRIX,
-                    PERFORMANCE
+apps/desktop           Tauri 2 shell (Rust commands) + React UI
+crates/pegoles-agent   orchestrator: runner, budgets, Claude planner, scripted planner
+crates/pegoles-core    computer registry, executor (policy → control → input), tasks, events
+crates/pegoles-policy  deterministic action policy
+crates/pegoles-protocol shared types (actions, events, tasks, limits)
+crates/pegoles-computer VM backends (macOS helper engine, Windows HCS), images, guest session
+crates/pegoles-guest-proto host ↔ guest protocol (JSONL over vsock)
+guest/runtime          Linux guest runtime (vsock, uinput, weston capture)
+native/macos           Swift VM helper (Virtualization.framework)
+native/windows         Windows HCS helper (unverified)
+scripts/               check.sh, bench.sh, build-guest-image/
 ```
+
+MIT licensed.

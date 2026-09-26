@@ -9,9 +9,9 @@
 //!
 //! Every action emits lifecycle events on the existing EventBus
 //! (`Requested → Evaluated → Started → Completed | Failed | Denied`),
-//! so the UI, audit, and future agents observe the same stream. NO model
-//! exists in this phase: execution is driven by Tauri dev commands and
-//! the deterministic runner below.
+//! so the UI, audit, and agent runs observe the same stream. Actions come
+//! from the agent orchestrator (`pegoles-agent`), dev commands, or the
+//! deterministic script runner below; all take this same path.
 
 use std::collections::VecDeque;
 use std::sync::{
@@ -466,6 +466,26 @@ impl ComputerRegistry {
                 redacted,
                 started_wall,
                 "cancelled before dispatch",
+                &mut out,
+            );
+        }
+
+        // Unmanaged calls run inside an agent session: input may only
+        // reach the guest while the agent actually owns control (checked
+        // under the same lock as the dispatch, so a takeover can never
+        // interleave). Observation and waits send no input.
+        let sends_input = !matches!(
+            req.action,
+            ComputerAction::ObserveScreen
+                | ComputerAction::GetDisplayInfo
+                | ComputerAction::Wait { .. }
+        );
+        if !manage_control && sends_input && self.display.control != ControlOwner::Agent {
+            return self.interrupted(
+                req,
+                redacted,
+                started_wall,
+                "the agent does not own control of the computer",
                 &mut out,
             );
         }
@@ -1218,6 +1238,8 @@ mod tests {
     #[test]
     fn stuck_button_released_on_failure() {
         let mut r = with_mock_running();
+        let mut out = Vec::new();
+        r.begin_agent_session(&mut out).unwrap();
         // Disable mid-test: Down succeeds, then backend fails Up.
         let cancel = CancellationToken::new();
         let (down, _) = r.execute_action(
@@ -1305,6 +1327,38 @@ mod tests {
         assert_eq!(report.aborted_at, Some(1));
         assert_eq!(r.display.control, ControlOwner::None);
         assert!(r.input_pressed.is_clean());
+    }
+
+    #[test]
+    fn unmanaged_input_requires_agent_ownership() {
+        // Inside a session the executor re-checks ownership under the same
+        // lock as the dispatch: after a takeover nothing reaches the guest.
+        let mut r = with_mock_running();
+        let cancel = CancellationToken::new();
+        let click = ComputerAction::Click {
+            x: 0.5,
+            y: 0.5,
+            button: PointerButton::Primary,
+        };
+        let (res, _) = r.execute_action(task(), click.clone(), false, &ctx(), &cancel, false);
+        assert_eq!(
+            res.outcome,
+            ActionOutcome::Interrupted,
+            "no session, no input"
+        );
+        let (obs, _) = r.execute_action(
+            task(),
+            ComputerAction::ObserveScreen,
+            false,
+            &ctx(),
+            &cancel,
+            false,
+        );
+        assert!(obs.success, "observation needs no control");
+        let mut out = Vec::new();
+        r.begin_agent_session(&mut out).unwrap();
+        let (ok, _) = r.execute_action(task(), click, false, &ctx(), &cancel, false);
+        assert!(ok.success);
     }
 
     #[test]

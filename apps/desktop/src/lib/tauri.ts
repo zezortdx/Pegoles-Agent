@@ -22,11 +22,18 @@ export interface StatusPayload {
   display_setup_error: string | null;
   control_owner: "none" | "agent" | "user";
   core: string;
-  model: string;
+  /** An Anthropic API key is available (Keychain or ANTHROPIC_API_KEY). */
+  model: "configured" | "not_configured";
+  /** The task an agent run is working on right now, if any. */
+  active_task: string | null;
   backend: "mock" | "real";
   computer_created: boolean;
   computer_state: ComputerState | null;
   computer_id: string | null;
+  /**
+   * The sealed Pegoles computer image on this Mac. `missing`: not installed
+   * (built with scripts/build-guest-image); `invalid`: present but not verified.
+   */
   image_status: "missing" | "downloading" | "ready" | "invalid";
   spec_os: string;
   spec_arch: string;
@@ -53,41 +60,10 @@ export interface ComputerPayload {
   info: ComputerInfo | null;
 }
 
-export interface ImageStatusPayload {
-  status: "missing" | "downloading" | "ready" | "invalid";
-  preparing: boolean;
-  stage: string | null;
-  downloaded: number;
-  total: number;
-  error: string | null;
-}
-
 export interface BootLogPayload {
   available: boolean;
   total_lines: number;
   tail: string[];
-}
-
-export interface SystemInfo {
-  os: string;
-  os_version: string;
-  kernel: string;
-  arch: string;
-  hostname: string;
-  runtime_version: string;
-  protocol_version: number;
-  uptime_s?: number;
-  cpu_count?: number;
-  mem_total_mb?: number;
-}
-
-export interface GuestInfoPayload {
-  available: boolean;
-  info: SystemInfo | null;
-}
-
-export interface GuestPingPayload {
-  latency_ms: number;
 }
 
 export interface HostCapabilities {
@@ -100,13 +76,6 @@ export interface HostCapabilities {
   guest_transport_available: boolean;
   required_setup: string[];
   supported: boolean;
-}
-
-export interface ImageProgressEvent {
-  stage: string;
-  downloaded?: number;
-  total?: number;
-  error?: string;
 }
 
 // AgentEvent wire format (serde tag = "type", snake_case).
@@ -139,9 +108,14 @@ export interface FrameMetaWire {
   byte_len: number;
   capture_latency_ms: number;
 }
+/** What an `agent_message` carries: notes between actions, the final account, or why a run stopped. */
+export type AgentMessageKind = "progress" | "summary" | "error";
+
 export type AgentEvent =
   | { type: "task_created"; task_id: string; title: string; at: string }
   | { type: "task_status_changed"; task_id: string; from: string; to: string; at: string }
+  /** Model narration for a task. Untrusted text: rendered as plain text only, never markup. */
+  | { type: "agent_message"; task_id: string; kind: AgentMessageKind; text: string; at: string }
   | { type: "computer_created"; computer_id: string; at: string }
   | {
       type: "computer_state_changed";
@@ -225,9 +199,28 @@ export interface DisplayGeometry {
   animate_ms: number;
 }
 
+/** Model settings as Core reports them. The API key itself never leaves Rust. */
+export interface ModelSettings {
+  readonly configured: boolean;
+  readonly key_source: "keychain" | "environment" | null;
+  readonly model: string;
+  readonly effort: string;
+  readonly models: readonly string[];
+  readonly efforts: readonly string[];
+}
+
 export const api = {
   createTask: (title: string) => invoke<AgentTask>("create_task", { title }),
   listTasks: () => invoke<AgentTask[]>("list_tasks"),
+  /** Start the agent on a pending task (it prepares its computer itself). */
+  runTask: (taskId: string) => invoke<null>("run_task", { taskId }),
+  /** Stop a running task, or cancel one that never started. */
+  cancelTask: (taskId: string) => invoke<null>("cancel_task", { taskId }),
+  getModelSettings: () => invoke<ModelSettings>("get_model_settings"),
+  /** Stored in the macOS Keychain; never returned. */
+  setApiKey: (key: string) => invoke<ModelSettings>("set_api_key", { key }),
+  clearApiKey: () => invoke<ModelSettings>("clear_api_key"),
+  setModelSettings: (model: string, effort: string) => invoke<ModelSettings>("set_model_settings", { model, effort }),
   suggestedEffects: () => invoke<{ tier: EffectsTier }>("suggested_effects"),
   setDisplayGeometry: (geometry: DisplayGeometry) => invoke("display_set_geometry", { geometry }),
   detachDisplay: () => invoke("display_detach"),
@@ -239,35 +232,41 @@ export const api = {
   pauseComputer: () => invoke<ComputerPayload>("pause_computer"),
   resumeComputer: () => invoke<ComputerPayload>("resume_computer"),
   stopComputer: () => invoke<ComputerPayload>("stop_computer"),
+  /** Back to the sealed image: same identity, fresh disk. Refused while a task runs. */
+  resetComputer: () => invoke<ComputerPayload>("reset_computer"),
+  /** Removes the computer and its disk. Refused while a task runs. */
+  destroyComputer: () => invoke<ComputerPayload>("destroy_computer"),
   listEvents: () => invoke<AgentEvent[]>("list_events"),
-  getImageStatus: () => invoke<ImageStatusPayload>("get_image_status"),
-  prepareImage: () => invoke<ImageStatusPayload>("prepare_image"),
   readBootLog: () => invoke<BootLogPayload>("read_boot_log"),
-  guestInfo: () => invoke<GuestInfoPayload>("guest_info"),
-  guestPing: () => invoke<GuestPingPayload>("guest_ping"),
   getHostCapabilities: () => invoke<HostCapabilities>("get_host_capabilities"),
   accessibilityDisplay: () => invoke<{ reduce_transparency: boolean; increase_contrast: boolean }>("accessibility_display"),
-  executeAction: (action: { type: string; [k: string]: unknown }, taskId?: string, observeAfter?: boolean) =>
+  /** Interrupts input in flight and stops any agent run. */
+  cancelAgentInput: () => invoke("cancel_agent_input"),
+  captureScreen: () =>
+    invoke<{ meta: FrameMetaWire; png_base64: string }>("capture_screen"),
+};
+
+type WireAction = { type: string; [k: string]: unknown };
+type ScriptStep = { label: string; action: WireAction; observe_after?: boolean };
+
+/**
+ * Design Lab only. `execute_action`, `run_input_script` and
+ * `demo_script_steps` exist only in debug builds of Core; production code
+ * never calls anything here.
+ */
+export const debugApi = {
+  executeAction: (action: WireAction, taskId?: string, observeAfter?: boolean) =>
     invoke<ActionResultWire>("execute_action", {
       taskId: taskId ?? null,
       action,
       observeAfter: observeAfter ?? false,
     }),
-  cancelAgentInput: () => invoke("cancel_agent_input"),
-  captureScreen: () =>
-    invoke<{ meta: FrameMetaWire; png_base64: string }>("capture_screen"),
-  runInputScript: (
-    steps: { label: string; action: { type: string; [k: string]: unknown }; observe_after?: boolean }[],
-    taskId?: string,
-  ) =>
+  runInputScript: (steps: ScriptStep[], taskId?: string) =>
     invoke<{ steps_total: number; steps_executed: number; aborted_at: number | null; results: ActionResultWire[] }>(
       "run_input_script",
       { taskId: taskId ?? null, steps },
     ),
-  demoScriptSteps: () =>
-    invoke<{ label: string; action: { type: string; [k: string]: unknown }; observe_after?: boolean }[]>(
-      "demo_script_steps",
-    ),
+  demoScriptSteps: () => invoke<ScriptStep[]>("demo_script_steps"),
   inputStatus: () =>
     invoke<{
       available: boolean;
@@ -277,17 +276,4 @@ export const api = {
       audit_len: number;
       last_frame: FrameMetaWire | null;
     }>("input_status"),
-  inputAudit: (limit?: number) =>
-    invoke<
-      {
-        at: string;
-        action_id: string;
-        verb: string;
-        decision: string;
-        outcome: string;
-        duration_ms: number;
-        redacted: boolean;
-        text_len: number | null;
-      }[]
-    >("input_audit", { limit: limit ?? 50 }),
 };

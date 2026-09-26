@@ -7,11 +7,10 @@ const status: StatusPayload = {
   image_status: "ready", spec_os: "Debian 13", spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "ready",
   guest_ready_ms: 4000, viewport_state: "ready", viewport_issue: null, display_available: false, display_attached: false,
   display_config: { width_px: 1440, height_px: 900 }, display_error: null, display_setup_error: null, control_owner: "none",
-  input_available: true, agent_busy: false,
+  input_available: true, agent_busy: false, active_task: null,
 };
 const input = (patch: Partial<StatusPayload> = {}, rest: Partial<ComputerInputs> = {}): ComputerInputs => ({
-  connected: true, native: true, status: { ...status, ...patch }, events: [],
-  image: { status: "ready", preparing: false, stage: null, downloaded: 0, total: 0, error: null }, ...rest,
+  connected: true, native: true, status: { ...status, ...patch }, events: [], ...rest,
 });
 
 describe("computerModel", () => {
@@ -39,11 +38,21 @@ describe("computerModel", () => {
     expect(computerModel({ ...input(), connected: false }).facts).toEqual([]);
   });
 
-  it("walks through setup and boot with real stages only", () => {
-    const setup = computerModel(input({ computer_created: false, computer_state: null }, { image: { status: "missing", preparing: false, stage: null, downloaded: 0, total: 0, error: null } }));
-    expect(setup).toMatchObject({ phase: "needs-setup", primary: { command: "prepare" } });
-    const downloading = computerModel(input({ computer_created: false, computer_state: null }, { image: { status: "downloading", preparing: true, stage: "download", downloaded: 25, total: 100, error: null } }));
-    expect(downloading).toMatchObject({ phase: "preparing", progress: 0.25, transitioning: true });
+  it("says plainly when the sealed image isn't installed, and offers nothing that can't fix it", () => {
+    const missing = computerModel(input({ computer_created: false, computer_state: null, image_status: "missing" }));
+    expect(missing).toMatchObject({ phase: "needs-setup", chip: "Not installed", headline: "The Pegoles computer image isn’t installed on this Mac." });
+    expect(missing.primary).toBeUndefined();
+    expect(missing.devNote).toBe("Build it with scripts/build-guest-image (see docs/PROJECT_STATE.md).");
+    const invalid = computerModel(input({ computer_created: false, computer_state: null, image_status: "invalid" }));
+    expect(invalid).toMatchObject({ phase: "needs-setup", chip: "Image incomplete" });
+    expect(invalid.primary).toBeUndefined();
+    expect(invalid.devNote).toMatch(/^Rebuild it with scripts\/build-guest-image/);
+    // A computer that already exists keeps working; the simulated backend needs no image.
+    expect(computerModel(input({ image_status: "missing" })).phase).toBe("ready");
+    expect(computerModel(input({ computer_created: false, computer_state: null, image_status: "missing", backend: "mock" })).phase).toBe("off");
+  });
+
+  it("walks through boot with real stages only", () => {
     const ready: AgentEvent = { type: "guest_runtime_ready", computer_id: "vm", ready_in_ms: 4200, at: "2026-09-24T10:00:00Z" };
     const booting = computerModel(input({ computer_state: "starting", viewport_state: "display_starting", guest_state: "connecting" }, { events: [ready] }));
     expect(booting.phase).toBe("starting");

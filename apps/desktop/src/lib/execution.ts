@@ -1,4 +1,4 @@
-import type { ActionRequestWire, AgentEvent } from "./tauri";
+import type { ActionRequestWire, AgentEvent, AgentMessageKind } from "./tauri";
 
 export type Capability = "Computer" | "Web" | "Files" | "Shell";
 
@@ -9,6 +9,33 @@ export function requestOf(event: AgentEvent): ActionRequestWire | null {
   const r = request as Partial<ActionRequestWire>;
   return typeof r.task_id === "string" && typeof r.action_id === "string" && r.action && typeof r.action.type === "string"
     ? r as ActionRequestWire : null;
+}
+
+/** Model narration for one task. `text` is untrusted: render it as plain text only. */
+export interface AgentMessage {
+  readonly taskId: string;
+  readonly kind: AgentMessageKind;
+  readonly text: string;
+  readonly at: string;
+}
+
+const MESSAGE_KINDS: ReadonlySet<string> = new Set<AgentMessageKind>(["progress", "summary", "error"]);
+
+/** An `agent_message` validated at the boundary; null for anything else or an empty note. */
+export function agentMessageOf(event: AgentEvent): AgentMessage | null {
+  if (event.type !== "agent_message") return null;
+  const { task_id: taskId, kind, text, at } = event as Record<string, unknown>;
+  if (typeof taskId !== "string" || typeof text !== "string" || typeof at !== "string") return null;
+  if (typeof kind !== "string" || !MESSAGE_KINDS.has(kind)) return null;
+  const trimmed = text.trim();
+  return trimmed ? { taskId, kind: kind as AgentMessageKind, text: trimmed, at } : null;
+}
+
+/** The first line of a note, short enough for one line of UI. */
+export function firstLine(text: string, limit = 160): string {
+  const line = text.split(/\r?\n/).map((part) => part.trim()).find(Boolean) ?? "";
+  const chars = [...line];
+  return chars.length > limit ? `${chars.slice(0, limit - 1).join("").trimEnd()}…` : line;
 }
 
 export function eventsForTask(events: AgentEvent[], taskId: string): AgentEvent[] {

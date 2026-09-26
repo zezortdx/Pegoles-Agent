@@ -47,10 +47,9 @@ fn macos_profile() -> BackendProfile {
             pause: true,
             resume: true,
             snapshot: false,
-            // Phase 4: virtio graphics device + human USB keyboard /
-            // absolute pointer are attached when `ComputerConfig.display`
-            // is set (headless otherwise). Viewing needs the in-process
-            // display adapter of the desktop app.
+            // One virtio-gpu scanout is always attached (the guest
+            // compositor's output, captured through the guest channel).
+            // No host keyboard/pointer devices exist.
             graphical_display: true,
             vsock: true,
             dynamic_memory: false,
@@ -315,6 +314,57 @@ mod tests {
             .join(crate::image::active_image_id())
             .join("disk.raw");
         assert_eq!(std::fs::read(&base).unwrap(), b"fake-disk-bytes");
+    }
+
+    #[test]
+    fn reset_restores_the_sealed_disk_and_keeps_identity() {
+        let (_tmp, images, computers) = test_dirs();
+        seed_ready_image(&images);
+        let mut b = MacOSVirtualizationBackend::with_transport(
+            images,
+            computers.clone(),
+            Box::new(FakeTransport::new()),
+        );
+        let id = b.create(default_config_for_test()).unwrap();
+        b.start().unwrap();
+        let disk = computers.join(id.to_string()).join("disk.img");
+        std::fs::write(&disk, b"guest wrote over everything").unwrap();
+        assert_eq!(b.reset().unwrap(), ComputerState::Stopped);
+        assert_eq!(std::fs::read(&disk).unwrap(), b"fake-disk-bytes");
+        assert_eq!(b.id(), Some(id), "same computer after reset");
+        assert_eq!(b.start().unwrap(), ComputerState::Running);
+    }
+
+    #[test]
+    fn a_new_launch_resumes_the_same_computer_instead_of_leaking_one() {
+        let (_tmp, images, computers) = test_dirs();
+        seed_ready_image(&images);
+        let mut first = MacOSVirtualizationBackend::with_transport(
+            images.clone(),
+            computers.clone(),
+            Box::new(FakeTransport::new()),
+        );
+        let id = first.create(default_config_for_test()).unwrap();
+        let disk = computers.join(id.to_string()).join("disk.img");
+        std::fs::write(&disk, b"work done inside the guest").unwrap();
+        // While the first owner lives, a second one gets its own computer.
+        let mut rival = MacOSVirtualizationBackend::with_transport(
+            images.clone(),
+            computers.clone(),
+            Box::new(FakeTransport::new()),
+        );
+        let rival_id = rival.create(default_config_for_test()).unwrap();
+        assert_ne!(rival_id, id);
+        rival.destroy().unwrap();
+        drop(first); // app quits without destroying
+        let mut second = MacOSVirtualizationBackend::with_transport(
+            images,
+            computers.clone(),
+            Box::new(FakeTransport::new()),
+        );
+        assert_eq!(second.create(default_config_for_test()).unwrap(), id);
+        assert_eq!(std::fs::read(&disk).unwrap(), b"work done inside the guest");
+        assert_eq!(std::fs::read_dir(&computers).unwrap().count(), 1);
     }
 
     #[test]

@@ -30,8 +30,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pegoles_agent::{
-    run_task, AgentComputer, CoreAccess, CoreComputer, PlannedCall, RunEnd, RunLimits,
-    ScriptedPlanner, Screenshot, Step,
+    run_task, AgentComputer, CoreAccess, CoreComputer, PlannedCall, RunEnd, RunLimits, Screenshot,
+    ScriptedPlanner, Step,
 };
 use pegoles_computer::platform::BackendKind;
 use pegoles_core::{CancellationToken, ComputerRegistry, EventBus, TaskManager};
@@ -103,6 +103,24 @@ fn color_counts(shot: &Screenshot) -> (usize, usize) {
     (red, blue)
 }
 
+fn pixels(shot: &Screenshot) -> Vec<u8> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(shot.png.clone()));
+    let mut reader = decoder.read_info().expect("png header");
+    let mut buf = vec![0; reader.output_buffer_size().expect("png size")];
+    let info = reader.next_frame(&mut buf).expect("png frame");
+    buf.truncate(info.buffer_size());
+    buf
+}
+
+/// Pixels that differ between two frames of the same size.
+fn diff(a: &Screenshot, b: &Screenshot) -> usize {
+    let (pa, pb) = (pixels(a), pixels(b));
+    pa.chunks_exact(3)
+        .zip(pb.chunks_exact(3))
+        .filter(|(x, y)| x != y)
+        .count()
+}
+
 fn save(shot: &Screenshot, name: &str) {
     if let Ok(dir) = std::env::var("PEGOLES_E2E_OUT") {
         let path = std::path::Path::new(&dir).join(name);
@@ -137,7 +155,10 @@ fn main() {
     println!("image: {}", pegoles_computer::active_image_id());
     let bus = EventBus::new();
     let shared = Shared(Arc::new(Mutex::new(Core {
-        registry: ComputerRegistry::with_backend_kind(bus.clone(), BackendKind::MacOSVirtualization),
+        registry: ComputerRegistry::with_backend_kind(
+            bus.clone(),
+            BackendKind::MacOSVirtualization,
+        ),
         tasks: TaskManager::new(bus.clone()),
     })));
     // Core maintenance independent of any caller (the desktop app runs
@@ -237,7 +258,10 @@ fn main() {
         report.end, report.actions, report.summary
     );
     if report.end != RunEnd::Completed {
-        fail(&format!("task A did not complete: {}", report.summary), &shared);
+        fail(
+            &format!("task A did not complete: {}", report.summary),
+            &shared,
+        );
     }
     let status = shared.with_core(|r, t| {
         (
@@ -248,12 +272,135 @@ fn main() {
     });
     assert_eq!(status, (TaskStatus::Completed, ControlOwner::None, true));
 
+    // --- 2b. task D: scroll, double-click, drag (frame diffs) ------------
+    let task_d = shared.with_core(|_, t| t.submit_task("scroll and select").unwrap().id);
+    let shot = |id: &str| call(id, "screenshot", vec![Step::Observe]);
+    let turns = vec![
+        vec![
+            call(
+                "fill",
+                "type",
+                vec![act(ComputerAction::TypeText {
+                    text: "clear; seq 1 400\n".into(),
+                    sensitive: false,
+                })],
+            ),
+            call(
+                "settle",
+                "wait",
+                vec![act(ComputerAction::Wait { duration_ms: 800 })],
+            ),
+            shot("a"),
+        ],
+        vec![
+            call(
+                "scroll",
+                "scroll",
+                vec![act(ComputerAction::Scroll {
+                    x: 0.5,
+                    y: 0.5,
+                    delta_x: 0.0,
+                    delta_y: -15.0,
+                })],
+            ),
+            call(
+                "settle",
+                "wait",
+                vec![act(ComputerAction::Wait { duration_ms: 400 })],
+            ),
+            shot("b"),
+        ],
+        vec![
+            call(
+                "select-word",
+                "double_click",
+                vec![act(ComputerAction::DoubleClick {
+                    x: 0.004,
+                    y: 0.5,
+                    button: PointerButton::Primary,
+                })],
+            ),
+            call(
+                "settle",
+                "wait",
+                vec![act(ComputerAction::Wait { duration_ms: 300 })],
+            ),
+            shot("c"),
+        ],
+        vec![
+            call(
+                "select-range",
+                "left_click_drag",
+                vec![act(ComputerAction::Drag {
+                    from_x: 0.002,
+                    from_y: 0.3,
+                    to_x: 0.3,
+                    to_y: 0.4,
+                    button: PointerButton::Primary,
+                    duration_ms: 500,
+                })],
+            ),
+            call(
+                "settle",
+                "wait",
+                vec![act(ComputerAction::Wait { duration_ms: 300 })],
+            ),
+            shot("d"),
+        ],
+    ];
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let frames2 = frames.clone();
+    let mut planner =
+        ScriptedPlanner::new(turns, |_| Ok("input checked".into())).observing(move |outcomes| {
+            for o in outcomes {
+                if let Ok(pegoles_agent::CallOutput::Image(img)) = &o.result {
+                    frames2.lock().unwrap().push(img.clone());
+                }
+            }
+        });
+    let report = run_task(
+        task_d,
+        "scroll and select",
+        &mut planner,
+        &computer,
+        &RunLimits::default(),
+        &CancellationToken::new(),
+    );
+    let frames = frames.lock().unwrap().clone();
+    if report.end != RunEnd::Completed || frames.len() < 4 {
+        fail(
+            &format!(
+                "task D: {:?} {} frames: {}",
+                report.end,
+                frames.len(),
+                report.summary
+            ),
+            &shared,
+        );
+    }
+    let (scrolled, word, range) = (
+        diff(&frames[0], &frames[1]),
+        diff(&frames[1], &frames[2]),
+        diff(&frames[2], &frames[3]),
+    );
+    save(&frames[1], "e2e-scrolled.png");
+    save(&frames[3], "e2e-selection.png");
+    println!("task D: scroll changed {scrolled} px, double-click {word} px, drag {range} px");
+    if scrolled < 5_000 || word < 50 || range < 500 {
+        fail(
+            "scroll/double-click/drag did not visibly change the screen",
+            &shared,
+        );
+    }
+
     // --- 3. task B: cancellation latency --------------------------------
     let task_b = shared.with_core(|_, t| t.submit_task("wait for a long time").unwrap().id);
     let long_waits = vec![vec![call(
         "long",
         "wait",
-        vec![act(ComputerAction::Wait { duration_ms: 30_000 })],
+        vec![act(ComputerAction::Wait {
+            duration_ms: 30_000,
+        })],
     )]];
     let mut planner = ScriptedPlanner::new(long_waits, |_| Ok("unused".into()));
     let cancel = CancellationToken::new();
@@ -278,7 +425,10 @@ fn main() {
         .unwrap()
         .map(|at| at.elapsed().as_millis())
         .unwrap_or(u128::MAX);
-    println!("task B: {:?}, cancel honored in {cancel_latency} ms", report.end);
+    println!(
+        "task B: {:?}, cancel honored in {cancel_latency} ms",
+        report.end
+    );
     if report.end != RunEnd::Cancelled || cancel_latency > 1_000 {
         fail("cancellation not honored within 1 s", &shared);
     }
@@ -301,7 +451,10 @@ fn main() {
         )
         .0
     });
-    println!("policy: forged click → {:?} ({})", denied.outcome, denied.message);
+    println!(
+        "policy: forged click → {:?} ({})",
+        denied.outcome, denied.message
+    );
     assert_eq!(denied.outcome, ActionOutcome::Blocked);
 
     // --- 5. recovery: kill the guest runtime from inside the guest ------
@@ -349,7 +502,10 @@ fn main() {
             use tokio::sync::broadcast::error::TryRecvError;
             match guest_events.try_recv() {
                 Ok(E::GuestRuntimeDisconnected { reason, .. }) if saw_disconnect.is_none() => {
-                    println!("recovery: disconnect ({reason}) at {} ms", t_kill.elapsed().as_millis());
+                    println!(
+                        "recovery: disconnect ({reason}) at {} ms",
+                        t_kill.elapsed().as_millis()
+                    );
                     saw_disconnect = Some(reason);
                 }
                 Ok(E::GuestRuntimeReady { .. }) if saw_disconnect.is_some() => {
@@ -406,6 +562,9 @@ fn main() {
             "observe_ms_p95": percentile(&observe_ms, 0.95),
             "task_a_ms": task_a_ms,
             "red_pixels": red,
+            "scroll_diff_px": scrolled,
+            "double_click_diff_px": word,
+            "drag_diff_px": range,
             "blue_pixels": blue,
             "cancel_latency_ms": cancel_latency,
             "runtime_recovery_ms": recovered_ms,

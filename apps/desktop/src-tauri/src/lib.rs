@@ -31,9 +31,10 @@ macro_rules! app_handlers {
             commands::pause_computer,
             commands::resume_computer,
             commands::stop_computer,
+            commands::reset_computer,
+            commands::destroy_computer,
             commands::list_events,
             commands::get_image_status,
-            commands::prepare_image,
             commands::read_boot_log,
             commands::guest_info,
             commands::guest_ping,
@@ -74,6 +75,7 @@ pub fn run() {
         .manage(commands::ScriptCancel::default());
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(app_handlers!(
+        commands::prepare_image,
         commands::execute_action,
         commands::run_input_script,
         commands::demo_script_steps,

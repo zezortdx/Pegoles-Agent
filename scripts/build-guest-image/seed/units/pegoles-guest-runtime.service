@@ -7,6 +7,9 @@
 Description=Pegoles Guest Runtime (host<->guest control plane over vsock)
 After=systemd-user-sessions.service pegoles-weston.service
 Wants=systemd-user-sessions.service pegoles-weston.service
+# A guest app killing the runtime in a loop must not leave the unit
+# permanently failed (default start limit: 5 starts / 10 s).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

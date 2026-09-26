@@ -1,6 +1,8 @@
 # The agent's workspace: a maximized foot terminal on the Pegoles desktop.
 # Confined inside the (already isolated, network-less) guest: read-only
-# system, private /tmp, writable state only under /var/lib/pegoles-workspace.
+# system, private /tmp, writable state only under /var/lib/pegoles-workspace,
+# no device nodes beyond the basics (no /dev/uinput, no GPU), and no vsock
+# (it cannot even dial the host control channel).
 # Restarts if the agent closes it, so there is always something to drive.
 [Unit]
 Description=Pegoles workspace terminal
@@ -29,6 +31,8 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
+PrivateDevices=true
+RestrictAddressFamilies=~AF_VSOCK
 
 [Install]
 WantedBy=multi-user.target

@@ -14,7 +14,7 @@ export interface StatusDockProps {
   readonly elapsed?: string;
   /** Pegoles just arrived from Home: its mark travels here. */
   readonly arriving: boolean;
-  /** Core reports input in flight on its computer: it can be interrupted. */
+  /** A run is working on this task (or input is in flight): Stop is real. */
   readonly interruptible: boolean;
   readonly interrupting: boolean;
   readonly computerOpen: boolean;
@@ -31,15 +31,18 @@ const SHINE = new Set<TaskActivity["mode"]>(["thinking", "planning", "working", 
 
 function detailOf(activity: TaskActivity): string | undefined {
   if (activity.mode === "needs-user") return activity.approvalReason;
-  if (!activity.live && activity.at) return activity.mode === "error" && activity.detail ? `Stopped at: ${activity.detail}` : `Finished ${timeOf(activity.at)}`;
-  if (activity.mode === "blocked" && activity.offerComputer) return "No model is connected";
+  if (!activity.live && activity.at) {
+    if (activity.reason) return activity.reason;
+    return activity.mode === "error" && activity.detail ? `Stopped at: ${activity.detail}` : `Finished ${timeOf(activity.at)}`;
+  }
+  if (activity.start === "needs-model") return "No model is connected";
   const detail = activity.detail;
   if (!detail) return undefined;
   return detail.startsWith("/") && !detail.includes(" ") ? basename(detail) : detail;
 }
 
 function headlineOf(activity: TaskActivity, state: ActivityPill): string {
-  if (activity.mode === "blocked" && activity.offerComputer) return "Not started";
+  if (activity.start) return "Not started";
   if (!activity.live) return state.label;
   return activity.headline;
 }
@@ -53,7 +56,7 @@ export function StatusDock(props: StatusDockProps) {
   const { activity, state } = props;
   const headline = headlineOf(activity, state);
   const detail = detailOf(activity);
-  const settledNow = !activity.live || (activity.mode === "blocked" && !!activity.offerComputer);
+  const settledNow = !activity.live || !!activity.start;
   const key = `${headline}·${detail ?? ""}·${settledNow}`;
   // The line and what it offers change together, so an action never outruns its words.
   const shown = useHeldValue({ headline, detail, settled: settledNow }, key, HOLD_MS);
@@ -85,7 +88,7 @@ export function StatusDock(props: StatusDockProps) {
       <div className="dock__actions">
         {props.interruptible && (
           <button type="button" className="btn btn--quiet" disabled={props.interrupting} onClick={props.onInterrupt}
-            title={`Stop what Pegoles is doing on its computer (${props.modifier}.)`}>
+            title={`Stop this task (${props.modifier}.)`}>
             <StopIcon size={12} />Stop
           </button>
         )}

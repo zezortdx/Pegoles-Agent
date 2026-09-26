@@ -1,6 +1,6 @@
 import type { PresenceMode } from "../presence";
 import { describeAction, describePast } from "../lib/events";
-import { capabilityFor, requestOf, type Capability } from "../lib/execution";
+import { agentMessageOf, capabilityFor, firstLine, requestOf, type Capability } from "../lib/execution";
 import type { ActionRequestWire, AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
 
 /**
@@ -22,6 +22,9 @@ export interface ActionStep {
   readonly at: string;
 }
 
+/** Why a pending task hasn't started: no model yet, ready to start, or Pegoles is busy with another task. */
+export type StartState = "needs-model" | "ready" | "busy";
+
 export interface TaskActivity {
   readonly mode: PresenceMode;
   /** One human line: what Pegoles is doing or needs. */
@@ -37,6 +40,10 @@ export interface TaskActivity {
   readonly live: boolean;
   /** Its computer is usable even though the task can't run. */
   readonly offerComputer?: boolean;
+  /** Only for a task that hasn't started. */
+  readonly start?: StartState;
+  /** Why a finished run stopped, in Pegoles' words (first line). */
+  readonly reason?: string;
   /** When a finished task reached its final state. */
   readonly at?: string;
 }
@@ -112,10 +119,21 @@ export interface TaskActivityInputs {
   readonly connected: boolean;
   /** This task was just handed over and Core has not moved it yet. */
   readonly acknowledging?: boolean;
+  /** A start of this task is in flight (Core hasn't answered yet). */
+  readonly starting?: boolean;
 }
 
 export function modelConnected(status: StatusPayload | null): boolean {
-  return !!status?.model && status.model !== "not_configured" && status.model !== "unavailable";
+  return status?.model === "configured";
+}
+
+/** The latest note of a kind Pegoles wrote for this task, as one line. */
+function latestNote(events: readonly AgentEvent[], kind: "progress" | "error"): string | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const message = agentMessageOf(events[i]);
+    if (message?.kind === kind) return firstLine(message.text);
+  }
+  return undefined;
 }
 
 function approvalReason(events: readonly AgentEvent[]): string | undefined {
@@ -130,7 +148,7 @@ function approvalReason(events: readonly AgentEvent[]): string | undefined {
   return undefined;
 }
 
-export function taskActivity({ task, events, status, connected, acknowledging = false }: TaskActivityInputs): TaskActivity {
+export function taskActivity({ task, events, status, connected, acknowledging = false, starting = false }: TaskActivityInputs): TaskActivity {
   const recent = actionSteps(events).slice(-6);
   const pulse = events.length;
   const base = { recent, pulse };
@@ -139,9 +157,9 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
   if (task.status === "completed") return { ...base, mode: "done", headline: "Done", live: false, at: task.updated_at };
   if (task.status === "failed") {
     const stopped = [...recent].reverse().find((step) => step.outcome !== "done");
-    return { ...base, mode: "error", headline: "Couldn’t finish this", detail: stopped?.label, live: false, at: task.updated_at };
+    return { ...base, mode: "error", headline: "Couldn’t finish this", detail: stopped?.label, reason: latestNote(events, "error"), live: false, at: task.updated_at };
   }
-  if (task.status === "cancelled") return { ...base, mode: "idle", headline: "Cancelled", live: false, at: task.updated_at };
+  if (task.status === "cancelled") return { ...base, mode: "idle", headline: "Cancelled", reason: latestNote(events, "error"), live: false, at: task.updated_at };
 
   const needsApproval = task.status === "waiting_for_approval" || last?.outcome === "approval" ||
     (events.length > 0 && events[events.length - 1].type === "approval_requested");
@@ -168,14 +186,20 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
     };
   }
   if (acknowledging) return { ...base, mode: "acknowledging", headline: "Got it", live: true };
-  if (task.status === "running") return { ...base, mode: "thinking", headline: "Working on it", live: true };
+  // Between actions, the line says what Pegoles last wrote about its work.
+  if (task.status === "running") return { ...base, mode: "thinking", headline: "Working on it", detail: latestNote(events, "progress"), live: true };
+  // Not started. A start in flight, or a run claimed but not yet reported as running, is starting.
+  if (starting || status?.active_task === task.id) return { ...base, mode: "thinking", headline: "Starting", live: true };
   if (!modelConnected(status)) {
     return {
-      ...base, mode: "blocked", headline: "Can’t start yet", live: true, offerComputer: true,
-      detail: "No model is connected in this build, so Pegoles can’t start tasks on its own yet. The task is kept while the app is open, and its computer still works.",
+      ...base, mode: "blocked", headline: "Can’t start yet", live: true, offerComputer: true, start: "needs-model",
+      detail: "Pegoles needs a model to work on tasks. Add an Anthropic API key in Settings, then start it. The task is kept while the app is open, and its computer still works.",
     };
   }
-  return { ...base, mode: "waiting", headline: "Queued", live: true };
+  if (status?.active_task) {
+    return { ...base, mode: "idle", headline: "Not started", detail: "Pegoles is working on another task", live: false, start: "busy" };
+  }
+  return { ...base, mode: "idle", headline: "Not started", live: false, start: "ready" };
 }
 
 export interface GlobalPresenceInputs {
@@ -200,15 +224,4 @@ export function globalPresence(input: GlobalPresenceInputs): PresenceMode {
   if (input.computerTransitioning) return "working";
   if (input.attentive) return "attentive";
   return "idle";
-}
-
-/** A short sidebar line for tasks that deserve a glance; none for calm ones. */
-export function taskGlance(task: AgentTask, status: StatusPayload | null): string | null {
-  switch (task.status) {
-    case "running": return "Working…";
-    case "waiting_for_approval": return "Needs your approval";
-    case "failed": return "Couldn’t finish";
-    case "pending": return modelConnected(status) ? "Queued" : "Not started";
-    default: return null;
-  }
 }

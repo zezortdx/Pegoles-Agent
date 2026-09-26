@@ -17,7 +17,7 @@ use pegoles_core::{ComputerView, CoreError, DisplayBounds, GeometryOutcome};
 use pegoles_protocol::{AgentEvent, AgentTask, ComputerInfo, ComputerState, GuestRuntimeState};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 pub type SharedState = Arc<Mutex<AppState>>;
 
@@ -417,8 +417,11 @@ pub async fn start_computer(
 pub async fn pause_computer(
     state: tauri::State<'_, SharedState>,
     script: tauri::State<'_, ScriptCancel>,
+    agent: tauri::State<'_, AgentSupervisor>,
 ) -> Result<ComputerPayload, String> {
     script.trip();
+    // The agent stops first, before this command waits for the state.
+    agent.cancel(None);
     with_state(state.inner().clone(), |s| lifecycle(s, |r| r.pause())).await
 }
 
@@ -433,8 +436,11 @@ pub async fn resume_computer(
 pub async fn stop_computer(
     state: tauri::State<'_, SharedState>,
     script: tauri::State<'_, ScriptCancel>,
+    agent: tauri::State<'_, AgentSupervisor>,
 ) -> Result<ComputerPayload, String> {
     script.trip();
+    // The agent stops first, before this command waits for the state.
+    agent.cancel(None);
     with_state(state.inner().clone(), |s| lifecycle(s, |r| r.stop())).await
 }
 
@@ -467,6 +473,10 @@ pub async fn get_image_status(
 
 /// Start base-image preparation on a background thread (download +
 /// verify + extract with real byte progress). Returns immediately.
+/// Debug builds only: this fetches the official Debian image that image
+/// builders start from; it does not install the sealed Pegoles image a
+/// computer boots, so the product UI never offers it.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn prepare_image(
     app: tauri::AppHandle,
@@ -513,14 +523,17 @@ pub async fn prepare_image(
 
 /// Background worker for `prepare_image` (no lock held during the
 /// multi-minute download; progress updates re-lock briefly).
+#[cfg(debug_assertions)]
 fn run_image_preparation(
     app: tauri::AppHandle,
     shared: SharedState,
     images_dir: std::path::PathBuf,
 ) {
+    use tauri::Emitter;
     let manager = pegoles_computer::ComputerImageManager::new(images_dir);
     let result = manager.prepare(&mut |stage, downloaded, total| {
-        if let Ok(mut s) = shared.lock() {
+        {
+            let mut s = lock_state(&shared);
             s.image_stage = Some(stage.as_str().to_string());
             s.image_downloaded = downloaded;
             s.image_total = total;
@@ -534,9 +547,7 @@ fn run_image_preparation(
             }),
         );
     });
-    let Ok(mut s) = shared.lock() else {
-        return;
-    };
+    let mut s = lock_state(&shared);
     s.preparing_image = false;
     match result {
         Ok(_) => {
@@ -670,8 +681,11 @@ pub async fn display_detach(state: tauri::State<'_, SharedState>) -> Result<Comp
 pub async fn take_control(
     state: tauri::State<'_, SharedState>,
     script: tauri::State<'_, ScriptCancel>,
+    agent: tauri::State<'_, AgentSupervisor>,
 ) -> Result<ComputerView, String> {
     script.trip();
+    // The agent stops first, before this command waits for the state.
+    agent.cancel(None);
     with_state(state.inner().clone(), |s| {
         s.registry.take_control().map_err(err)?;
         Ok(s.registry.computer_view(s.preparing_image))
@@ -689,7 +703,7 @@ pub async fn return_control(state: tauri::State<'_, SharedState>) -> Result<Comp
     .await
 }
 
-// --- Phase 4: tasks (no model runs them yet: they stay pending) ---
+// --- tasks (created pending; `run_task` starts the agent) ---
 
 #[tauri::command]
 pub async fn create_task(
@@ -708,7 +722,7 @@ pub async fn list_tasks(state: tauri::State<'_, SharedState>) -> Result<Vec<Agen
     with_state(state.inner().clone(), |s| Ok(s.tasks.list())).await
 }
 
-// --- Phase 5: Eyes & Hands (deterministic; no model calls these) ---
+// --- Eyes & Hands: direct actions (Design Lab; debug builds) ---
 
 /// Execute ONE structured action inside Pegoles Computer (policy →
 /// control → guest dispatch → lifecycle events). `task_id` attaches the
@@ -915,6 +929,35 @@ pub async fn input_audit(
                 text_len: e.text_len,
             })
             .collect())
+    })
+    .await
+}
+
+/// Return the computer to the sealed image (fresh disk, same identity).
+/// Refused while an agent run is using it.
+#[tauri::command]
+pub async fn reset_computer(
+    state: tauri::State<'_, SharedState>,
+    agent: tauri::State<'_, AgentSupervisor>,
+) -> Result<ComputerPayload, String> {
+    if agent.active().is_some() {
+        return Err("stop the running task before resetting the computer".to_string());
+    }
+    with_state(state.inner().clone(), |s| lifecycle(s, |r| r.reset())).await
+}
+
+/// Destroy the computer and its private disk. Refused during a run.
+#[tauri::command]
+pub async fn destroy_computer(
+    state: tauri::State<'_, SharedState>,
+    agent: tauri::State<'_, AgentSupervisor>,
+) -> Result<ComputerPayload, String> {
+    if agent.active().is_some() {
+        return Err("stop the running task before removing the computer".to_string());
+    }
+    with_state(state.inner().clone(), |s| {
+        s.registry.destroy().map_err(err)?;
+        Ok(ComputerPayload { info: None })
     })
     .await
 }

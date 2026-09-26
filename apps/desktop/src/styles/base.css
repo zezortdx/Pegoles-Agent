@@ -131,6 +131,10 @@ kbd { font: inherit; }
 .btn--quiet { color: var(--text-2); font-weight: 450; }
 .btn--quiet:hover:not(:disabled) { color: var(--text-1); }
 
+.btn--danger { background: var(--danger-soft); color: var(--danger-text); }
+.btn--danger:hover:not(:disabled) { background: rgb(255 107 97 / 0.2); }
+.btn--danger:disabled { background: var(--fill-quiet); }
+
 .btn--small { height: 26px; padding: 0 10px; font: var(--type-small); font-weight: 500; }
 
 .icon-btn {

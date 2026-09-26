@@ -3,18 +3,16 @@ import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isEffectsTier, type EffectsTier } from "@pegoles/ui";
 import { humanizeError, type ErrorScope, type HumanError } from "./errors";
-import {
-  api, type AgentEvent, type AgentTask, type HostCapabilities, type ImageStatusPayload, type StatusPayload,
-} from "../lib/tauri";
+import { api, type AgentEvent, type AgentTask, type HostCapabilities, type StatusPayload } from "../lib/tauri";
 
 const POLL_MS = 2500;
-const CORE_EVENTS = ["pegoles://event", "pegoles://image-progress", "pegoles://display-activity"] as const;
+const CORE_EVENTS = ["pegoles://event", "pegoles://display-activity"] as const;
 
 export type Busy = Readonly<Record<ErrorScope, boolean>>;
 export type Errors = Readonly<Record<ErrorScope, HumanError | null>>;
 
-const IDLE: Busy = { task: false, computer: false, general: false };
-const CLEAR: Errors = { task: null, computer: null, general: null };
+const IDLE: Busy = { task: false, run: false, computer: false, general: false };
+const CLEAR: Errors = { task: null, run: null, computer: null, general: null };
 
 export interface Core {
   /** Running inside the desktop app (not a browser preview). */
@@ -23,7 +21,6 @@ export interface Core {
   readonly status: StatusPayload | null;
   readonly events: AgentEvent[];
   readonly tasks: AgentTask[];
-  readonly image: ImageStatusPayload | null;
   readonly host: HostCapabilities | null;
   /** Effects tier Core recommends for this machine. */
   readonly recommendedTier: EffectsTier;
@@ -47,7 +44,6 @@ export function useCore(): Core {
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
-  const [image, setImage] = useState<ImageStatusPayload | null>(null);
   const [host, setHost] = useState<HostCapabilities | null>(null);
   const [connected, setConnected] = useState(false);
   const [recommendedTier, setRecommendedTier] = useState<EffectsTier>("reduced");
@@ -70,11 +66,9 @@ export function useCore(): Core {
     if (flight.current) { again.current = true; return flight.current; }
     const pending = (async () => {
       try {
-        const [nextStatus, nextEvents, nextImage, nextTasks] = await Promise.all([
-          api.getStatus(), api.listEvents(), api.getImageStatus(), api.listTasks(),
-        ]);
+        const [nextStatus, nextEvents, nextTasks] = await Promise.all([api.getStatus(), api.listEvents(), api.listTasks()]);
         if (!mounted.current) return;
-        setStatus(nextStatus); setEvents(nextEvents); setImage(nextImage); setTasks(nextTasks); setConnected(true);
+        setStatus(nextStatus); setEvents(nextEvents); setTasks(nextTasks); setConnected(true);
         if (!hostRead.current) {
           hostRead.current = true;
           void api.getHostCapabilities().then((value) => { if (mounted.current) setHost(value); })
@@ -140,5 +134,5 @@ export function useCore(): Core {
     setErrors((previous) => (previous[scope] ? { ...previous, [scope]: null } : previous));
   }, []);
 
-  return { native, connected, status, events, tasks, image, host, recommendedTier, busy, errors, refresh, run, dismiss, report };
+  return { native, connected, status, events, tasks, host, recommendedTier, busy, errors, refresh, run, dismiss, report };
 }

@@ -11,7 +11,6 @@ export type MachineLight = "offline" | "setup" | "off" | "waking" | "ready" | "a
 const LIGHT: Record<ComputerPhase, MachineLight> = {
   unavailable: "offline",
   "needs-setup": "setup",
-  preparing: "waking",
   off: "off",
   starting: "waking",
   ready: "ready",
@@ -26,9 +25,8 @@ export function machineLight(model: ComputerModel): MachineLight {
   return LIGHT[model.phase];
 }
 
-/** 0..1: follows real setup progress and boot stages. */
+/** 0..1: follows the real boot stages. */
 export function wakeLevel(model: ComputerModel): number {
-  if (model.phase === "preparing") return 0.15 + 0.45 * (model.progress ?? 0);
   if (model.phase === "starting") {
     const done = model.steps.filter((step) => step.state === "done").length;
     return 0.3 + 0.22 * done;

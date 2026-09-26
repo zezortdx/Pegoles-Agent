@@ -16,6 +16,21 @@ describe("humanizeError", () => {
     });
   });
 
+  it("keeps a failed start with its task, in words people can act on", () => {
+    expect(humanizeError("Connect a model in Settings first.", "run")).toMatchObject({ scope: "run", title: "Connect a model first." });
+    expect(humanizeError("task 0191 is already running", "run")).toMatchObject({ scope: "run", title: "Pegoles is working on another task." });
+    expect(humanizeError("task is Running, not pending", "run")).toMatchObject({ scope: "run", title: "This task has already started." });
+    // A computer failure while starting still reads as a computer problem, but stays with the task.
+    const helper = humanizeError("computer error: backend error: pegoles-vm-host binary not found", "run");
+    expect(helper).toMatchObject({ scope: "run", title: "Computer couldn’t start." });
+    expect(humanizeError("something odd", "run")).toMatchObject({ scope: "run", title: "Pegoles couldn’t start this task." });
+  });
+
+  it("explains a refused reset or removal, and a missing computer image", () => {
+    expect(humanizeError("stop the running task before resetting the computer", "general")).toMatchObject({ scope: "general", title: "Stop the running task first." });
+    expect(humanizeError("computer image missing: no sealed image", "computer")).toMatchObject({ title: "Pegoles’ computer image isn’t ready." });
+  });
+
   it("never loses the detail", () => {
     expect(humanizeError("", "general").detail).toBe("No details were reported.");
     expect(errorText({ code: 7 })).toBe('{"code":7}');

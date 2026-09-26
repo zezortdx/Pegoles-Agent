@@ -6,13 +6,13 @@
  * product state for visual QA: `#/dev/shell/<scenario>`. Nothing here is
  * reachable from production code paths.
  */
-import type { AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
+import type { AgentEvent, AgentMessageKind, AgentTask, ModelSettings, StatusPayload } from "../lib/tauri";
 
 export const SHELL_LAB_MARKER = "__PEGOLES_SHELL_LAB__";
 
 type Scenario =
-  | "home" | "pending" | "thinking" | "files" | "computer" | "user" | "approval"
-  | "done" | "failure" | "long" | "booting" | "offline-setup" | "paused" | "preparing";
+  | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
+  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "paused";
 
 const now = Date.now();
 const iso = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
@@ -22,10 +22,10 @@ const baseStatus: StatusPayload = {
   image_status: "ready", spec_os: "Debian 13", spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "unavailable",
   guest_ready_ms: null, viewport_state: "off", viewport_issue: null, display_available: false, display_attached: false,
   display_config: { width_px: 1440, height_px: 900 }, display_error: null, display_setup_error: null, control_owner: "none",
-  input_available: false, agent_busy: false,
+  input_available: false, agent_busy: false, active_task: null,
 };
 const running: Partial<StatusPayload> = {
-  model: "local", computer_created: true, computer_state: "running", computer_id: "vm-1", guest_state: "ready", guest_ready_ms: 4200,
+  model: "configured", computer_created: true, computer_state: "running", computer_id: "vm-1", guest_state: "ready", guest_ready_ms: 4200,
   viewport_state: "ready", input_available: true,
 };
 
@@ -45,6 +45,10 @@ function action(taskId: string, type: string, extra: Record<string, unknown>, ag
   } as AgentEvent];
 }
 
+function note(taskId: string, kind: AgentMessageKind, text: string, ago: number): AgentEvent {
+  return { type: "agent_message", task_id: taskId, kind, text, at: iso(ago) };
+}
+
 const history: AgentTask[] = [
   task("h1", "Rename the vacation photos by date", "completed", 60 * 60 * 26),
   task("h2", "Summarize the Q3 board deck", "completed", 60 * 60 * 3),
@@ -57,7 +61,21 @@ function world(scenario: Scenario): World {
   switch (scenario) {
     case "home": return { status: baseStatus, tasks: [], events: [] };
     case "pending": return { status: baseStatus, tasks: [...history, current("pending")], events: [{ type: "task_created", task_id: "t1", title: "Find duplicate files in Downloads and clean them up", at: iso(95) }] };
-    case "thinking": return { status: { ...baseStatus, ...running, model: "local" }, tasks: [...history, current("running")], events: [] };
+    case "ready": return { status: { ...baseStatus, model: "configured" }, tasks: [...history, current("pending")], events: [{ type: "task_created", task_id: "t1", title: "Find duplicate files in Downloads and clean them up", at: iso(95) }] };
+    case "running": return {
+      status: { ...baseStatus, ...running, viewport_state: "agent_active", control_owner: "agent", active_task: "t1" },
+      tasks: [...history, current("running", "Compare the pricing of the three most popular note-taking apps")],
+      events: [
+        note("t1", "progress", "I’ll start by opening Firefox and searching for each app’s pricing page.", 88),
+        ...action("t1", "observe_screen", {}, 86), ...action("t1", "double_click", { x: 0.08, y: 0.12 }, 84), ...action("t1", "observe_screen", {}, 80),
+        note("t1", "progress", "Firefox is open. Searching for Notion’s pricing first, then Obsidian and Evernote.\nI’ll note the monthly price of each paid plan.", 60),
+        ...action("t1", "click", { x: 0.5, y: 0.08 }, 58), ...action("t1", "type_text", { text: "", sensitive: false }, 56), ...action("t1", "key_press", { key: "Return" }, 54),
+        ...action("t1", "observe_screen", {}, 50), ...action("t1", "scroll", { x: 0.5, y: 0.5, delta_x: 0, delta_y: 5 }, 46),
+        note("t1", "progress", "Notion Plus is $10 per seat a month. Opening Obsidian’s pricing next.", 20),
+        ...action("t1", "click", { x: 0.5, y: 0.08 }, 2, "running"),
+      ],
+    };
+    case "thinking": return { status: { ...baseStatus, ...running, model: "configured" }, tasks: [...history, current("running")], events: [] };
     case "files": return {
       status: { ...baseStatus, ...running, agent_busy: true },
       tasks: [...history, current("running")],
@@ -83,7 +101,19 @@ function world(scenario: Scenario): World {
       status: { ...baseStatus, ...running },
       tasks: [...history, { ...current("completed"), updated_at: iso(5) }],
       events: [...action("t1", "list_directory", { path: "/home/pegoles/workspace/Downloads" }, 80), ...action("t1", "read_file", { path: "/home/pegoles/workspace/Downloads/index.txt" }, 70),
-        ...action("t1", "write_file", { path: "/home/pegoles/workspace/Downloads/duplicates-report.md", content: "…" }, 20), ...action("t1", "shell", { command: "ls" }, 10)],
+        ...action("t1", "write_file", { path: "/home/pegoles/workspace/Downloads/duplicates-report.md", content: "…" }, 20), ...action("t1", "shell", { command: "ls" }, 10),
+        note("t1", "summary", [
+          "I found 14 duplicate files in Downloads (1.2 GB in total) and listed them in duplicates-report.md, grouped by original.",
+          "", "Nothing was deleted: 3 of the pairs differ slightly (different export dates), so please check those before removing anything.",
+          "", "Largest duplicates:", "• Keynote export (2).mov — 640 MB", "• IMG_2041 copy.jpg — 12 MB", "• Invoice-2026-08 (1).pdf — 1.1 MB",
+          "", "If you want, start a new task to move the rest to the Trash.",
+        ].join("\n"), 6)],
+    };
+    case "cancelled": return {
+      status: { ...baseStatus, ...running, model: "configured" },
+      tasks: [...history, { ...current("cancelled"), updated_at: iso(8) }],
+      events: [note("t1", "progress", "Opening the Files app to look through Downloads.", 60), ...action("t1", "observe_screen", {}, 58), ...action("t1", "double_click", { x: 0.1, y: 0.2 }, 50),
+        note("t1", "error", "Stopped by the user.", 9)],
     };
     case "failure": return { status: baseStatus, tasks: history, events: [], failComputer: "computer error: backend error: pegoles-vm-host binary not found (build the native helper or set PEGOLES_VM_HOST)" };
     case "long": {
@@ -109,7 +139,6 @@ function world(scenario: Scenario): World {
       tasks: [...history, current("running")],
       events: [...action("t1", "screenshot", {}, 50), ...action("t1", "click", { x: 0.2, y: 0.4 }, 40)],
     };
-    case "preparing": return { status: { ...baseStatus, image_status: "downloading" }, tasks: [], events: [] };
   }
 }
 
@@ -169,19 +198,65 @@ function fakeScreen(): string {
 export function installShellLab(hash: string): void {
   const name = (hash.split("/")[3] ?? "home") as Scenario;
   const state = world(name);
+  // As in Core: a running task is the one agent run.
+  const live = state.tasks.find((candidate) => candidate.status === "running");
+  if (live && !state.status.active_task) state.status = { ...state.status, active_task: live.id };
   const callbacks = new Map<number, Handler>();
   let nextId = 1;
-  const image = name === "offline-setup"
-    ? { status: "missing", preparing: false, stage: null, downloaded: 0, total: 0, error: null }
-    : name === "preparing"
-      ? { status: "downloading", preparing: true, stage: "downloading", downloaded: 412_000_000, total: 980_000_000, error: null }
-      : { status: "ready", preparing: false, stage: null, downloaded: 0, total: 0, error: null };
+  let model: ModelSettings = {
+    configured: state.status.model === "configured", key_source: state.status.model === "configured" ? "keychain" : null,
+    model: "claude-opus-5", effort: "high", models: ["claude-opus-5", "claude-sonnet-5", "claude-opus-5-5"], efforts: ["low", "medium", "high", "xhigh", "max"],
+  };
+  const setModel = (next: ModelSettings) => {
+    model = next;
+    state.status = { ...state.status, model: next.configured ? "configured" : "not_configured" };
+    return model;
+  };
+  const setTask = (id: string, status: AgentTask["status"]) => {
+    const previous = state.tasks.find((candidate) => candidate.id === id);
+    state.tasks = state.tasks.map((candidate) => candidate.id === id ? { ...candidate, status, updated_at: new Date().toISOString() } : candidate);
+    if (previous) state.events = [...state.events, { type: "task_status_changed", task_id: id, from: previous.status, to: status, at: new Date().toISOString() }];
+  };
+  const say = (taskId: string, kind: AgentMessageKind, text: string) => { state.events = [...state.events, note(taskId, kind, text, 0)]; };
 
   const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
     get_status: () => state.status,
     list_events: () => state.events,
     list_tasks: () => state.tasks,
-    get_image_status: () => image,
+    get_model_settings: () => model,
+    set_api_key: (args) => {
+      if (String(args.key ?? "").trim().length < 20) throw "the key should be 20 to 256 characters";
+      return setModel({ ...model, configured: true, key_source: "keychain" });
+    },
+    clear_api_key: () => setModel({ ...model, configured: false, key_source: null }),
+    set_model_settings: (args) => setModel({ ...model, model: String(args.model), effort: String(args.effort) }),
+    run_task: (args) => {
+      const id = String(args.taskId);
+      if (state.status.model !== "configured") throw "Connect a model in Settings first.";
+      if (state.status.active_task) throw `task ${state.status.active_task} is already running`;
+      const target = state.tasks.find((candidate) => candidate.id === id);
+      if (target?.status !== "pending") throw `task is ${target?.status ?? "missing"}, not pending`;
+      state.status = { ...state.status, ...running, model: "configured", active_task: id };
+      setTask(id, "running");
+      say(id, "progress", "Looking at the screen first to see where things are.");
+      return null;
+    },
+    cancel_task: (args) => {
+      const id = String(args.taskId);
+      if (state.status.active_task === id) state.status = { ...state.status, active_task: null, agent_busy: false, control_owner: "none", viewport_state: "ready" };
+      setTask(id, "cancelled");
+      say(id, "error", "Stopped by the user.");
+      return null;
+    },
+    reset_computer: () => {
+      if (state.status.active_task) throw "stop the running task before resetting the computer";
+      return { info: null };
+    },
+    destroy_computer: () => {
+      if (state.status.active_task) throw "stop the running task before removing the computer";
+      state.status = { ...state.status, computer_created: false, computer_state: null, computer_id: null, viewport_state: "off", guest_state: "unavailable", control_owner: "none" };
+      return { info: null };
+    },
     get_host_capabilities: () => ({ platform: "macos", architecture: "arm64", backend: "real", backend_available: true, backend_detail: "", guest_transport: "virtio_socket", guest_transport_available: true, required_setup: [], supported: true }),
     suggested_effects: () => ({ tier: "full" }),
     create_task: (args) => {

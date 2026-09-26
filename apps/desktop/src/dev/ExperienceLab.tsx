@@ -30,8 +30,8 @@ const control: React.CSSProperties = { font: "var(--type-small)", color: "var(--
 // ── Ribbon fixtures: real event shapes through the real model ─────────
 const AT = "2026-09-24T10:00:00Z";
 const TASK: AgentTask = { id: "lab", title: "Tidy Downloads", status: "running", created_at: AT, updated_at: AT };
-const BUSY = { agent_busy: true, control_owner: "agent", model: "local" } as StatusPayload;
-const QUIET = { agent_busy: false, control_owner: "none", model: "local" } as StatusPayload;
+const BUSY = { agent_busy: true, control_owner: "agent", model: "configured" } as StatusPayload;
+const QUIET = { agent_busy: false, control_owner: "none", model: "configured" } as StatusPayload;
 const request = (id: string, type: string, extra: Record<string, unknown> = {}) =>
   ({ action_id: id, task_id: "lab", computer_id: "vm", action: { type, ...extra }, requested_at: AT });
 const ev = {

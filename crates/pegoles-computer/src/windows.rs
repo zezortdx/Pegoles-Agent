@@ -231,7 +231,10 @@ mod detect {
                 let _ = RegCloseKey(key);
                 return None;
             }
-            let mut buf = vec![0u16; (size as usize / 2).max(1)];
+            // Round an odd byte count up (plus a terminator slot) so the
+            // second call can never write past the buffer.
+            let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
+            size = (buf.len() * 2) as u32;
             let ok = RegQueryValueExW(
                 key,
                 PCWSTR(vname.as_ptr()),
@@ -355,7 +358,23 @@ mod detect {
         unsafe {
             let mut sid: *mut std::ffi::c_void = std::ptr::null_mut();
             let mut auth = SECURITY_NT_AUTHORITY;
-            AllocateAndInitializeSid(&mut auth, 1, rid, 0, 0, 0, 0, 0, 0, 0, &mut sid).ok()?;
+            // BUILTIN aliases are S-1-5-32-<rid>: two sub-authorities
+            // (SECURITY_BUILTIN_DOMAIN_RID = 32, then the alias RID).
+            const SECURITY_BUILTIN_DOMAIN_RID: u32 = 32;
+            AllocateAndInitializeSid(
+                &mut auth,
+                2,
+                SECURITY_BUILTIN_DOMAIN_RID,
+                rid,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &mut sid,
+            )
+            .ok()?;
             if sid.is_null() {
                 return None;
             }

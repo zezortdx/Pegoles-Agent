@@ -8,6 +8,7 @@ import type { BootLogPayload, StatusPayload } from "../lib/tauri";
 import { timeOf } from "../artifacts/format";
 import { CapabilityGlyph } from "../artifacts/glyphs";
 import { ArrowLeftIcon, CloseIcon, ExitFullscreenIcon, FocusIcon, FullscreenIcon, UnfocusIcon } from "../ui/icons";
+import { ComputerManage, type ManageCommand } from "./ComputerManage";
 import { ComputerStatus } from "./ComputerStatus";
 import { ControlStrip } from "./ControlStrip";
 import { Details, Facts } from "./ComputerInfo";
@@ -31,6 +32,8 @@ export interface ComputerPanelProps {
   /** Recent steps of the task in view that touched this computer. */
   readonly steps: readonly ActionStep[];
   readonly busy: boolean;
+  /** Reset or remove is in flight. */
+  readonly managing: boolean;
   readonly error: HumanError | null;
   /** The workspace is recomposing: keep the native view hidden until it settles. */
   readonly moving: boolean;
@@ -39,6 +42,7 @@ export interface ComputerPanelProps {
   /** Opened by the person: focus moves in. Opened by Pegoles: never steal focus. */
   readonly focusOnOpen: boolean;
   readonly onCommand: (command: ComputerCommand) => void;
+  readonly onManage: (command: ManageCommand) => void;
   readonly onLevel: (level: ComputerLevel) => void;
   readonly onClose: () => void;
   readonly onSlotError: (error: unknown) => void;
@@ -49,7 +53,7 @@ export interface ComputerPanelProps {
 
 function stateTone(model: ComputerModel): string {
   switch (model.phase) {
-    case "agent": case "starting": case "preparing": return "live";
+    case "agent": case "starting": return "live";
     case "user": return "attention";
     case "error": return "error";
     case "ready": return "done";
@@ -195,6 +199,8 @@ export function ComputerPanel(props: ComputerPanelProps) {
           {level === "side" && <Facts model={model} />}
           {level === "side" && (
             <footer className="computer__foot">
+              <ComputerManage available={!!status?.computer_created} locked={!!status?.active_task}
+                busy={busy || props.managing} onCommand={props.onManage} />
               <Details model={model} status={status} error={error} loadBootLog={props.loadBootLog} />
             </footer>
           )}

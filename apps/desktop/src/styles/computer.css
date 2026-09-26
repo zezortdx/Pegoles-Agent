@@ -236,6 +236,7 @@
 .machine-state[data-phase="error"] .machine-state__power { color: var(--danger-text); box-shadow: inset 0 0 0 0.5px var(--danger-line); }
 .machine-state__headline { position: relative; color: var(--text-1); font: var(--type-heading); }
 .machine-state__body { position: relative; max-width: 38ch; color: var(--text-3); font: var(--type-small); }
+.machine-state__note { position: relative; max-width: 40ch; margin-top: 4px; color: var(--text-3); font: var(--type-mono); user-select: text; -webkit-user-select: text; }
 .machine-state__actions { position: relative; display: flex; gap: 6px; margin-top: 12px; }
 
 .boot { position: relative; display: grid; gap: 7px; margin-top: 10px; text-align: left; }
@@ -246,10 +247,6 @@
 .boot__step[data-state="done"] .boot__mark { background: var(--success); box-shadow: none; }
 .boot__step[data-state="active"] .boot__mark { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: dot-breathe 2.2s var(--ease-light) infinite; }
 
-.meter { position: relative; width: 180px; height: 3px; margin-top: 12px; overflow: hidden; border-radius: 2px; background: var(--fill-press); }
-.meter__fill { position: absolute; inset: 0; background: var(--accent); transform-origin: left; transition: transform var(--dur-agent-slow) var(--ease-out); }
-.meter__fill[data-indeterminate] { width: 40%; animation: meter-slide 1.4s var(--ease-move) infinite; }
-@keyframes meter-slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
 
 .computer__inline-error { color: var(--danger-text); font: var(--type-small); }
 
@@ -287,7 +284,23 @@
 .facts__row dt { color: var(--text-3); }
 .facts__row dd { color: var(--text-2); text-align: right; }
 .facts--details { margin-top: 8px; }
-.computer__foot { flex: none; }
+.computer__foot { display: grid; gap: 10px; flex: none; }
+
+/* Starting over: quiet until asked, then one inline question. */
+.manage { display: grid; gap: 4px; }
+.manage__actions { display: flex; flex-wrap: wrap; gap: 2px; margin-left: -10px; }
+.manage__remove:not(:disabled) { color: var(--danger-text); }
+.manage__why { color: var(--text-3); font: var(--type-small); }
+.manage--confirm {
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  background: linear-gradient(rgb(255 107 97 / 0.05), rgb(255 107 97 / 0.05)), var(--surface);
+  box-shadow: inset 0 0 0 0.5px var(--danger-line);
+}
+.manage--confirm .manage__actions { justify-content: flex-end; margin: 4px 0 0; gap: 6px; }
+.manage__question { color: var(--text-1); font: var(--type-heading); }
+.manage__body { color: var(--text-2); font: var(--type-small); }
 .computer__muted { margin-top: 8px; color: var(--text-3); font: var(--type-small); }
 
 /* ── Peek: the compact live surface ──────────────────────────────── */
@@ -339,6 +352,6 @@
 .peek__close { width: 24px; height: 24px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .machine__scan, .machine__trace, .machine-state__scan, .meter__fill[data-indeterminate] { animation: none; }
+  .machine__scan, .machine__trace, .machine-state__scan { animation: none; }
 }
 :root[data-reduced-motion="true"] :is(.machine__scan, .machine__trace, .machine-state__scan) { animation: none; }

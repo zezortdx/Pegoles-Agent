@@ -187,7 +187,40 @@
 .outcome__facts { color: var(--text-3); font: var(--type-small); font-variant-numeric: tabular-nums; }
 .outcome__detail { color: var(--text-2); font: var(--type-small); }
 
+/* What Pegoles wrote: plain reading text on the work, no box. Its notes
+ * sit quieter than its summary; why it stopped carries the error glyph. */
+.note { display: flex; align-items: flex-start; gap: 10px; }
+.note__icon { display: inline-grid; place-items: center; width: 16px; height: 21px; flex: none; color: var(--danger); }
+.note__body { display: grid; justify-items: start; gap: 2px; min-width: 0; }
+.note__text {
+  max-width: 68ch;
+  color: var(--text-2);
+  font: var(--type-read);
+  letter-spacing: var(--track-read);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.note[data-variant="summary"] .note__text { color: var(--text-1); }
+.note__text[data-folded] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  overflow: hidden;
+}
+.note__more {
+  margin-left: -4px;
+  padding: 1px 4px;
+  border-radius: 5px;
+  color: var(--text-3);
+  font: var(--type-small);
+  font-weight: 500;
+  transition: color var(--dur-micro) var(--ease-out), background-color var(--dur-micro) var(--ease-out);
+}
+.note__more:hover { color: var(--text-1); background: var(--fill-hover); }
+
 .task .notice { margin-bottom: 16px; }
+.notice__problem { color: var(--danger-text); font: var(--type-small); }
 
 /* Beside a focused computer the column is narrow: keep the words, drop the clock. */
 @container (max-width: 480px) {

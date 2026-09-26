@@ -28,7 +28,7 @@ interface ComputerStatusProps {
 
 /**
  * No screen yet, drawn inside the screen's own frame: dark when off, its
- * glass brightening through the real boot stages, one action.
+ * glass brightening through the real boot stages, at most one action.
  */
 export function ComputerStatus({ model, busy, error, onCommand, onDismissError }: ComputerStatusProps) {
   const headline = error ? error.title : model.headline;
@@ -43,18 +43,12 @@ export function ComputerStatus({ model, busy, error, onCommand, onDismissError }
       {dark && <span className="machine-state__power" aria-hidden="true"><PowerIcon size={18} /></span>}
       <p className="machine-state__headline" role={error ? "alert" : undefined}>{headline}</p>
       {body && <p className="machine-state__body">{body}</p>}
+      {!error && model.devNote && <p className="machine-state__note">{model.devNote}</p>}
       {model.steps.length > 0 && !error && <BootSteps model={model} />}
-      {model.phase === "preparing" && (
-        <div className="meter" role="progressbar" aria-label="Setting up its computer" aria-valuemin={0} aria-valuemax={100}
-          aria-valuenow={model.progress === null ? undefined : Math.round(model.progress * 100)}>
-          <span className="meter__fill pg-work-anim" data-indeterminate={model.progress === null || undefined}
-            style={model.progress === null ? undefined : { transform: `scaleX(${model.progress})` }} />
-        </div>
-      )}
       {(showPrimary || error) && (
         <div className="machine-state__actions">
           {showPrimary && (
-            <button type="button" className={primary.command === "prepare" || primary.command === "start" ? "btn btn--primary" : "btn btn--line"} disabled={busy} onClick={() => onCommand(primary.command)}>
+            <button type="button" className={primary.command === "start" ? "btn btn--primary" : "btn btn--line"} disabled={busy} onClick={() => onCommand(primary.command)}>
               {busy ? <><span className="spinner" aria-hidden="true" />Working…</> : primary.label}
             </button>
           )}

@@ -1069,6 +1069,7 @@ fn agent_control_only_from_executor() {
                 line.contains("set_control")
                     || line.contains("ControlOwner::Agent =>")
                     || line.contains("== ControlOwner::Agent")
+                    || line.contains("!= ControlOwner::Agent")
                     || line.contains("ControlOwner::Agent |")
                     || line.contains("agent_may_act")
             } else if name == "display.rs" {

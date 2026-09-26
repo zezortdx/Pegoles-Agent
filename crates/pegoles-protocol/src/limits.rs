@@ -2,7 +2,8 @@
 //!
 //! Single source of truth shared by Policy (static rejection), the Core
 //! executor (runtime rate limiting), and the deterministic runner.
-//! Reasonable limits, not user-hostile: groundwork for future LLM safety.
+//! Reasonable limits, not user-hostile: they bound what any planner (model
+//! or script) can ask for in one action, independent of its judgment.
 
 /// Maximum interpolated drag duration.
 pub const MAX_DRAG_MS: u32 = 10_000;

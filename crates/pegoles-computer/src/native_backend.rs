@@ -617,6 +617,9 @@ pub(crate) struct NativeInner {
     /// `wait_guest_frame`), handed to Core on the next `poll_guest` so no
     /// readiness fact is lost to a concurrent command.
     deferred: VecDeque<GuestObservation>,
+    /// Exclusive ownership of the computer directory while this engine
+    /// owns the computer (see `computer_store`).
+    lock: Option<crate::computer_store::ComputerLock>,
 }
 
 /// Shared engine behind `MacOSVirtualizationBackend` and
@@ -651,6 +654,7 @@ impl NativeHelperBackend {
             pending_outbound: VecDeque::new(),
             instance: None,
             deferred: VecDeque::new(),
+            lock: None,
         }
     }
 
@@ -695,10 +699,7 @@ impl NativeHelperBackend {
     }
 
     pub fn serial_log_path(&self) -> Option<PathBuf> {
-        self.lock_inner()
-            .paths
-            .clone()
-            .and_then(|p| p.serial_log)
+        self.lock_inner().paths.clone().and_then(|p| p.serial_log)
     }
 
     fn ensure_transport(inner: &mut NativeInner, binary_hint: Option<&Path>) -> Result<()> {
@@ -926,17 +927,11 @@ impl NativeHelperBackend {
                 let transport = inner.transport.as_mut().expect("transport");
                 match transport.try_recv() {
                     None => break,
-                    Some(Err(_)) => {
-                        inner.cached = ComputerState::Error;
-                        Self::apply_event(
-                            inner,
-                            &None,
-                            crate::vmhost_proto::HostEvent::GuestDisconnected {
-                                computer_id: String::new(),
-                                reason: "helper_gone".to_string(),
-                            },
-                            &mut observations,
-                        );
+                    Some(Err(e)) => {
+                        // Oversized/garbled output or a dead helper: kill it
+                        // (and its VM) rather than leave a VM unmanaged.
+                        Self::abandon_transport(inner, &e);
+                        observations.extend(inner.deferred.drain(..));
                         break;
                     }
                     Some(Ok(l)) => l,
@@ -1067,9 +1062,30 @@ impl NativeHelperBackend {
         let building = generic_build || seed_iso_path.is_some();
         let allow_official = profile.allow_official_fallback && building;
         let images = ComputerImageManager::with_spec(self.images_dir.clone(), spec);
-        let id = ComputerId::new();
+        // Resume the computer built from the current image, if one exists
+        // (and clean up computers from older images). Builders always
+        // start fresh.
+        let image_id = crate::image::active_image_id();
+        let adopted = if building {
+            None
+        } else {
+            crate::computer_store::claim_existing(
+                &self.computers_dir,
+                &image_id,
+                profile.disk_file_name,
+            )
+        };
+        let fresh = adopted.is_none();
+        let (id, lock) = match adopted {
+            Some((id, lock)) => (id, Some(lock)),
+            None => (ComputerId::new(), None),
+        };
         let paths = ComputerPaths::new(&self.computers_dir, &id, &profile);
         paths.create_dirs()?;
+        let lock = match lock {
+            Some(lock) => lock,
+            None => crate::computer_store::lock_new(&paths.dir)?,
+        };
         let created = Self::create_prepared(
             &mut inner,
             &images,
@@ -1078,13 +1094,16 @@ impl NativeHelperBackend {
             &config,
             allow_official,
             seed_iso_path,
+            fresh,
         );
         let state = match created {
             Ok(state) => state,
             Err(e) => {
                 // Never leave a half-created computer (disk clone, EFI
-                // store) behind on disk.
-                let _ = std::fs::remove_dir_all(&paths.dir);
+                // store) behind on disk. A resumed one keeps its disk.
+                if fresh {
+                    let _ = std::fs::remove_dir_all(&paths.dir);
+                }
                 return Err(e);
             }
         };
@@ -1092,9 +1111,11 @@ impl NativeHelperBackend {
         inner.cached = state;
         inner.config = Some(config);
         inner.paths = Some(paths);
+        inner.lock = Some(lock);
         Ok(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_prepared(
         inner: &mut NativeInner,
         images: &ComputerImageManager,
@@ -1103,16 +1124,20 @@ impl NativeHelperBackend {
         config: &ComputerConfig,
         allow_official: bool,
         seed_iso_path: Option<String>,
+        fresh_disk: bool,
     ) -> Result<ComputerState> {
         let profile = inner.profile.clone();
-        images.instantiate_boot_source_for_format_with_fallback(
-            id,
-            &paths.disk,
-            profile.disk_format,
-            allow_official,
-        )?;
+        if fresh_disk {
+            images.instantiate_boot_source_for_format_with_fallback(
+                id,
+                &paths.disk,
+                profile.disk_format,
+                allow_official,
+            )?;
+        }
         let metadata = serde_json::json!({
             "computer_id": id.to_string(),
+            "image_id": crate::image::active_image_id(),
             "vcpus": config.vcpus,
             "memory_mb": config.memory_mb,
             "disk_gb": config.disk_gb,
@@ -1231,20 +1256,67 @@ impl NativeHelperBackend {
         )
     }
 
+    /// Return the computer to the sealed image: stop, drop the VM object
+    /// (it holds the old disk open), clone a fresh disk from the image,
+    /// start a fresh EFI variable store, and recreate the VM with the same
+    /// identity (id, machine id). Nothing written by the guest survives.
     pub fn backend_reset(&self) -> Result<ComputerState> {
         let current = self.lock_inner().cached;
         if matches!(
             current,
             ComputerState::Running | ComputerState::Paused | ComputerState::Error
         ) {
-            self.backend_stop()?;
-        } else {
-            let mut inner = self.lock_inner();
-            inner.guest.on_vm_stopped();
-            inner.deferred.clear();
-            inner.instance = None;
+            // A failed stop (e.g. a dead helper) must not block the reset:
+            // the helper is respawned below if it is gone.
+            let _ = self.backend_stop();
         }
-        Ok(ComputerState::Stopped)
+        let mut inner = self.lock_inner();
+        let id = inner.id.ok_or(ComputerError::NotCreated)?;
+        let paths = inner.paths.clone().ok_or(ComputerError::NotCreated)?;
+        let config = inner.config.clone().ok_or(ComputerError::NotCreated)?;
+        inner.guest.on_vm_stopped();
+        inner.deferred.clear();
+        inner.pending_outbound.clear();
+        inner.instance = None;
+        if inner.transport.as_mut().map(|t| t.alive()) == Some(true) {
+            let _ = Self::call(
+                &mut inner,
+                HostCommand::Destroy {
+                    computer_id: id.to_string(),
+                },
+                STOP_TIMEOUT,
+            );
+        } else {
+            inner.transport = None;
+        }
+        // The disk AND the EFI variable store go: a guest that gained root
+        // could otherwise persist boot entries or systemd options in NVRAM
+        // across a reset. The machine identity is kept.
+        for file in [&paths.disk, &paths.efi_vars] {
+            match std::fs::remove_file(file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(ComputerError::Backend(format!(
+                        "cannot remove {}: {e}",
+                        file.display()
+                    )))
+                }
+            }
+        }
+        let profile = inner.profile.clone();
+        let images =
+            ComputerImageManager::with_spec(self.images_dir.clone(), profile.official_spec);
+        let result =
+            Self::create_prepared(&mut inner, &images, &id, &paths, &config, false, None, true);
+        inner.cached = match result {
+            Ok(state) => state,
+            Err(e) => {
+                inner.cached = ComputerState::Error;
+                return Err(e);
+            }
+        };
+        Ok(inner.cached)
     }
 
     pub fn backend_destroy(&self) -> Result<()> {
@@ -1262,6 +1334,7 @@ impl NativeHelperBackend {
         if let Some(paths) = inner.paths.clone() {
             let _ = std::fs::remove_dir_all(&paths.dir);
         }
+        inner.lock = None;
         inner.id = None;
         inner.config = None;
         inner.paths = None;
@@ -1305,10 +1378,7 @@ impl NativeHelperBackend {
     }
 
     pub fn backend_capabilities(&self) -> crate::platform::BackendCapabilities {
-        self.lock_inner()
-            .profile
-            .capabilities
-            .clone()
+        self.lock_inner().profile.capabilities.clone()
     }
 
     pub fn guest_state(&self) -> GuestRuntimeState {
@@ -1324,10 +1394,7 @@ impl NativeHelperBackend {
     }
 
     pub fn capability_diagnostics(&self) -> Vec<crate::CapabilityDiagnostic> {
-        self.lock_inner()
-            .guest
-            .capability_diagnostics()
-            .to_vec()
+        self.lock_inner().guest.capability_diagnostics().to_vec()
     }
 
     pub fn graphical_session(&self) -> GraphicalSessionInfo {
@@ -1606,9 +1673,7 @@ impl NativeHelperBackend {
         let start = std::time::Instant::now();
         let (width_px, height_px, bytes) = self.input_capture_bytes(request_id, timeout)?;
         let byte_len = bytes.len() as u64;
-        let computer_id = self.lock_inner()
-            .id
-            .ok_or(ComputerError::NotCreated)?;
+        let computer_id = self.lock_inner().id.ok_or(ComputerError::NotCreated)?;
         Ok(crate::input::CapturedFrame {
             meta: pegoles_protocol::ObservedFrameMeta {
                 frame_id: pegoles_protocol::FrameId::new(),

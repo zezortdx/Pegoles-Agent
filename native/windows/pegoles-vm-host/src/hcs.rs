@@ -200,18 +200,6 @@ mod session {
         .map_err(|e| e.to_string())
     }
 
-    pub fn pause_compute_system(
-        system: &HcsSystemHandle,
-        options_json: &str,
-    ) -> Result<(), String> {
-        let opt_w = wide(options_json);
-        run_operation("HcsPauseComputeSystem", HCS_WAIT_INFINITE, |op| unsafe {
-            HcsPauseComputeSystem(system.raw(), op, opt_w.as_ptr())
-        })
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-    }
-
     /// Best-effort power-state read. Returns the raw state string when the
     /// properties document carries a recognizable one, else None (caller
     /// keeps its cached state). Exact schema values get pinned against

@@ -63,8 +63,8 @@ impl TaskManager {
     }
 
     /// Create a task from UI input (the Home CommandBar). Validated by
-    /// `normalize_task_title`. Phase 4 has no model: nothing runs it, so
-    /// it stays `Pending` until a future agent engine picks it up.
+    /// `normalize_task_title`. It stays `Pending` until an agent run
+    /// (`pegoles-agent`) starts it.
     pub fn submit_task(&mut self, raw_title: &str) -> Result<AgentTask> {
         let title = normalize_task_title(raw_title)?;
         Ok(self.create_task(title))

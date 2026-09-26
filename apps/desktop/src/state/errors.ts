@@ -3,7 +3,7 @@
  * Core/IPC error becomes one calm sentence, an optional hint and the
  * verbatim detail (shown only under "Details").
  */
-export type ErrorScope = "task" | "computer" | "general";
+export type ErrorScope = "task" | "run" | "computer" | "general";
 
 export interface HumanError {
   readonly scope: ErrorScope;
@@ -32,14 +32,22 @@ const RULES: readonly Rule[] = [
     hint: "This build of Pegoles isn’t allowed to use virtualization on this Mac." },
   { test: /no space|ENOSPC|disk full/i, scope: "computer", title: "Not enough disk space.",
     hint: "Pegoles’ computer needs a few gigabytes free." },
-  { test: /image|download|checksum|sha256/i, scope: "computer", title: "Computer setup didn’t finish.",
-    hint: "The one-time download of its workspace failed." },
+  { test: /computer image|image missing|checksum|sha256/i, scope: "computer", title: "Pegoles’ computer image isn’t ready.",
+    hint: "The Pegoles computer image isn’t installed on this Mac, or it’s incomplete." },
+  { test: /Connect a model/i, scope: "run", title: "Connect a model first.",
+    hint: "Add an Anthropic API key in Settings, then start the task." },
+  { test: /is already running/i, scope: "run", title: "Pegoles is working on another task.",
+    hint: "It works on one task at a time. Start this one when that one ends." },
+  { test: /not pending/i, scope: "run", title: "This task has already started." },
+  { test: /before (resetting|removing) the computer/i, title: "Stop the running task first.",
+    hint: "Pegoles’ computer can’t be reset or removed while it works on a task." },
   { test: /Live updates unavailable/i, scope: "general", title: "Live updates paused.",
     hint: "Pegoles will keep checking every few seconds." },
 ];
 
 const SCOPE_DEFAULT: Record<ErrorScope, { title: string; hint?: string }> = {
   task: { title: "Couldn’t hand this to Pegoles.", hint: "Your text is still here." },
+  run: { title: "Pegoles couldn’t start this task.", hint: "The task is kept. Try starting it again." },
   computer: { title: "Pegoles’ computer needs attention." },
   general: { title: "Something went wrong." },
 };
@@ -51,11 +59,20 @@ export function errorText(raw: unknown): string {
   try { return JSON.stringify(raw); } catch { return String(raw); }
 }
 
+/**
+ * A task run's failure stays with its task (shown where the task is), even
+ * when the words come from a computer rule.
+ */
+function applies(rule: Rule, scope: ErrorScope): boolean {
+  return !rule.scope || rule.scope === scope || scope === "general" || scope === "run";
+}
+
 export function humanizeError(raw: unknown, scope: ErrorScope): HumanError {
   const detail = errorText(raw).trim() || "No details were reported.";
-  const rule = RULES.find((candidate) => candidate.test.test(detail) && (!candidate.scope || candidate.scope === scope || scope === "general"));
+  const rule = RULES.find((candidate) => candidate.test.test(detail) && applies(candidate, scope));
   if (rule) {
-    return { scope: rule.scope ?? scope, title: rule.title, hint: rule.hint, detail, retryable: rule.retryable ?? true };
+    const kept = scope === "run" ? scope : rule.scope ?? scope;
+    return { scope: kept, title: rule.title, hint: rule.hint, detail, retryable: rule.retryable ?? true };
   }
   const fallback = SCOPE_DEFAULT[scope];
   return { scope, title: fallback.title, hint: fallback.hint, detail, retryable: true };

@@ -219,6 +219,9 @@ impl ActionRateLimiter {
     }
 }
 
+/// Characters per guest typing primitive (≈ 1 s of keystrokes at most).
+pub const TYPE_SLICE_CHARS: usize = 64;
+
 /// Lower one structured action to backend primitives using the CURRENT
 /// display size. Exhaustive: only `Wait` (host-side timing) lowers to
 /// nothing.
@@ -281,7 +284,17 @@ pub fn action_to_input_ops(action: &ComputerAction, t: &DisplayTransform) -> Vec
         }],
         ComputerAction::KeyPress { key } => vec![InputOp::KeyPress { key: key.clone() }],
         ComputerAction::KeyChord { keys } => vec![InputOp::KeyChord { keys: keys.clone() }],
-        ComputerAction::TypeText { text, .. } => vec![InputOp::TypeText { text: text.clone() }],
+        // Typed text goes out in short slices: the executor checks
+        // cancellation between primitives, so Stop interrupts a long
+        // paste within ~one slice instead of after the whole text.
+        ComputerAction::TypeText { text, .. } => text
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(TYPE_SLICE_CHARS)
+            .map(|c| InputOp::TypeText {
+                text: c.iter().collect(),
+            })
+            .collect(),
         // Pure host-side timing: no guest primitive.
         ComputerAction::Wait { .. } => Vec::new(),
         ComputerAction::ObserveScreen => {
@@ -1030,6 +1043,33 @@ mod tests {
         for token in &tokens {
             assert!(!src.contains(token), "host capability leaked: {token}");
         }
+    }
+}
+
+#[cfg(test)]
+mod typing_tests {
+    use super::*;
+
+    #[test]
+    fn long_text_is_typed_in_cancellable_slices() {
+        let t = DisplayTransform::headless(100, 100);
+        let text: String = "ç".repeat(TYPE_SLICE_CHARS * 2 + 3);
+        let ops = action_to_input_ops(
+            &ComputerAction::TypeText {
+                text: text.clone(),
+                sensitive: false,
+            },
+            &t,
+        );
+        assert_eq!(ops.len(), 3);
+        let rebuilt: String = ops
+            .iter()
+            .map(|op| match op {
+                InputOp::TypeText { text } => text.clone(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(rebuilt, text, "slicing never splits or drops characters");
     }
 }
 

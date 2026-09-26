@@ -45,6 +45,14 @@ export function runSummary(steps: readonly TranscriptStep[]): RunSummary {
 /** A single action reads better as itself than as a summary of one. */
 export const FOLD_FROM = 2;
 
+/** What Pegoles writes can be long: past this many characters or lines a note reads folded, with a way to show the rest. */
+export const NOTE_FOLD_CHARS = 420;
+export const NOTE_FOLD_LINES = 6;
+
+export function noteIsLong(text: string): boolean {
+  return [...text].length > NOTE_FOLD_CHARS || text.split(/\r?\n/).length > NOTE_FOLD_LINES;
+}
+
 /** Steps shown under a folded run: everything whose effect outlives it, and anything that went wrong. */
 export function pinnedSteps(steps: readonly TranscriptStep[]): TranscriptStep[] {
   return steps.filter((step) => step.consequential || (step.outcome !== "done" && step.outcome !== "running"));

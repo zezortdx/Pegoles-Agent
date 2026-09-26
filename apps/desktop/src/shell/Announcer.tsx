@@ -35,6 +35,7 @@ export function Announcer({ tasks, computerPhase }: AnnouncerProps) {
       else if (task.status === "completed") setPolite(`Pegoles finished “${task.title}”.`);
       else if (task.status === "failed") setUrgent(`Pegoles couldn’t finish “${task.title}”.`);
       else if (task.status === "running") setPolite(`Pegoles started “${task.title}”.`);
+      else if (task.status === "cancelled" && was === "running") setPolite(`Pegoles stopped “${task.title}”.`);
     }
   }, [tasks]);
 

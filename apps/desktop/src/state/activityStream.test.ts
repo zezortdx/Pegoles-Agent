@@ -27,6 +27,21 @@ describe("activityStream", () => {
     expect(today.entries.some((entry) => entry.current)).toBe(false);
   });
 
+  it("tells what Pegoles wrote in one line, inside its task's run", () => {
+    const events = [
+      { type: "task_created", task_id: "t1", title: "Later task", at: "2026-09-24T10:05:00Z" },
+      { type: "agent_message", task_id: "t1", kind: "progress", text: "Opening the browser\nthen searching", at: "2026-09-24T10:05:01Z" },
+      { type: "agent_message", task_id: "t1", kind: "summary", text: "Found three plans.", at: "2026-09-24T10:05:02Z" },
+      { type: "agent_message", task_id: "t1", kind: "error", text: "Stopped by the user.", at: "2026-09-24T10:05:03Z" },
+      { type: "agent_message", task_id: "t1", kind: "progress", text: "   ", at: "2026-09-24T10:05:04Z" },
+    ] as unknown as AgentEvent[];
+    const [today] = activityStream(events, tasks, now);
+    expect(today.groups).toHaveLength(1);
+    expect(today.groups[0].entries.map((entry) => [entry.text, entry.outcome])).toEqual([
+      ["You handed this over", "neutral"], ["Opening the browser", "neutral"], ["Found three plans.", "done"], ["Stopped by the user.", "error"],
+    ]);
+  });
+
   it("marks an action still in flight as current", () => {
     const [today] = activityStream([{ type: "action_requested", request: req("a2", "scroll") }] as unknown as AgentEvent[], [], now);
     expect(today.entries[0]).toMatchObject({ text: "Scrolling…", current: true, outcome: "running" });

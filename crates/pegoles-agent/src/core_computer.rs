@@ -29,6 +29,9 @@ pub struct CoreComputer<A: CoreAccess> {
     access: A,
     bus: EventBus,
     ctx: PolicyContext,
+    /// When the last input action was dispatched: actions are paced to
+    /// the executor's rate brake instead of being rejected by it.
+    last_act: std::sync::Mutex<Option<Instant>>,
     /// Budget for create/start + guest runtime readiness.
     pub prepare_timeout: Duration,
 }
@@ -39,8 +42,24 @@ impl<A: CoreAccess> CoreComputer<A> {
             access,
             bus,
             ctx: PolicyContext::default(),
+            last_act: std::sync::Mutex::new(None),
             prepare_timeout: Duration::from_secs(180),
         }
+    }
+
+    /// Keep input at or below the executor's rate brake (sleeping with
+    /// Core unlocked), so a fast batch is slowed down, not failed.
+    fn pace(&self) {
+        let gap =
+            Duration::from_millis(1_000 / pegoles_protocol::limits::MAX_ACTIONS_PER_SEC as u64 + 1);
+        let mut last = self.last_act.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = *last {
+            let since = prev.elapsed();
+            if since < gap {
+                std::thread::sleep(gap - since);
+            }
+        }
+        *last = Some(Instant::now());
     }
 
     fn interrupted(reason: &str) -> ActionResult {
@@ -159,11 +178,15 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
         action: ComputerAction,
         cancel: &CancellationToken,
     ) -> ActionResult {
-        let control = self.access.with_core(|r, _| r.control_owner());
-        if control != ControlOwner::Agent {
-            // The human took the computer: the run ends here.
+        let owns_control = self
+            .access
+            .with_core(|r, _| r.control_owner() == ControlOwner::Agent);
+        if !owns_control {
+            // The human took the computer (or it paused/stopped): the run
+            // ends here. The executor re-checks ownership under the same
+            // lock as the dispatch, so this early exit is only a fast path.
             cancel.cancel();
-            return Self::interrupted("the user took control of the computer");
+            return Self::interrupted("the agent no longer controls the computer");
         }
         if let ComputerAction::Wait { duration_ms } = action {
             let ticket = match self
@@ -186,10 +209,15 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
                 .access
                 .with_core(|r, _| r.end_wait(ticket, interrupted));
         }
-        self.access.with_core(|r, _| {
+        self.pace();
+        let result = self.access.with_core(|r, _| {
             r.execute_action(task, action, false, &self.ctx, cancel, false)
                 .0
-        })
+        });
+        if result.outcome == ActionOutcome::Interrupted {
+            cancel.cancel();
+        }
+        result
     }
 
     fn set_status(&self, task: TaskId, status: TaskStatus) -> Result<(), String> {

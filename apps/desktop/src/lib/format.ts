@@ -31,3 +31,18 @@ export function formatElapsed(ms: number): string {
   const rest = minutes % 60;
   return rest ? `${hours}h ${rest}m` : `${hours}h`;
 }
+
+/** "claude-opus-5-5" → "Claude Opus 5.5"; unknown ids stay as they are. */
+export function modelLabel(id: string): string {
+  const match = /^claude-([a-z]+)-(\d+(?:-\d+)*)$/.exec(id);
+  if (!match) return id;
+  const family = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+  return `Claude ${family} ${match[2].replaceAll("-", ".")}`;
+}
+
+const EFFORT_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+
+/** Reasoning effort for people ("xhigh" → "Extra high"). */
+export function effortLabel(effort: string): string {
+  return EFFORT_LABEL[effort] ?? sentenceCase(effort);
+}

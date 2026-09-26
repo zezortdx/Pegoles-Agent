@@ -21,6 +21,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The workspace includes the Tauri shell; on Linux it links WebKitGTK.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -60,4 +66,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @pegoles/desktop lint
       - run: pnpm --filter @pegoles/desktop typecheck
+      - run: pnpm --filter @pegoles/desktop test
       - run: pnpm --filter @pegoles/desktop build

@@ -29,6 +29,17 @@ VSOCK (AF_VSOCK, port 4050)
 
 - Guest dials host (CID 2, port **4050**, `PEGOLES_VSOCK_PORT` — single
   source of truth in `pegoles-guest-proto`; no magic numbers).
+- **Peer authentication:** the runtime binds a reserved vsock source port
+  (`GUEST_SOURCE_PORT_MIN..=GUEST_SOURCE_PORT_MAX`, 960–1023) before
+  dialing. Linux allows that only with CAP_NET_BIND_SERVICE, which the
+  runtime's systemd unit grants to it alone. The macOS helper rejects any
+  connection whose source port is above 1023 (`GuestSocket.swift`). The
+  runtime also marks itself non-dumpable so same-user guest apps cannot
+  ptrace it. A new authenticated connection replaces the previous one
+  (runtime restart); each connection is owned by exactly one pump.
+- Host-side bounds per connection: 64 KiB lines, 10k lines/s (burst 20k)
+  before disconnect (`flood`), writes queued with a 4 MiB backlog cap and
+  a 5 s send timeout (`send_backlog` / `send_timeout`).
 - Host listens (`VZVirtioSocketListener` today; AF_HYPERV + service GUID
   on Windows tomorrow — same port, see `WINDOWS_BACKEND.md`).
 - Framing: JSON Lines, one UTF-8 line per message, **64 KiB cap**
@@ -68,8 +79,13 @@ separate from `ComputerState::Running`.
 - Host pings every 10 s (`HEARTBEAT_INTERVAL`); guest echoes the nonce.
 - 3 missed windows (30 s silence) → `Disconnected`. The VM may keep
   running; the states are independent by design.
-- Guest reconnects with capped backoff (1…30 s); Core re-handshakes to
-  Ready without rebooting the VM. Pause/resume may kill the channel on
+- Guest reconnects with capped backoff (1…5 s); Core re-handshakes to
+  Ready without rebooting the VM (measured: runtime killed → Ready again
+  in ≈ 3 s). Any blocking host wait (input ack, frame) fails as soon as
+  the channel drops instead of running out its timeout.
+- The runtime waits (≤ 15 s) for the Wayland socket before its first
+  hello, so the first handshake already advertises `frame`; it re-checks
+  capabilities every 2 s while idle. Pause/resume may kill the channel on
   some hypervisors — the contract tolerates it; the protocol never
   assumes transport survival across lifecycle transitions.
 

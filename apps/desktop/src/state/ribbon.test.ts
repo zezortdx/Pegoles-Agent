@@ -4,8 +4,8 @@ import { RIBBON_MAX_STRANDS, ribbonModel } from "./ribbon";
 
 const at = "2026-09-24T10:00:00Z";
 const task: AgentTask = { id: "t1", title: "Tidy Downloads", status: "running", created_at: at, updated_at: at };
-const busy = { agent_busy: true, control_owner: "agent", model: "local" } as StatusPayload;
-const quiet = { agent_busy: false, control_owner: "none", model: "local" } as StatusPayload;
+const busy = { agent_busy: true, control_owner: "agent", model: "configured" } as StatusPayload;
+const quiet = { agent_busy: false, control_owner: "none", model: "configured" } as StatusPayload;
 
 const req = (id: string, type = "read_file", taskId = "t1"): ActionRequestWire =>
   ({ action_id: id, task_id: taskId, computer_id: "vm1", action: { type, path: "/tmp/a" }, requested_at: at });

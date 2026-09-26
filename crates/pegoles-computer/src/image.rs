@@ -30,7 +30,7 @@ pub const DEBIAN_ARTIFACT: &str = "debian-13-nocloud-arm64.tar.xz";
 /// Checksum list published by Debian in the same directory.
 pub const DEBIAN_CHECKSUM_FILE: &str = "SHA512SUMS";
 
-/// The single Phase 2 image.
+/// An official Debian image spec (download source for image builders).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageSpec {
     pub id: &'static str,
@@ -107,8 +107,13 @@ pub const IMAGE_ID_ENV: &str = "PEGOLES_IMAGE_ID";
 /// not exist, so status resolves to `Missing` with an explicit error
 /// (fail closed, never a silent fallback to another image).
 pub fn active_image_id() -> String {
+    // Release builds always boot the product image.
+    if !cfg!(debug_assertions) {
+        return PEGOLES_PRODUCT_IMAGE_ID.to_string();
+    }
+    // Debug override: a plain directory name only (never a path).
     match std::env::var(IMAGE_ID_ENV).map(|v| v.trim().to_string()) {
-        Ok(v) if !v.is_empty() => v,
+        Ok(v) if !v.is_empty() && !v.contains(['/', '\\']) && !v.starts_with('.') => v,
         _ => PEGOLES_PRODUCT_IMAGE_ID.to_string(),
     }
 }
@@ -1472,6 +1477,11 @@ mod tests {
         // Unknown ids fail closed downstream (missing dir), never remap.
         std::env::set_var(IMAGE_ID_ENV, "pegoles-base-9.9");
         assert_eq!(active_image_id(), "pegoles-base-9.9");
+        // Never a path.
+        for evil in ["../../.ssh", "/etc", "a/b", ".."] {
+            std::env::set_var(IMAGE_ID_ENV, evil);
+            assert_eq!(active_image_id(), PEGOLES_PRODUCT_IMAGE_ID, "{evil}");
+        }
         match saved {
             Some(v) => std::env::set_var(IMAGE_ID_ENV, v),
             None => std::env::remove_var(IMAGE_ID_ENV),

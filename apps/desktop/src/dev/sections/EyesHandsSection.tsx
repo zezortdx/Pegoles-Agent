@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ActionResultWire, FrameMetaWire } from "../../lib/tauri";
-import { api } from "../../lib/tauri";
+import { api, debugApi } from "../../lib/tauri";
 import { LabSection, SimulatedTag } from "../lab/controls";
 
 interface Diag {
@@ -57,7 +57,7 @@ export function EyesHandsSection() {
 
   const refresh = useCallback(async () => {
     try {
-      const d = await api.inputStatus();
+      const d = await debugApi.inputStatus();
       if (mounted.current) setDiag(d);
     } catch (e) {
       if (mounted.current) setError(String(e));
@@ -103,8 +103,8 @@ export function EyesHandsSection() {
     setBusy(true);
     setError(null);
     try {
-      const steps = await api.demoScriptSteps();
-      const report = await api.runInputScript(steps);
+      const steps = await debugApi.demoScriptSteps();
+      const report = await debugApi.runInputScript(steps);
       if (mounted.current) {
         setLastAction(report.results[report.results.length - 1] ?? null);
         setError(
@@ -137,14 +137,14 @@ export function EyesHandsSection() {
             <button type="button" style={button} disabled={busy} onClick={() => void capture()}>
               Capture Screen
             </button>
-            <button type="button" style={button} disabled={busy} onClick={() => void run(() => api.executeAction(norm(0.5, 0.5)))}>
+            <button type="button" style={button} disabled={busy} onClick={() => void run(() => debugApi.executeAction(norm(0.5, 0.5)))}>
               Move center
             </button>
             <button
               type="button"
               style={button}
               disabled={busy}
-              onClick={() => void run(() => api.executeAction({ type: "click", x: 0.5, y: 0.5, button: "primary" }))}
+              onClick={() => void run(() => debugApi.executeAction({ type: "click", x: 0.5, y: 0.5, button: "primary" }))}
             >
               Click center
             </button>
@@ -152,7 +152,7 @@ export function EyesHandsSection() {
               type="button"
               style={button}
               disabled={busy}
-              onClick={() => void run(() => api.executeAction({ type: "double_click", x: 0.5, y: 0.5, button: "primary" }))}
+              onClick={() => void run(() => debugApi.executeAction({ type: "double_click", x: 0.5, y: 0.5, button: "primary" }))}
             >
               Double-click
             </button>
@@ -160,7 +160,7 @@ export function EyesHandsSection() {
               type="button"
               style={button}
               disabled={busy}
-              onClick={() => void run(() => api.executeAction({ type: "type_text", text: "echo hello", sensitive: false }))}
+              onClick={() => void run(() => debugApi.executeAction({ type: "type_text", text: "echo hello", sensitive: false }))}
             >
               Type “echo hello”
             </button>
@@ -168,7 +168,7 @@ export function EyesHandsSection() {
               type="button"
               style={button}
               disabled={busy}
-              onClick={() => void run(() => api.executeAction({ type: "key_press", key: "Enter" }))}
+              onClick={() => void run(() => debugApi.executeAction({ type: "key_press", key: "Enter" }))}
             >
               Press Enter
             </button>
@@ -176,7 +176,7 @@ export function EyesHandsSection() {
               type="button"
               style={button}
               disabled={busy}
-              onClick={() => void run(() => api.executeAction({ type: "scroll", x: 0.5, y: 0.5, delta_x: 0, delta_y: 3 }))}
+              onClick={() => void run(() => debugApi.executeAction({ type: "scroll", x: 0.5, y: 0.5, delta_x: 0, delta_y: 3 }))}
             >
               Scroll
             </button>
@@ -186,7 +186,7 @@ export function EyesHandsSection() {
               disabled={busy}
               onClick={() =>
                 void run(() =>
-                  api.executeAction({
+                  debugApi.executeAction({
                     type: "drag",
                     from_x: 0.3,
                     from_y: 0.5,

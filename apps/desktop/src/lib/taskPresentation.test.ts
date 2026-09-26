@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TASK_STATUS, relativeTime, taskDetail } from "./taskPresentation";
+import { relativeTime } from "./taskPresentation";
 
 describe("task presentation", () => {
   const now = new Date(2026, 8, 24, 15, 0, 0).getTime();
@@ -11,16 +11,6 @@ describe("task presentation", () => {
     expect(relativeTime(new Date(2026, 8, 23, 22, 0).toISOString(), now)).toBe("Yesterday");
     expect(relativeTime(new Date(2026, 8, 20, 9, 0).toISOString(), now)).not.toMatch(/ago|Yesterday/);
     expect(relativeTime("not a date", now)).toBe("");
-  });
-
-  it("gives every status words and a non-blue tone", () => {
-    for (const [status, { label, tone }] of Object.entries(TASK_STATUS)) {
-      expect(label.length, status).toBeGreaterThan(0);
-      // Blue ("active") is presence: only a task Pegoles is working on gets it.
-      if (status !== "running") expect(tone, status).not.toBe("active");
-    }
-    expect(taskDetail("pending")).toMatch(/Execution unavailable/);
-    expect(taskDetail("failed")).toBe("Failed");
   });
 });
 

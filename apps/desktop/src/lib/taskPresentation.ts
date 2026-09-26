@@ -1,23 +1,6 @@
-import type { StatusTone, TaskStatusWire } from "@pegoles/ui";
-
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
-
-/** Words + tone for a task status. Status is never blue and never color-only. */
-export const TASK_STATUS: Record<TaskStatusWire, { label: string; tone: StatusTone }> = {
-  pending: { label: "Pending", tone: "waiting" },
-  running: { label: "Running", tone: "active" },
-  waiting_for_approval: { label: "Needs approval", tone: "warning" },
-  completed: { label: "Completed", tone: "success" },
-  failed: { label: "Failed", tone: "danger" },
-  cancelled: { label: "Cancelled", tone: "neutral" },
-};
-
-/** Supporting line under a task title: what the status means right now. */
-export function taskDetail(status: TaskStatusWire): string {
-  return status === "pending" ? "Execution unavailable in this version" : TASK_STATUS[status].label;
-}
 
 /** "Just now", "12 min ago", "3 h ago", "Yesterday", then a short date. */
 export function relativeTime(iso: string, now: number = Date.now()): string {
