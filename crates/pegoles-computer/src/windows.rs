@@ -926,7 +926,8 @@ mod backend_tests {
                 "0.1.0".into(),
                 1,
                 "sourcesha".into(),
-            ),
+            )
+            .for_active_image(),
             "disk.vhdx",
             DiskFormat::Vhdx,
         )

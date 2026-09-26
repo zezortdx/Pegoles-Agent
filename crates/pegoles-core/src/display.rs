@@ -511,7 +511,11 @@ impl ComputerRegistry {
         let display_ready = base.state == ViewportState::Ready
             && facts.display_available()
             && facts.display_attached;
-        if self.display.control != ControlOwner::None && !display_ready {
+        // A HUMAN can only control through a ready, attached view: take
+        // it back when the view goes. Agent input never uses the host
+        // view (it travels the guest channel), so an agent session is
+        // unaffected by view readiness.
+        if self.display.control == ControlOwner::User && !display_ready {
             let _ = self.release_control(out);
         }
         if display_ready && self.display.ready_ms.is_none() {

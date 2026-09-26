@@ -1,15 +1,16 @@
 /// VM lifecycle owner: builds `VZVirtualMachineConfiguration`,
 /// owns `VZVirtualMachine` instances, maps Vz states to wire states.
 ///
-/// Devices attached (Phase 2, minimal headless Linux):
+/// Devices attached:
 /// - EFI boot loader + per-computer EFI variable store
-/// - virtio block (instance disk, read-write)
-/// - virtio entropy
-/// - virtio serial console -> logs/serial.log (guest output only)
-/// - virtio socket (reserved for the future guest runtime; unused)
-/// - virtio-gpu, one scanout (Phase 5.1: guest compositor output only)
+/// - virtio block (instance disk, read-write; optional read-only seed ISO
+///   for image builders only)
+/// - virtio entropy, traditional memory balloon
+/// - virtio console -> bounded logs/serial.log (guest output only)
+/// - virtio socket: the authenticated Core <-> guest runtime channel
+/// - virtio-gpu, one 1440x900 scanout (guest compositor output only)
 /// Deliberately absent: network, shared directories, clipboard, audio,
-/// Rosetta, keyboard/pointing devices.
+/// Rosetta, host keyboard/pointing devices.
 
 import Foundation
 import Virtualization
@@ -77,8 +78,15 @@ final class VmManager {
     private var machines: [String: VZVirtualMachine] = [:]
     private let delegate = VmDelegate()
     private var guestLinks: [String: GuestLink] = [:]
+    /// Guards `guestLinks` (touched from the command thread and from Vz
+    /// delegate callbacks on the main queue).
+    private let linksLock = NSLock()
+    private var serialLogs: [String: SerialLog] = [:]
     private let socketDelegate = GuestSocketDelegate()
     private let socketListener = VZVirtioSocketListener()
+    /// Serial capture built by the last `buildConfiguration` call; adopted
+    /// by `create`, dropped by `validate`.
+    private var pendingSerial: SerialLog?
 
     init() {
         // The listener holds its delegate weakly: without this line the
@@ -167,19 +175,15 @@ final class VmManager {
         // enforcement points (HCS dynamic memory on Windows).
         config.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
 
-        // Serial console -> log file (guest output for boot diagnostics).
-        let serialURL = URL(fileURLWithPath: params.serial_log_path)
-        if let serialAttachment = try? VZFileSerialPortAttachment(url: serialURL, append: true) {
-            let console = VZVirtioConsoleDeviceSerialPortConfiguration()
-            console.attachment = serialAttachment
-            config.serialPorts = [console]
-        } else {
-            throw VmHostError.failure(code: "invalid_params",
-                                      message: "cannot open serial log at \(params.serial_log_path)")
-        }
+        // Serial console -> bounded log file (guest output, diagnostics).
+        let serial = try SerialLog(path: params.serial_log_path)
+        let console = VZVirtioConsoleDeviceSerialPortConfiguration()
+        console.attachment = serial.attachment
+        config.serialPorts = [console]
+        pendingSerial = serial
 
-        // Virtio socket reserved for the future Core <-> Guest Runtime
-        // channel. No code uses it yet; the device only reserves the slot.
+        // Virtio socket: the Core <-> guest runtime control channel
+        // (authenticated by reserved source port, see GuestSocket.swift).
         config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
         // No network, no shared directories, no clipboard, no host input.
@@ -261,6 +265,8 @@ final class VmManager {
 
     func validate(params: CreateParams) throws {
         let config = try buildConfiguration(params: params)
+        pendingSerial?.close()
+        pendingSerial = nil
         try config.validate()
     }
 
@@ -269,14 +275,16 @@ final class VmManager {
             throw VmHostError.failure(code: "already_exists", message: "computer already registered")
         }
         let config = try buildConfiguration(params: params)
+        let serial = pendingSerial
+        pendingSerial = nil
         do {
             try config.validate()
         } catch {
+            serial?.close()
             throw VmHostError.failure(code: "validation_failed",
                                       message: "VM configuration invalid: \(error.localizedDescription)")
         }
-        // Fresh serial log per creation.
-        FileManager.default.createFile(atPath: params.serial_log_path, contents: nil)
+        serialLogs[params.computer_id] = serial
         let vm = onMainQueueSync { VZVirtualMachine(configuration: config) }
         vm.delegate = delegate
         delegate.register(vm, computerId: params.computer_id)
@@ -288,6 +296,7 @@ final class VmManager {
     // MARK: - guest vsock transport
 
     private func guestLink(for computerId: String) -> GuestLink {
+        linksLock.lock(); defer { linksLock.unlock() }
         if let link = guestLinks[computerId] { return link }
         let link = GuestLink(computerId: computerId)
         guestLinks[computerId] = link
@@ -338,8 +347,11 @@ final class VmManager {
     }
 
     private func dropGuestLink(computerId: String) {
-        guestLinks.removeValue(forKey: computerId)
         socketDelegate.unregister(computerId: computerId)
+        linksLock.lock()
+        let link = guestLinks.removeValue(forKey: computerId)
+        linksLock.unlock()
+        link?.detach(reason: "destroyed")
     }
 
     private func machine(_ id: String) throws -> VZVirtualMachine {
@@ -426,6 +438,29 @@ final class VmManager {
         delegate.unregister(vm)
         machines.removeValue(forKey: computerId)
         dropGuestLink(computerId: computerId)
+        serialLogs.removeValue(forKey: computerId)?.close()
+    }
+
+    /// Parent gone (stdin EOF or parent exit): stop every VM this helper
+    /// owns so none outlives the app that could control it. Graceful for
+    /// a few seconds, then forced. Runs on the command thread.
+    func shutdownAll() {
+        for id in Array(machines.keys) {
+            guard let vm = machines[id] else { continue }
+            let s = vmState(vm)
+            if s == .running || s == .paused || s == .starting {
+                if vmCan(vm, { $0.canRequestStop }) {
+                    onMainQueueSync { () in _ = try? vm.requestStop() }
+                    waitForState(vm, .stopped, timeout: 3)
+                }
+                if vmState(vm) != .stopped {
+                    _ = awaitOnMain(timeout: 10, { vm.stop(completionHandler: $0) })
+                }
+            }
+            dropGuestLink(computerId: id)
+            serialLogs.removeValue(forKey: id)?.close()
+        }
+        machines.removeAll()
     }
 
     private func mapNativeError(_ err: Error, fallback: String) -> VmHostError {

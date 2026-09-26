@@ -21,7 +21,7 @@ pub use error::{CoreError, Result};
 pub use events::EventBus;
 pub use input::{
     pegoles_demo_script, AuditEntry, AuditLog, CancellationToken, ControlArbiter, InputStatus,
-    ScriptReport, ScriptStep,
+    ScriptReport, ScriptStep, WaitTicket,
 };
 pub use pegoles_computer::platform::BackendKind;
 pub use registry::{default_backend_kind, BootLog, ComputerRegistry};

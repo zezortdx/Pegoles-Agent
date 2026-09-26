@@ -1,17 +1,17 @@
-//! Seal an already-provisioned work disk as Pegoles Guest Image v2.
+//! Seal a provisioned (or `patch-image.sh`-patched) work disk as the
+//! current Pegoles product image (`PEGOLES_PRODUCT_IMAGE_ID`).
 //!
-//! BUILD TIME ONLY. Used after qemu-assisted (fully observable)
-//! provisioning powers the VM off: hashes the bytes on disk, writes the
-//! marker + v2 manifest (graphical facts from $PEGOLES_DEBS_DIR,
-//! capabilities input+frame). Never invents hashes.
+//! BUILD TIME ONLY: hashes the bytes on disk, writes the marker +
+//! manifest (graphical facts from $PEGOLES_DEBS_DIR, capabilities
+//! input+frame). Never invents hashes.
 //!
 //! Usage:
 //!   PEGOLES_DEBS_DIR=/tmp/pgv2-debs \
-//!     cargo run -p pegoles-computer --example seal_v2_image -- /path/to/disk.img
+//!     cargo run -p pegoles-computer --example seal_image -- /path/to/disk.img
 
 use pegoles_computer::{
     pegoles_data_dir, ComputerImageManager, DerivedManifestInput, GraphicalImageInfo,
-    PEGOLES_BASE_IMAGE_ID_V2, PEGOLES_IMAGE_VERSION_V2,
+    PEGOLES_BASE_IMAGE_ID_V3, PEGOLES_IMAGE_VERSION_V3,
 };
 use pegoles_guest_proto::{GUEST_PROTOCOL_VERSION, RUNTIME_VERSION};
 
@@ -37,7 +37,7 @@ fn pinned_version(versions_txt: &str, package: &str) -> Option<String> {
 fn main() {
     let disk = std::env::args()
         .nth(1)
-        .expect("usage: seal_v2_image /path/to/disk.img");
+        .expect("usage: seal_image /path/to/disk.img");
     // Truncation guard (Phase 5.1 lesson): a provisioned generic-derived
     // disk is exactly 3221225472 bytes. Sealing anything else records a
     // self-consistent hash of garbage — fail LOUDLY instead.
@@ -60,7 +60,7 @@ fn main() {
             })
         });
     if graphical.is_none() {
-        eprintln!("WARNING: no VERSIONS.txt graphical facts; sealing headless v0.2");
+        eprintln!("WARNING: no VERSIONS.txt graphical facts; sealing as headless");
     }
     // Source hash: read the verified marker of the official generic
     // artifact (computed at download, never invented). Fails closed.
@@ -74,8 +74,8 @@ fn main() {
     );
     let mgr = ComputerImageManager::new(data.join("images"));
     let input = DerivedManifestInput {
-        image_id: PEGOLES_BASE_IMAGE_ID_V2.to_string(),
-        image_version: PEGOLES_IMAGE_VERSION_V2.to_string(),
+        image_id: PEGOLES_BASE_IMAGE_ID_V3.to_string(),
+        image_version: PEGOLES_IMAGE_VERSION_V3.to_string(),
         debian_version: "13".into(),
         architecture: "arm64".into(),
         guest_runtime_version: RUNTIME_VERSION.into(),
@@ -86,10 +86,10 @@ fn main() {
     };
     let manifest = mgr
         .publish_derived(std::path::Path::new(&disk), input)
-        .expect("publish derived v2");
+        .expect("publish derived image");
     println!(
         "sealed manifest:\n{}",
         serde_json::to_string_pretty(&manifest).unwrap()
     );
-    println!("DONE: images/pegoles-base-0.2 sealed (verify marker + manifest above)");
+    println!("DONE: images/{PEGOLES_BASE_IMAGE_ID_V3} sealed (verify marker + manifest above)");
 }

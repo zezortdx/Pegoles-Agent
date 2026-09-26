@@ -25,7 +25,9 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cp "$SEED_DIR/user-data" "$SEED_DIR/meta-data" "$WORK/"
 cp "$RUNTIME_BIN" "$WORK/pegoles-guest-runtime"
-chmod 644 "$WORK/user-data" "$WORK/meta-data" "$WORK/pegoles-guest-runtime"
+mkdir -p "$WORK/units"
+cp "$SEED_DIR"/units/*.service "$WORK/units/"
+chmod 644 "$WORK/user-data" "$WORK/meta-data" "$WORK/pegoles-guest-runtime" "$WORK"/units/*.service
 
 if [ "$EXTRA" -eq 1 ]; then
   cp "$FIXTURE_BIN" "$WORK/pegoles-input-fixture"

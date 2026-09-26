@@ -1,0 +1,29 @@
+# DEV/TEST ONLY: deterministic input fixture. Installed but NOT enabled in
+# the product image (the workspace terminal is). Enable it only on a test
+# image: `systemctl enable pegoles-fixture.service`.
+[Unit]
+Description=Pegoles deterministic input fixture (dev/test only)
+After=pegoles-weston.service
+Requires=pegoles-weston.service
+Conflicts=pegoles-workspace.service
+
+[Service]
+Type=simple
+User=pegoles
+Group=pegoles
+Environment=XDG_RUNTIME_DIR=/run/pegoles
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=PEGOLES_FIXTURE_LOG=/tmp/pegoles-fixture.log
+Environment=TERM=foot
+# Fullscreen: no panel/title bar offset, so the fixture's proportional
+# layout maps 1:1 onto normalized screen coordinates.
+ExecStart=/usr/bin/foot --fullscreen /usr/local/bin/pegoles-input-fixture
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

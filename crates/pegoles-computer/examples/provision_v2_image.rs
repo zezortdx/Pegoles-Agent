@@ -18,7 +18,7 @@
 use pegoles_computer::{
     default_config, pegoles_data_dir, ComputerBackend, ComputerImageManager, DerivedManifestInput,
     GraphicalImageInfo, MacOSVirtualizationBackend, GENERIC_DEBIAN_13_ARM64,
-    PEGOLES_BASE_IMAGE_ID_V2, PEGOLES_IMAGE_VERSION_V2,
+    PEGOLES_BASE_IMAGE_ID_V3, PEGOLES_IMAGE_VERSION_V3,
 };
 use pegoles_guest_proto::{GUEST_PROTOCOL_VERSION, RUNTIME_VERSION};
 use std::time::{Duration, Instant};
@@ -102,8 +102,8 @@ fn main() {
     let disk = data.join("computers").join(id.to_string()).join("disk.img");
     let mgr = ComputerImageManager::new(data.join("images"));
     let input = DerivedManifestInput {
-        image_id: PEGOLES_BASE_IMAGE_ID_V2.to_string(),
-        image_version: PEGOLES_IMAGE_VERSION_V2.to_string(),
+        image_id: PEGOLES_BASE_IMAGE_ID_V3.to_string(),
+        image_version: PEGOLES_IMAGE_VERSION_V3.to_string(),
         debian_version: "13".into(),
         architecture: "arm64".into(),
         guest_runtime_version: RUNTIME_VERSION.into(),

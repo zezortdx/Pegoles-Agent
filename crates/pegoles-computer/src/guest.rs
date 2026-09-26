@@ -700,7 +700,11 @@ impl GuestSession {
                 out.push_back(SessionOutcome::InfoReceived(Box::new(info)));
             }
             GuestMessage::Error { code, message } => {
-                let message = format!("guest reported {code}: {}", truncate(&message, 512));
+                let message = format!(
+                    "guest reported {}: {}",
+                    truncate(&code, 64),
+                    truncate(&message, 512)
+                );
                 self.violation(message, &mut out);
             }
             GuestMessage::GraphicalSession(report) => {
@@ -851,18 +855,39 @@ impl GuestSession {
     }
 }
 
+/// Bound guest-supplied text to at most `max` bytes, cut on a char
+/// boundary. Guest strings are untrusted: slicing at a raw byte offset
+/// would panic inside a multi-byte character.
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
+        return s.to_string();
     }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pegoles_guest_proto::encode_guest;
+
+    #[test]
+    fn truncate_never_splits_a_character() {
+        // 511 ASCII bytes then a 2-byte char straddling the 512 cap.
+        let hostile = format!("{}é tail", "a".repeat(511));
+        let out = truncate(&hostile, 512);
+        assert!(out.starts_with(&"a".repeat(511)));
+        assert!(out.ends_with('…'));
+        assert!(!out.contains('é'));
+        // Every boundary of a multi-byte string is safe.
+        let wide = "漢字🙂".repeat(100);
+        for max in 0..wide.len() {
+            let _ = truncate(&wide, max);
+        }
+    }
 
     fn t0() -> Instant {
         Instant::now()
@@ -1516,5 +1541,20 @@ mod tests {
         );
         assert_eq!(s.state(), GuestRuntimeState::Error);
         assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn hostile_error_frame_before_handshake_never_panics() {
+        // Regression: a multi-byte char straddling the 512-byte message
+        // cap used to panic inside the host's app-state lock.
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        let frame = encode_guest(&GuestMessage::Error {
+            code: "c".repeat(4000),
+            message: format!("{}é", "a".repeat(511)),
+        });
+        let _ = s.on_frame(&frame, now);
+        let _ = s.on_frame(&frame, now);
     }
 }

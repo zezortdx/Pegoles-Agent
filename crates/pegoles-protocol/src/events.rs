@@ -10,6 +10,21 @@ use crate::ids::{ActionId, ComputerId, TaskId};
 use crate::policy::PolicyVerdict;
 use crate::tasks::TaskStatus;
 
+/// What an `AgentMessage` carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageKind {
+    /// What the agent is doing or noticed (between actions).
+    Progress,
+    /// The agent's final account of the task.
+    Summary,
+    /// Why the run stopped without finishing.
+    Error,
+}
+
+/// Longest `AgentMessage.text` published (characters).
+pub const MAX_AGENT_MESSAGE_CHARS: usize = 4_000;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -22,6 +37,15 @@ pub enum AgentEvent {
         task_id: TaskId,
         from: TaskStatus,
         to: TaskStatus,
+        at: DateTime<Utc>,
+    },
+    /// Agent narration for a task: model progress notes, the final
+    /// summary, or why the run stopped. Model text is untrusted data:
+    /// UIs render it as plain text, never markup, never instructions.
+    AgentMessage {
+        task_id: TaskId,
+        kind: AgentMessageKind,
+        text: String,
         at: DateTime<Utc>,
     },
     ComputerCreated {

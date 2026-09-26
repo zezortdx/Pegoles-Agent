@@ -205,6 +205,22 @@ pub fn pegoles_demo_script() -> Vec<ScriptStep> {
     ]
 }
 
+/// An authorized `Wait` whose sleep happens outside the registry.
+#[derive(Debug)]
+pub struct WaitTicket {
+    req: ActionRequest,
+    started: DateTime<Utc>,
+}
+
+impl WaitTicket {
+    pub fn duration_ms(&self) -> u32 {
+        match self.req.action {
+            ComputerAction::Wait { duration_ms } => duration_ms,
+            _ => 0,
+        }
+    }
+}
+
 /// Live input facts for the UI/dev panel (all real state, no guesses).
 #[derive(Clone, Debug)]
 pub struct InputStatus {
@@ -495,6 +511,87 @@ impl ComputerRegistry {
         (result, out)
     }
 
+    /// Host-side pacing for an agent run: a `Wait` passes rate limit,
+    /// policy, audit and the same events as any action, but the caller
+    /// sleeps WITHOUT holding the registry (so status, guest heartbeats
+    /// and cancellation keep flowing), then calls [`Self::end_wait`].
+    /// A wait never touches the guest, so no control is taken.
+    pub fn begin_wait(
+        &mut self,
+        task_id: TaskId,
+        duration_ms: u32,
+        ctx: &PolicyContext,
+    ) -> std::result::Result<WaitTicket, ActionResult> {
+        let started = Utc::now();
+        let mut out = Vec::new();
+        let computer_id = self.computer_id().map_err(|_| {
+            ActionResult::failed(
+                ActionId::new(),
+                started,
+                ActionOutcome::Failed,
+                "no computer",
+            )
+        })?;
+        let req = ActionRequest::new(task_id, computer_id, ComputerAction::Wait { duration_ms });
+        self.emit(
+            AgentEvent::ActionRequested {
+                request: req.clone(),
+            },
+            &mut out,
+        );
+        if !self.rate_limiter.check(input_clock_ms()) {
+            let result = self.failed_result(&req, started, "rate limit exceeded", &mut out);
+            self.audit_action(&req, "rate_limited", &result);
+            return Err(result);
+        }
+        let verdict = evaluate(&req, ctx);
+        self.emit(
+            AgentEvent::ActionEvaluated {
+                request: req.clone(),
+                verdict: verdict.clone(),
+            },
+            &mut out,
+        );
+        if verdict.decision != Decision::Allow {
+            let result = ActionResult::failed(
+                req.action_id,
+                started,
+                ActionOutcome::Blocked,
+                verdict.reason.clone(),
+            );
+            self.emit(
+                AgentEvent::ActionDenied {
+                    request: req.clone(),
+                    reason: verdict.reason,
+                },
+                &mut out,
+            );
+            self.audit_action(&req, "Deny", &result);
+            return Err(result);
+        }
+        self.emit(
+            AgentEvent::ActionStarted {
+                action_id: req.action_id,
+                request: req.clone(),
+                at: Utc::now(),
+            },
+            &mut out,
+        );
+        Ok(WaitTicket { req, started })
+    }
+
+    /// Close a [`Self::begin_wait`] ticket after the caller slept.
+    pub fn end_wait(&mut self, ticket: WaitTicket, interrupted: bool) -> ActionResult {
+        let mut out = Vec::new();
+        let result = if interrupted {
+            self.interrupted_result(&ticket.req, ticket.started, "wait cancelled", &mut out)
+        } else {
+            self.completed(ticket.req.clone(), ticket.started, "waited", None, &mut out)
+        };
+        self.audit_action(&ticket.req, "Allow", &result);
+        result
+    }
+
     fn interrupted(
         &mut self,
         req: ActionRequest,
@@ -587,10 +684,7 @@ impl ComputerRegistry {
         }
         // Observation travels the capture path (chunked frame assembly),
         // never the input primitive path: real engines reject it there.
-        if matches!(
-            req.action,
-            ComputerAction::ObserveScreen | ComputerAction::Screenshot
-        ) {
+        if matches!(req.action, ComputerAction::ObserveScreen) {
             return match self.capture_frame(&format!("{}:observe", req.action_id), out) {
                 Ok(meta) => {
                     let message = format!("observed {}x{}", meta.width_px, meta.height_px);
@@ -605,6 +699,10 @@ impl ComputerRegistry {
         };
         let ops = action_to_input_ops(&req.action, &transform);
         let op_count = ops.len();
+        if ops.is_empty() {
+            // Never report success for something that did nothing.
+            return self.failed_result(&req, started_wall, "action has no guest primitives", out);
+        }
         for (i, op) in ops.iter().enumerate() {
             if cancel.is_cancelled() || self.agent_cancel.is_cancelled() {
                 return self.interrupted_result(&req, started_wall, "cancelled mid-action", out);
@@ -815,9 +913,7 @@ impl ComputerRegistry {
 
     fn audit_action(&mut self, req: &ActionRequest, decision: &str, result: &ActionResult) {
         let text_len = match &req.action {
-            ComputerAction::TypeText { text, .. } | ComputerAction::Type { text } => {
-                Some(text.chars().count())
-            }
+            ComputerAction::TypeText { text, .. } => Some(text.chars().count()),
             _ => None,
         };
         self.audit.push(crate::input::AuditEntry {
@@ -1103,9 +1199,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result, events) = r.execute_action(
             task(),
-            ComputerAction::Shell {
-                command: "rm -rf /".into(),
-            },
+            ComputerAction::MovePointer { x: 7.0, y: 0.5 },
             false,
             &ctx(),
             &cancel,
@@ -1199,8 +1293,9 @@ mod tests {
             ScriptStep::new("move", ComputerAction::MovePointer { x: 0.1, y: 0.1 }),
             ScriptStep::new(
                 "evil",
-                ComputerAction::Shell {
-                    command: "rm -rf /".into(),
+                ComputerAction::TypeText {
+                    text: "-----BEGIN RSA PRIVATE KEY-----".into(),
+                    sensitive: false,
                 },
             ),
             ScriptStep::new("never", ComputerAction::MovePointer { x: 0.9, y: 0.9 }),
@@ -1210,6 +1305,22 @@ mod tests {
         assert_eq!(report.aborted_at, Some(1));
         assert_eq!(r.display.control, ControlOwner::None);
         assert!(r.input_pressed.is_clean());
+    }
+
+    #[test]
+    fn agent_session_survives_pumps_without_a_host_view() {
+        // Regression (hardware E2E 2026-09-26): the display reconcile
+        // released ANY control when no native view was ready, so every
+        // background pump ended the agent's session mid-task.
+        let mut r = with_mock_running();
+        let mut out = Vec::new();
+        r.begin_agent_session(&mut out).unwrap();
+        for _ in 0..5 {
+            r.pump();
+        }
+        assert_eq!(r.display.control, ControlOwner::Agent);
+        r.end_agent_session(&mut out);
+        assert_eq!(r.display.control, ControlOwner::None);
     }
 
     #[test]

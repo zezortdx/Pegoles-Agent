@@ -1,0 +1,34 @@
+# The agent's workspace: a maximized foot terminal on the Pegoles desktop.
+# Confined inside the (already isolated, network-less) guest: read-only
+# system, private /tmp, writable state only under /var/lib/pegoles-workspace.
+# Restarts if the agent closes it, so there is always something to drive.
+[Unit]
+Description=Pegoles workspace terminal
+After=pegoles-weston.service
+Requires=pegoles-weston.service
+
+[Service]
+Type=simple
+User=pegoles
+Group=pegoles
+Environment=XDG_RUNTIME_DIR=/run/pegoles
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=HOME=/var/lib/pegoles-workspace
+Environment=SHELL=/bin/bash
+Environment=TERM=foot
+StateDirectory=pegoles-workspace
+WorkingDirectory=/var/lib/pegoles-workspace
+ExecStart=/usr/bin/foot --maximized --title=Terminal /bin/bash --login
+Restart=always
+RestartSec=1s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

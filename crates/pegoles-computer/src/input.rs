@@ -220,8 +220,8 @@ impl ActionRateLimiter {
 }
 
 /// Lower one structured action to backend primitives using the CURRENT
-/// display size. Non-input actions (shell/file/open_url) lower to an
-/// empty vec — they execute through their own paths, never here.
+/// display size. Exhaustive: only `Wait` (host-side timing) lowers to
+/// nothing.
 pub fn action_to_input_ops(action: &ComputerAction, t: &DisplayTransform) -> Vec<InputOp> {
     let pt = |x: f64, y: f64| t.agent_to_guest(AgentPoint { x, y });
     match action {
@@ -281,17 +281,15 @@ pub fn action_to_input_ops(action: &ComputerAction, t: &DisplayTransform) -> Vec
         }],
         ComputerAction::KeyPress { key } => vec![InputOp::KeyPress { key: key.clone() }],
         ComputerAction::KeyChord { keys } => vec![InputOp::KeyChord { keys: keys.clone() }],
-        ComputerAction::TypeText { text, .. } | ComputerAction::Type { text } => {
-            vec![InputOp::TypeText { text: text.clone() }]
-        }
+        ComputerAction::TypeText { text, .. } => vec![InputOp::TypeText { text: text.clone() }],
+        // Pure host-side timing: no guest primitive.
         ComputerAction::Wait { .. } => Vec::new(),
-        ComputerAction::Screenshot | ComputerAction::ObserveScreen => {
+        ComputerAction::ObserveScreen => {
             vec![InputOp::CaptureFrame {
                 request_id: String::new(),
             }]
         }
         ComputerAction::GetDisplayInfo => vec![InputOp::GetDisplayInfo],
-        _ => Vec::new(),
     }
 }
 
@@ -506,6 +504,34 @@ pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> 
             .map_err(|e| ComputerError::Backend(e.to_string()))?;
         writer
             .write_image_data(rgba)
+            .map_err(|e| ComputerError::Backend(e.to_string()))?;
+    }
+    Ok(out)
+}
+
+/// Encode raw RGBA pixels as an RGB PNG tuned for latency: the guest
+/// framebuffer is opaque (alpha carries nothing) and the fast deflate
+/// mode keeps encoding off the critical path of every agent turn and
+/// every preview refresh.
+pub fn encode_png_rgb_fast(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
+    if rgba.len() != width as usize * height as usize * 4 {
+        return Err(ComputerError::Backend("rgba stride mismatch".to_string()));
+    }
+    let rgb: Vec<u8> = rgba
+        .chunks_exact(4)
+        .flat_map(|px| [px[0], px[1], px[2]])
+        .collect();
+    let mut out = Vec::with_capacity(rgb.len() / 8);
+    {
+        let mut enc = png::Encoder::new(&mut out, width, height);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::Fast);
+        let mut writer = enc
+            .write_header()
+            .map_err(|e| ComputerError::Backend(e.to_string()))?;
+        writer
+            .write_image_data(&rgb)
             .map_err(|e| ComputerError::Backend(e.to_string()))?;
     }
     Ok(out)
@@ -800,14 +826,7 @@ mod tests {
                 button: PointerButton::Primary,
             }]
         );
-        // Non-input actions lower to nothing here.
-        assert!(action_to_input_ops(
-            &ComputerAction::Shell {
-                command: "ls".into()
-            },
-            &t
-        )
-        .is_empty());
+        // Wait is host-side timing only.
         assert!(action_to_input_ops(&ComputerAction::Wait { duration_ms: 100 }, &t).is_empty());
     }
 
@@ -1011,5 +1030,29 @@ mod tests {
         for token in &tokens {
             assert!(!src.contains(token), "host capability leaked: {token}");
         }
+    }
+}
+
+#[cfg(test)]
+mod png_tests {
+    use super::*;
+
+    #[test]
+    fn fast_rgb_png_round_trips_opaque_pixels() {
+        let (w, h) = (64u32, 32u32);
+        let rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| [(i % 251) as u8, (i % 7) as u8 * 30, 200, 255])
+            .collect();
+        let png_bytes = encode_png_rgb_fast(w, h, &rgba).unwrap();
+        let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (w, h));
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        for (i, px) in buf.chunks_exact(3).enumerate() {
+            assert_eq!(px, &rgba[i * 4..i * 4 + 3]);
+        }
+        assert!(encode_png_rgb_fast(w, h, &rgba[..10]).is_err());
     }
 }

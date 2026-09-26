@@ -1,15 +1,18 @@
-//! Structured actions: the ONLY language the future LLM may speak.
+//! Structured actions: the ONLY language a model may speak to Pegoles.
 //!
 //! SECURITY INVARIANT (see docs/SECURITY.md):
 //! 1. Model-generated commands never execute directly on the host.
-//! 2. All agent actions pass through structured actions (this enum).
+//! 2. All agent actions are one of the typed variants below.
 //! 3. Every structured action passes through Pegoles Policy.
 //!
-//! `Shell`, `ReadFile`, `WriteFile` mean "inside Pegoles Computer".
-//! There must never be a `HostShell` / `ExecuteOnHost` / `RawHostCommand`
-//! variant in this enum. Reviewers: reject any PR adding one.
+//! The vocabulary is deliberately the computer-use set only: observe,
+//! pointer, keyboard, wait. Each variant has its own security meaning;
+//! there is no generic "execute" primitive, no shell, no file access, no
+//! URL opening, and never a host variant. A new capability must arrive as
+//! a new typed variant with its own policy rule and guest implementation
+//! (the guest runtime re-validates every primitive it receives).
 //!
-//! ## Coordinate system (Phase 5)
+//! ## Coordinate system
 //!
 //! Pointer actions use NORMALIZED agent coordinates: `x`/`y` in
 //! `0.0..=1.0`, origin at the guest display's top-left. The executor
@@ -29,7 +32,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::computer::VirtualPath;
 use crate::ids::{ActionId, ComputerId, TaskId};
 
 /// Which pointer button an action uses. Guest semantics: primary is the
@@ -44,22 +46,17 @@ pub enum PointerButton {
 }
 
 /// Structured action executed inside Pegoles Computer. NEVER the host.
+/// Unknown `type` tags fail to deserialize: deny by construction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ComputerAction {
-    /// Legacy manual observation. Prefer `ObserveScreen`, which returns
-    /// frame metadata (id, timestamp, dimensions) alongside pixels.
-    Screenshot,
     /// Capture the CURRENT guest framebuffer (VM display only, never the
     /// host screen) with frame metadata. On demand; no streaming.
     ObserveScreen,
     /// Guest display size without pixels (cheap layout probe).
     GetDisplayInfo,
     /// Glide the agent pointer to a normalized position.
-    MovePointer {
-        x: f64,
-        y: f64,
-    },
+    MovePointer { x: f64, y: f64 },
     Click {
         x: f64,
         y: f64,
@@ -103,13 +100,9 @@ pub enum ComputerAction {
         delta_y: f64,
     },
     /// One named key (see `crate::keys::normalize_key_name`).
-    KeyPress {
-        key: String,
-    },
+    KeyPress { key: String },
     /// Simultaneous chord, e.g. `["Control", "c"]`. Modifiers first.
-    KeyChord {
-        keys: Vec<String>,
-    },
+    KeyChord { keys: Vec<String> },
     /// Type text through the guest input path (never the host
     /// clipboard). `sensitive` marks secret-broker input: audit and UI
     /// must redact the text (see `ActionRequest::redacted_for_event`).
@@ -118,38 +111,15 @@ pub enum ComputerAction {
         #[serde(default)]
         sensitive: bool,
     },
-    /// Legacy typing alias (always non-sensitive). Handled exactly like
-    /// `TypeText { sensitive: false }`.
-    Type {
-        text: String,
-    },
     /// Do nothing for `duration_ms`. Cancellable like any action.
-    Wait {
-        duration_ms: u32,
-    },
-    OpenUrl {
-        url: String,
-    },
-    /// Shell inside the guest VM. Never the host.
-    Shell {
-        command: String,
-    },
-    /// Read a file inside the guest VM. Never the host.
-    ReadFile {
-        path: VirtualPath,
-    },
-    /// Write a file inside the guest VM. Never the host.
-    WriteFile {
-        path: VirtualPath,
-        content: String,
-    },
+    Wait { duration_ms: u32 },
 }
 
 impl ComputerAction {
     /// Short verb for logs, UI labels, and audit rows.
     pub fn verb(&self) -> &'static str {
         match self {
-            ComputerAction::Screenshot | ComputerAction::ObserveScreen => "observe",
+            ComputerAction::ObserveScreen => "observe",
             ComputerAction::GetDisplayInfo => "display_info",
             ComputerAction::MovePointer { .. } => "move",
             ComputerAction::Click { .. } => "click",
@@ -160,12 +130,8 @@ impl ComputerAction {
             ComputerAction::Scroll { .. } => "scroll",
             ComputerAction::KeyPress { .. } => "key_press",
             ComputerAction::KeyChord { .. } => "key_chord",
-            ComputerAction::TypeText { .. } | ComputerAction::Type { .. } => "type",
+            ComputerAction::TypeText { .. } => "type",
             ComputerAction::Wait { .. } => "wait",
-            ComputerAction::OpenUrl { .. } => "open_url",
-            ComputerAction::Shell { .. } => "shell",
-            ComputerAction::ReadFile { .. } => "read_file",
-            ComputerAction::WriteFile { .. } => "write_file",
         }
     }
 
@@ -173,9 +139,7 @@ impl ComputerAction {
     /// `redacted` forces secret-safe output for sensitive typing.
     pub fn describe(&self, redacted: bool) -> String {
         match self {
-            ComputerAction::Screenshot | ComputerAction::ObserveScreen => {
-                "Looking at the screen".to_string()
-            }
+            ComputerAction::ObserveScreen => "Looking at the screen".to_string(),
             ComputerAction::GetDisplayInfo => "Checking display size".to_string(),
             ComputerAction::MovePointer { .. } => "Moving pointer".to_string(),
             ComputerAction::Click { .. } => "Clicking".to_string(),
@@ -198,12 +162,7 @@ impl ComputerAction {
                     }
                 }
             }
-            ComputerAction::Type { .. } => "Typing".to_string(),
             ComputerAction::Wait { .. } => "Waiting".to_string(),
-            ComputerAction::OpenUrl { .. } => "Opening link".to_string(),
-            ComputerAction::Shell { .. } => "Running shell command".to_string(),
-            ComputerAction::ReadFile { .. } => "Reading file".to_string(),
-            ComputerAction::WriteFile { .. } => "Writing file".to_string(),
         }
     }
 
@@ -361,40 +320,27 @@ mod tests {
     }
 
     #[test]
-    fn shell_means_guest_not_host() {
-        // Guard test: the protocol must not grow a host-execution variant.
-        let json = serde_json::to_value(&ComputerAction::Shell {
-            command: "ls".into(),
-        })
-        .unwrap()
-        .to_string()
-        .to_lowercase();
-        assert!(!json.contains("host"));
-        let all = [
-            "screenshot",
-            "observe_screen",
-            "get_display_info",
-            "move_pointer",
-            "click",
-            "double_click",
-            "mouse_down",
-            "mouse_up",
-            "drag",
-            "scroll",
-            "key_press",
-            "key_chord",
-            "type_text",
-            "type",
-            "wait",
-            "open_url",
+    fn vocabulary_has_no_execution_or_host_verbs() {
+        // Guard: removed/forbidden verbs must not deserialize. A model
+        // (or a webview) sending them gets a parse error, never an action.
+        for verb in [
             "shell",
             "read_file",
             "write_file",
-        ];
-        for name in all {
-            assert!(name != "host_shell");
-            assert!(name != "execute_on_host");
-            assert!(name != "raw_host_command");
+            "open_url",
+            "host_shell",
+            "execute_on_host",
+            "raw_host_command",
+            "type",
+            "screenshot",
+        ] {
+            let json = format!(
+                r#"{{"type":"{verb}","command":"ls","path":"/x","url":"http://x","text":"x","content":"x"}}"#
+            );
+            assert!(
+                serde_json::from_str::<ComputerAction>(&json).is_err(),
+                "{verb} must not be a ComputerAction"
+            );
         }
     }
 

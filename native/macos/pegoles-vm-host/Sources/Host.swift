@@ -7,54 +7,101 @@
 /// reads happen on a background thread, which hops each command onto the
 /// main thread and waits for the response.
 ///
+/// Lifetime: the helper never outlives its parent. Stdin EOF or parent
+/// exit stops every VM it owns and exits the process.
+///
 /// NOTE (macOS 26): `dispatchMain()` drains main-queue blocks off the main
 /// thread; only `RunLoop.main.run()` keeps them on it. VZ requires the
 /// latter, so we use the runloop here.
 
 import Foundation
 
+/// Longest command line accepted from the parent (a `guest_send` frame
+/// is <= 64 KiB of payload plus JSON escaping).
+let commandLineMax = 1024 * 1024
+
 @main
 struct PegolesVmHost {
-    /// Blocking line reader. NOTE: `read(upToCount:)` with a large count
-    /// waits for that many bytes or EOF, which deadlocks a control channel
-    /// whose stdin stays open. Single-byte reads return as soon as input
-    /// is available; `nil` (empty) means EOF.
-    static func readLine() -> String?? {
-        let stdin = FileHandle.standardInput
-        var line = Data()
-        while true {
-            let chunk: Data?
-            do {
-                chunk = try stdin.read(upToCount: 1)
-            } catch {
-                log("stdin read failed: \(error.localizedDescription)")
-                return line.isEmpty ? nil : .some(nil)
+    /// Buffered line reader over stdin. `nil` = EOF (parent went away);
+    /// `.some(nil)` = a line that was oversized or not UTF-8 (skipped).
+    final class LineReader {
+        private var buffer = Data()
+        private var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+
+        func next() -> String?? {
+            while true {
+                if let nl = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                    let line = buffer[buffer.startIndex..<nl]
+                    buffer.removeSubrange(buffer.startIndex...nl)
+                    return .some(String(data: Data(line), encoding: .utf8))
+                }
+                if buffer.count > commandLineMax {
+                    // Oversized: drop through the next newline.
+                    buffer.removeAll()
+                    discardingOversized = true
+                }
+                let n = chunk.withUnsafeMutableBytes { ptr -> Int in
+                    Foundation.read(0, ptr.baseAddress!, ptr.count)
+                }
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { return nil }
+                if discardingOversized {
+                    if let nl = chunk[..<n].firstIndex(of: UInt8(ascii: "\n")) {
+                        discardingOversized = false
+                        buffer.append(contentsOf: chunk[(nl + 1)..<n])
+                        return .some(nil)
+                    }
+                    continue
+                }
+                buffer.append(contentsOf: chunk[..<n])
             }
-            guard let byte = chunk, !byte.isEmpty else {
-                return line.isEmpty ? nil : .some(nil) // EOF
-            }
-            if byte[0] == UInt8(ascii: "\n") {
-                return .some(String(data: line, encoding: .utf8))
-            }
-            line.append(byte)
         }
+
+        private var discardingOversized = false
     }
 
     static func main() {
         // Tag the main queue for the reentrancy check in onMainQueueSync.
         DispatchQueue.main.setSpecific(key: mainQueueKey, value: 1)
         let manager = VmManager()
+        let parent = getppid()
+        if parent <= 1 {
+            log("parent already gone; exiting")
+            exit(0)
+        }
+        // Parent death without a clean EOF (e.g. SIGKILL of the app while a
+        // grandchild still holds stdin) must still take the VMs down.
+        let watch = DispatchSource.makeProcessSource(identifier: parent, eventMask: .exit,
+                                                     queue: .global())
+        watch.setEventHandler { shutdownAndExit(manager, reason: "parent exited") }
+        watch.resume()
         Thread.detachNewThread {
             commandLoop(manager: manager)
+            shutdownAndExit(manager, reason: "stdin closed")
         }
-        RunLoop.main.run() // never returns; main-queue blocks drain on main
+        RunLoop.main.run() // main-queue blocks drain on main
+        _ = watch
+    }
+
+    private static let shutdownLock = NSLock()
+    private static var shuttingDown = false
+
+    /// Stop every VM this helper owns, then exit. Idempotent.
+    static func shutdownAndExit(_ manager: VmManager, reason: String) {
+        shutdownLock.lock()
+        if shuttingDown { shutdownLock.unlock(); return }
+        shuttingDown = true
+        shutdownLock.unlock()
+        log("\(reason): stopping all VMs and exiting")
+        manager.shutdownAll()
+        exit(0)
     }
 
     static func commandLoop(manager: VmManager) {
         let decoder = JSONDecoder()
+        let reader = LineReader()
         while true {
-            let maybeLine = readLine()
-            guard let lineOpt = maybeLine else { break } // EOF: parent went away
+            guard let lineOpt = reader.next() else { return } // EOF: parent went away
             guard let line = lineOpt, !line.isEmpty,
                   let json = line.data(using: .utf8) else { continue }
             guard let req = try? decoder.decode(IncomingRequest.self, from: json) else {

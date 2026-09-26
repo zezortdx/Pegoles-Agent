@@ -49,6 +49,11 @@ pub enum ComputerError {
     /// Core must not keep displaying Running after this.
     #[error("native VM host disconnected: {0}")]
     BackendDisconnected(String),
+    /// The native VM host did not answer in time. The engine terminates
+    /// the helper when this happens: a hung helper must never keep a VM
+    /// alive that the user can no longer stop.
+    #[error("native VM host timed out: {0}")]
+    Timeout(String),
     /// No verified base image available; run image preparation first.
     #[error("computer image missing: {0}")]
     ImageMissing(String),

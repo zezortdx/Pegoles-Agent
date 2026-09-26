@@ -1,12 +1,14 @@
-//! Pegoles Guard (Phase 1): deterministic policy evaluation.
+//! Pegoles Guard: deterministic policy evaluation.
 //!
 //! SECURITY INVARIANTS:
-//! - No AI/heuristics here. Pure deterministic match on structured actions.
-//! - `Shell`/`ReadFile`/`WriteFile` are guest-scoped by construction.
-//! - Anything resembling host access or credential access is denied.
-//!
-//! Risk mapping: Low -> Allow, Medium -> RequireApproval,
-//! High -> RequireApproval (conservative), Blocked -> Deny.
+//! - No AI/heuristics decide anything here: a pure, exhaustive match on
+//!   typed actions. A model can request; only this code decides.
+//! - Every action in the vocabulary acts inside the isolated VM. Shape
+//!   checks (unit-square coordinates, caps, key vocabulary) deny
+//!   malformed or out-of-range input.
+//! - Allow → risk Low; Deny → risk Blocked. `RequireApproval` is reserved
+//!   for future capabilities with effects outside the VM and is treated
+//!   as a denial by the executor until approval grants exist.
 
 pub mod engine;
 

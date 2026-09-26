@@ -35,6 +35,8 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(90);
 /// kept (not dropped) until the next `poll_guest`. Bounded so a flooding
 /// guest cannot grow host memory while nobody polls; oldest drop first.
 pub const MAX_DEFERRED_OBSERVATIONS: usize = 256;
+/// Helper lines processed per non-blocking pump.
+pub const MAX_LINES_PER_PUMP: usize = 2048;
 /// Everything that differs between the macOS and Windows native backends.
 /// All other behavior is shared byte-for-byte.
 #[derive(Clone, Debug)]
@@ -96,46 +98,66 @@ impl ComputerPaths {
         }
     }
 
+    /// Create the computer's directory tree, owner-only (0700).
     pub fn create_dirs(&self) -> Result<()> {
-        if let Some(serial) = &self.serial_log {
-            std::fs::create_dir_all(serial.parent().expect("logs dir"))
-                .map_err(|e| ComputerError::Backend(e.to_string()))?;
-        } else {
-            std::fs::create_dir_all(&self.dir)
-                .map_err(|e| ComputerError::Backend(e.to_string()))?;
+        let deepest = match &self.serial_log {
+            Some(serial) => serial.parent().unwrap_or(&self.dir).to_path_buf(),
+            None => self.dir.clone(),
+        };
+        std::fs::create_dir_all(&deepest).map_err(|e| ComputerError::Backend(e.to_string()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for dir in [&self.dir, &deepest] {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|e| ComputerError::Backend(e.to_string()))?;
+            }
         }
         Ok(())
     }
 }
 
-/// Resolve the helper binary: explicit env -> dev build tree ->
-/// Tauri bundle resources next to the executable.
+/// Whether developer/build-time overrides (helper path, seed ISO,
+/// official-image boot) are honored. Debug builds only: a shipped app
+/// resolves its helper and boot image from fixed, bundled locations.
+pub fn dev_overrides_enabled() -> bool {
+    cfg!(debug_assertions)
+}
+
+/// Resolve the helper binary. Release: next to the executable
+/// (`Contents/MacOS/`, where Tauri places sidecars) or in the bundle's
+/// `Contents/Resources/`. Debug builds additionally honor the env
+/// override and the dev build tree.
 pub fn resolve_helper_binary(profile: &BackendProfile) -> Result<PathBuf> {
-    if let Ok(p) = std::env::var(profile.helper_env_var) {
-        let path = PathBuf::from(&p);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(ComputerError::Backend(format!(
-            "{} points at missing file: {p}",
-            profile.helper_env_var
-        )));
-    }
     let mut candidates = Vec::new();
-    // Dev tree: <repo>/... relative to this crate's manifest dir.
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+    if dev_overrides_enabled() {
+        if let Ok(p) = std::env::var(profile.helper_env_var) {
+            let path = PathBuf::from(&p);
+            if path.is_file() {
+                return Ok(path);
+            }
+            return Err(ComputerError::Backend(format!(
+                "{} points at missing file: {p}",
+                profile.helper_env_var
+            )));
+        }
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         for rel in profile.dev_helper_relpaths {
-            candidates.push(PathBuf::from(&manifest).join(rel));
+            candidates.push(manifest.join(rel));
         }
     }
-    // Tauri bundle: <App>.app/Contents/Resources/<name>
-    if let Ok(exe) = std::env::current_exe() {
-        candidates.push(
-            exe.join("..")
-                .join("..")
-                .join("Resources")
-                .join(profile.resource_helper_name),
-        );
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        candidates.push(exe_dir.join(profile.resource_helper_name));
+        if let Some(contents) = exe_dir.parent() {
+            candidates.push(
+                contents
+                    .join("Resources")
+                    .join(profile.resource_helper_name),
+            );
+        }
     }
     for c in candidates {
         if c.is_file() {
@@ -143,7 +165,7 @@ pub fn resolve_helper_binary(profile: &BackendProfile) -> Result<PathBuf> {
         }
     }
     Err(ComputerError::Backend(format!(
-        "{} binary not found (build the native helper or set {})",
+        "{} binary not found next to the app (debug builds: build the native helper or set {})",
         profile.helper_display_name, profile.helper_env_var
     )))
 }
@@ -187,23 +209,82 @@ struct ChildTransport {
     rx: Receiver<std::result::Result<String, String>>,
 }
 
+/// Lines buffered between the helper's stdout reader and the engine.
+/// Bounded: when the engine is slow the reader blocks, the helper's
+/// stdout pipe fills, and backpressure reaches the guest socket instead
+/// of host memory.
+pub const HELPER_LINE_QUEUE: usize = 1024;
+/// Longest line accepted from the helper. Guest frames are capped at
+/// 64 KiB before relay; JSON escaping can grow them, never 4x.
+pub const MAX_HELPER_LINE_BYTES: usize = 256 * 1024;
+
+/// Read one `\n`-terminated line of at most `max` bytes. `Ok(None)` = EOF.
+fn read_bounded_line(
+    reader: &mut impl BufRead,
+    max: usize,
+) -> std::result::Result<Option<String>, String> {
+    let mut line = Vec::new();
+    loop {
+        let buf = reader.fill_buf().map_err(|e| e.to_string())?;
+        if buf.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Err("vm host stdout closed mid-line".to_string())
+            };
+        }
+        let (take, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        if line.len() + take > max + 1 {
+            return Err(format!("vm host line exceeds {max} bytes"));
+        }
+        line.extend_from_slice(&buf[..take]);
+        reader.consume(take);
+        if done {
+            line.pop();
+            return String::from_utf8(line)
+                .map(Some)
+                .map_err(|_| "vm host line is not UTF-8".to_string());
+        }
+    }
+}
+
 impl ChildTransport {
     pub(crate) fn spawn(binary: &Path, display_name: &str) -> Result<Self> {
+        // Fixed binary, no arguments, scrubbed environment: the helper
+        // gets nothing from the host environment it does not need.
         let mut child = Command::new(binary)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| ComputerError::Backend(format!("cannot spawn {display_name}: {e}")))?;
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
-        let (tx, rx) = mpsc::channel();
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ComputerError::Backend(format!(
+                "{display_name} stdio unavailable"
+            )));
+        };
+        let (tx, rx) = mpsc::sync_channel(HELPER_LINE_QUEUE);
         std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let payload = line.map_err(|e| e.to_string());
-                if tx.send(payload).is_err() {
-                    break;
+            let mut reader = BufReader::new(stdout);
+            loop {
+                match read_bounded_line(&mut reader, MAX_HELPER_LINE_BYTES) {
+                    Ok(Some(line)) => {
+                        if tx.send(Ok(line)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
                 }
             }
             let _ = tx.send(Err("vm host stdout closed".to_string()));
@@ -232,10 +313,13 @@ impl HostTransport for ChildTransport {
         match self.rx.recv_timeout(timeout) {
             Ok(Ok(line)) => Ok(line),
             Ok(Err(e)) => Err(ComputerError::BackendDisconnected(e)),
-            Err(_) => Err(ComputerError::Backend(format!(
-                "vm host response timeout after {}s",
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(ComputerError::Timeout(format!(
+                "no answer after {}s",
                 timeout.as_secs()
             ))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ComputerError::BackendDisconnected(
+                "vm host stdout closed".to_string(),
+            )),
         }
     }
 
@@ -591,6 +675,13 @@ impl NativeHelperBackend {
         }
     }
 
+    /// Poison-tolerant access to the engine state. A panic while locked
+    /// must not turn every later lifecycle call (including stop) into a
+    /// second panic; the state machine re-validates on the next call.
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, NativeInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Test injection: pre-opened transport instead of spawning a process.
     pub fn with_transport(
         images_dir: PathBuf,
@@ -599,14 +690,12 @@ impl NativeHelperBackend {
         transport: Box<dyn HostTransport>,
     ) -> Self {
         let backend = Self::with_profile(images_dir, computers_dir, profile);
-        backend.inner.lock().expect("inner").transport = Some(transport);
+        backend.lock_inner().transport = Some(transport);
         backend
     }
 
     pub fn serial_log_path(&self) -> Option<PathBuf> {
-        self.inner
-            .lock()
-            .expect("inner")
+        self.lock_inner()
             .paths
             .clone()
             .and_then(|p| p.serial_log)
@@ -664,7 +753,7 @@ impl NativeHelperBackend {
                 match transport.recv(timeout) {
                     Ok(l) => l,
                     Err(e) => {
-                        inner.cached = ComputerState::Error;
+                        Self::abandon_transport(inner, &e);
                         return Err(e);
                     }
                 }
@@ -700,6 +789,28 @@ impl NativeHelperBackend {
                     return Err(ComputerError::Backend(format!("bad vm host line: {e}")));
                 }
             }
+        }
+    }
+
+    /// The helper hung or died mid-request. Terminate it (dropping the
+    /// transport kills the child, and the VM with it) so no VM outlives
+    /// the host's ability to control it, then surface Error.
+    fn abandon_transport(inner: &mut NativeInner, cause: &ComputerError) {
+        inner.cached = ComputerState::Error;
+        inner.pending_outbound.clear();
+        if inner.transport.take().is_some() {
+            let reason = match cause {
+                ComputerError::Timeout(_) => "helper_timeout",
+                _ => "helper_gone",
+            };
+            let obs: Vec<GuestObservation> = inner
+                .guest
+                .on_disconnected(reason.to_string())
+                .into_iter()
+                .filter_map(|o| o.split().1)
+                .collect();
+            Self::defer_observations(inner, obs);
+            inner.instance = None;
         }
     }
 
@@ -767,7 +878,7 @@ impl NativeHelperBackend {
     }
 
     fn op(&self, command: HostCommand, timeout: Duration) -> Result<ComputerState> {
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         Self::ensure_transport(&mut inner, None)?;
         let state = Self::call(&mut inner, command, timeout)?.map(|s| s.as_protocol());
         if let Some(s) = state {
@@ -808,7 +919,9 @@ impl NativeHelperBackend {
         if inner.transport.as_mut().map(|t| t.alive()) != Some(true) {
             return observations;
         }
-        loop {
+        // Bounded per pump: a flooding guest cannot pin the caller (and
+        // the app lock it holds); the rest drains on the next pump.
+        for _ in 0..MAX_LINES_PER_PUMP {
             let line = {
                 let transport = inner.transport.as_mut().expect("transport");
                 match transport.try_recv() {
@@ -872,8 +985,11 @@ impl NativeHelperBackend {
                 let transport = inner.transport.as_mut().ok_or(ComputerError::NotCreated)?;
                 match transport.recv(remaining) {
                     Ok(l) => l,
+                    // A quiet slice is normal while waiting on the guest;
+                    // the overall deadline above bounds the wait.
+                    Err(ComputerError::Timeout(_)) => continue,
                     Err(e) => {
-                        inner.cached = ComputerState::Error;
+                        Self::abandon_transport(inner, &e);
                         return Err(e);
                     }
                 }
@@ -883,12 +999,31 @@ impl NativeHelperBackend {
                     let mut obs = Vec::new();
                     Self::apply_event(inner, &cid, ev, &mut obs);
                     let accepted = obs.iter().any(&mut accept);
+                    // The guest channel went away mid-request: nothing we
+                    // wait for can arrive on it. Fail now instead of
+                    // sitting out the whole timeout.
+                    let lost = obs.iter().any(|o| {
+                        matches!(
+                            o,
+                            GuestObservation::StateChanged {
+                                to: pegoles_protocol::GuestRuntimeState::Disconnected
+                                    | pegoles_protocol::GuestRuntimeState::Error
+                                    | pegoles_protocol::GuestRuntimeState::Incompatible,
+                                ..
+                            }
+                        )
+                    });
                     // Every observation (accepted or not) still reaches
                     // Core on the next poll: nothing is swallowed.
                     Self::defer_observations(inner, obs);
                     Self::flush_outbound(inner, &cid);
                     if accepted {
                         return Ok(());
+                    }
+                    if lost {
+                        return Err(ComputerError::GuestUnavailable(
+                            "guest runtime disconnected".to_string(),
+                        ));
                     }
                 }
                 Ok(HostLine::Response(_)) => continue,
@@ -901,31 +1036,80 @@ impl NativeHelperBackend {
 
     pub fn backend_create(&self, config: ComputerConfig) -> Result<ComputerId> {
         crate::config::validate_config(&config)?;
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         if let Some(id) = inner.id {
             return Err(ComputerError::AlreadyCreated(id));
         }
-        // Boot source: derived image when Ready, else the official image
-        // for this profile's spec (macOS dev flow). Missing both fails
-        // closed; Windows disables the official fallback (RAW could never
-        // boot on Hyper-V).
         let profile = inner.profile.clone();
-        // Build-time escape hatch: PEGOLES_IMAGE_SPEC=generic makes image
-        // builders boot the cloud-init source image instead of the normal
-        // official spec. Never set in the normal lifecycle.
-        let spec = match std::env::var("PEGOLES_IMAGE_SPEC").as_deref() {
-            Ok("generic") => crate::image::GENERIC_DEBIAN_13_ARM64,
-            _ => profile.official_spec,
+        // Build-time escape hatches (debug builds only, image builders
+        // only): PEGOLES_IMAGE_SPEC=generic boots the cloud-init source
+        // image; PEGOLES_SEED_ISO attaches a read-only NoCloud seed.
+        let generic_build = dev_overrides_enabled()
+            && std::env::var("PEGOLES_IMAGE_SPEC").as_deref() == Ok("generic");
+        let seed_iso_path = std::env::var("PEGOLES_SEED_ISO").ok().filter(|p| {
+            if !dev_overrides_enabled() {
+                return false;
+            }
+            let ok = std::path::Path::new(p).is_file();
+            if !ok {
+                eprintln!("PEGOLES_SEED_ISO points at missing file: {p}");
+            }
+            ok
+        });
+        let spec = if generic_build {
+            crate::image::GENERIC_DEBIAN_13_ARM64
+        } else {
+            profile.official_spec
         };
+        // Boot source: the sealed Pegoles image. Booting the plain official
+        // Debian image is an image-BUILDER step only; a normal create never
+        // degrades to an image without the Pegoles guest runtime.
+        let building = generic_build || seed_iso_path.is_some();
+        let allow_official = profile.allow_official_fallback && building;
         let images = ComputerImageManager::with_spec(self.images_dir.clone(), spec);
         let id = ComputerId::new();
         let paths = ComputerPaths::new(&self.computers_dir, &id, &profile);
         paths.create_dirs()?;
-        images.instantiate_boot_source_for_format_with_fallback(
+        let created = Self::create_prepared(
+            &mut inner,
+            &images,
             &id,
+            &paths,
+            &config,
+            allow_official,
+            seed_iso_path,
+        );
+        let state = match created {
+            Ok(state) => state,
+            Err(e) => {
+                // Never leave a half-created computer (disk clone, EFI
+                // store) behind on disk.
+                let _ = std::fs::remove_dir_all(&paths.dir);
+                return Err(e);
+            }
+        };
+        inner.id = Some(id);
+        inner.cached = state;
+        inner.config = Some(config);
+        inner.paths = Some(paths);
+        Ok(id)
+    }
+
+    fn create_prepared(
+        inner: &mut NativeInner,
+        images: &ComputerImageManager,
+        id: &ComputerId,
+        paths: &ComputerPaths,
+        config: &ComputerConfig,
+        allow_official: bool,
+        seed_iso_path: Option<String>,
+    ) -> Result<ComputerState> {
+        let profile = inner.profile.clone();
+        images.instantiate_boot_source_for_format_with_fallback(
+            id,
             &paths.disk,
             profile.disk_format,
-            profile.allow_official_fallback,
+            allow_official,
         )?;
         let metadata = serde_json::json!({
             "computer_id": id.to_string(),
@@ -933,25 +1117,9 @@ impl NativeHelperBackend {
             "memory_mb": config.memory_mb,
             "disk_gb": config.disk_gb,
         });
-        std::fs::write(
-            &paths.metadata,
-            serde_json::to_string_pretty(&metadata).expect("metadata serializes"),
-        )
-        .map_err(|e| ComputerError::Backend(e.to_string()))?;
-
-        Self::ensure_transport(&mut inner, None)?;
-        // Build-time provisioning only: PEGOLES_SEED_ISO attaches a
-        // read-only cloud-init seed ISO as a second disk. Used solely by
-        // image builders; never set in the normal lifecycle. (Read here,
-        // not plumbed through the API, precisely so product code paths
-        // cannot enable it by accident.)
-        let seed_iso_path = std::env::var("PEGOLES_SEED_ISO").ok().filter(|p| {
-            let ok = std::path::Path::new(p).is_file();
-            if !ok {
-                eprintln!("PEGOLES_SEED_ISO points at missing file: {p}");
-            }
-            ok
-        });
+        std::fs::write(&paths.metadata, metadata.to_string())
+            .map_err(|e| ComputerError::Backend(e.to_string()))?;
+        Self::ensure_transport(inner, None)?;
         let params = CreateParams {
             computer_id: id.to_string(),
             disk_path: paths.disk.to_string_lossy().into_owned(),
@@ -970,14 +1138,11 @@ impl NativeHelperBackend {
                 height_px: d.height_px,
             }),
         };
-        let state = Self::call(&mut inner, HostCommand::Create { params }, SHORT_TIMEOUT)?
-            .map(|s| s.as_protocol())
-            .unwrap_or(ComputerState::Stopped);
-        inner.id = Some(id);
-        inner.cached = state;
-        inner.config = Some(config);
-        inner.paths = Some(paths);
-        Ok(id)
+        Ok(
+            Self::call(inner, HostCommand::Create { params }, SHORT_TIMEOUT)?
+                .map(|s| s.as_protocol())
+                .unwrap_or(ComputerState::Stopped),
+        )
     }
 
     pub fn backend_start(&self) -> Result<ComputerState> {
@@ -997,7 +1162,7 @@ impl NativeHelperBackend {
         // VM Running starts the guest-readiness clock (Waiting) and mints
         // a fresh ephemeral instance; the computer identity stays stable
         // across restarts (HCS parity).
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         inner.guest.on_vm_started(std::time::Instant::now());
         inner.deferred.clear();
         inner.instance = Some(ComputerInstance::new(id));
@@ -1012,7 +1177,7 @@ impl NativeHelperBackend {
             },
             STOP_TIMEOUT,
         )?;
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         inner.guest.on_vm_stopped();
         inner.deferred.clear();
         inner.instance = None;
@@ -1067,14 +1232,14 @@ impl NativeHelperBackend {
     }
 
     pub fn backend_reset(&self) -> Result<ComputerState> {
-        let current = self.inner.lock().expect("inner").cached;
+        let current = self.lock_inner().cached;
         if matches!(
             current,
             ComputerState::Running | ComputerState::Paused | ComputerState::Error
         ) {
             self.backend_stop()?;
         } else {
-            let mut inner = self.inner.lock().expect("inner");
+            let mut inner = self.lock_inner();
             inner.guest.on_vm_stopped();
             inner.deferred.clear();
             inner.instance = None;
@@ -1083,7 +1248,7 @@ impl NativeHelperBackend {
     }
 
     pub fn backend_destroy(&self) -> Result<()> {
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
         // Best effort native destroy; local state clears regardless so a
         // half-dead helper cannot pin the computer forever.
@@ -1109,11 +1274,11 @@ impl NativeHelperBackend {
     }
 
     pub fn computer_id(&self) -> Option<ComputerId> {
-        self.inner.lock().expect("inner").id
+        self.lock_inner().id
     }
 
     pub fn backend_state(&self) -> ComputerState {
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         if inner.id.is_none() {
             return ComputerState::Stopped;
         }
@@ -1132,49 +1297,45 @@ impl NativeHelperBackend {
     }
 
     pub fn backend_config(&self) -> Option<ComputerConfig> {
-        self.inner.lock().expect("inner").config.clone()
+        self.lock_inner().config.clone()
     }
 
     pub fn backend_instance(&self) -> Option<ComputerInstance> {
-        self.inner.lock().expect("inner").instance.clone()
+        self.lock_inner().instance.clone()
     }
 
     pub fn backend_capabilities(&self) -> crate::platform::BackendCapabilities {
-        self.inner
-            .lock()
-            .expect("inner")
+        self.lock_inner()
             .profile
             .capabilities
             .clone()
     }
 
     pub fn guest_state(&self) -> GuestRuntimeState {
-        self.inner.lock().expect("inner").guest.state()
+        self.lock_inner().guest.state()
     }
 
     pub fn guest_info(&self) -> Option<pegoles_guest_proto::SystemInfo> {
-        self.inner.lock().expect("inner").guest.guest_info()
+        self.lock_inner().guest.guest_info()
     }
 
     pub fn guest_ready_ms(&self) -> Option<u64> {
-        self.inner.lock().expect("inner").guest.ready_duration_ms()
+        self.lock_inner().guest.ready_duration_ms()
     }
 
     pub fn capability_diagnostics(&self) -> Vec<crate::CapabilityDiagnostic> {
-        self.inner
-            .lock()
-            .expect("inner")
+        self.lock_inner()
             .guest
             .capability_diagnostics()
             .to_vec()
     }
 
     pub fn graphical_session(&self) -> GraphicalSessionInfo {
-        self.inner.lock().expect("inner").guest.graphical_session()
+        self.lock_inner().guest.graphical_session()
     }
 
     pub fn poll_guest(&self) -> Vec<GuestObservation> {
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         if inner.id.is_none() {
             return Vec::new();
         }
@@ -1185,7 +1346,7 @@ impl NativeHelperBackend {
     /// impls). Same channel the session pump uses; never feeds the session
     /// itself — VM state events update the cache, guest events surface raw.
     pub fn transport_send_frame(&self, payload: &str) -> Result<()> {
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
         Self::guest_send_frame(&mut inner, &id, payload)
     }
@@ -1193,7 +1354,7 @@ impl NativeHelperBackend {
     pub fn transport_poll_events(&self) -> Vec<crate::transport::TransportEvent> {
         use crate::transport::TransportEvent as T;
         use crate::vmhost_proto::HostEvent as E;
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let Some(transport) = inner.transport.as_mut() else {
             return Vec::new();
         };
@@ -1240,7 +1401,7 @@ impl NativeHelperBackend {
     }
 
     pub fn transport_close(&self) {
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let Some(id) = inner.id.map(|id| id.to_string()) else {
             return;
         };
@@ -1248,12 +1409,12 @@ impl NativeHelperBackend {
     }
 
     pub fn transport_is_connected(&self) -> bool {
-        self.inner.lock().expect("inner").guest.is_connected()
+        self.lock_inner().guest.is_connected()
     }
 
     pub fn guest_ping(&self, timeout: Duration) -> Result<u64> {
         use pegoles_protocol::GuestRuntimeState as G;
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
         if inner.guest.state() != G::Ready {
             return Err(ComputerError::GuestUnavailable(
@@ -1279,7 +1440,7 @@ impl NativeHelperBackend {
 
     pub fn guest_info_request(&self, timeout: Duration) -> Result<pegoles_guest_proto::SystemInfo> {
         use pegoles_protocol::GuestRuntimeState as G;
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
         if inner.guest.state() != G::Ready {
             return Err(ComputerError::GuestUnavailable(
@@ -1304,7 +1465,7 @@ impl NativeHelperBackend {
 
     pub fn input_available(&self) -> bool {
         use pegoles_protocol::GuestRuntimeState as G;
-        let inner = self.inner.lock().expect("inner");
+        let inner = self.lock_inner();
         inner.guest.state() == G::Ready
             && inner
                 .guest
@@ -1315,7 +1476,7 @@ impl NativeHelperBackend {
         use crate::input::{InputBackendKind, InputCapabilities};
         let available = self.input_available();
         let frame = {
-            let inner = self.inner.lock().expect("inner");
+            let inner = self.lock_inner();
             use pegoles_protocol::GuestRuntimeState as G;
             inner.guest.state() == G::Ready
                 && inner
@@ -1403,7 +1564,7 @@ impl NativeHelperBackend {
                 "input op exceeds guest bounds".to_string(),
             ));
         }
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
         Self::require_input_ready(&inner.guest, pegoles_guest_proto::GUEST_CAP_INPUT)?;
         let budget = std::time::Duration::from_millis(
@@ -1445,10 +1606,7 @@ impl NativeHelperBackend {
         let start = std::time::Instant::now();
         let (width_px, height_px, bytes) = self.input_capture_bytes(request_id, timeout)?;
         let byte_len = bytes.len() as u64;
-        let computer_id = self
-            .inner
-            .lock()
-            .expect("inner")
+        let computer_id = self.lock_inner()
             .id
             .ok_or(ComputerError::NotCreated)?;
         Ok(crate::input::CapturedFrame {
@@ -1476,7 +1634,7 @@ impl NativeHelperBackend {
                 "request id exceeds bound".to_string(),
             ));
         }
-        let mut inner = self.inner.lock().expect("inner");
+        let mut inner = self.lock_inner();
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
         Self::require_input_ready(&inner.guest, pegoles_guest_proto::GUEST_CAP_FRAME)?;
         let frame = pegoles_guest_proto::encode_host(&pegoles_guest_proto::HostMessage::GetFrame {
@@ -1583,5 +1741,52 @@ fn computer_id_for(command: &HostCommand) -> Option<String> {
         | HostCommand::GuestSend { computer_id, .. }
         | HostCommand::GuestStatus { computer_id }
         | HostCommand::GuestDisconnect { computer_id } => Some(computer_id.clone()),
+    }
+}
+
+#[cfg(test)]
+mod bounded_line_tests {
+    use super::*;
+
+    fn lines(input: &[u8], max: usize) -> Vec<std::result::Result<Option<String>, String>> {
+        let mut reader = BufReader::with_capacity(7, input);
+        let mut out = Vec::new();
+        loop {
+            let r = read_bounded_line(&mut reader, max);
+            let stop = !matches!(r, Ok(Some(_)));
+            out.push(r);
+            if stop {
+                return out;
+            }
+        }
+    }
+
+    #[test]
+    fn splits_lines_across_small_buffers() {
+        let out = lines(b"alpha\nbeta gamma\n", 64);
+        assert_eq!(out[0], Ok(Some("alpha".to_string())));
+        assert_eq!(out[1], Ok(Some("beta gamma".to_string())));
+        assert_eq!(out[2], Ok(None));
+    }
+
+    #[test]
+    fn oversized_line_is_an_error_not_an_allocation() {
+        let big = vec![b'x'; 10_000];
+        let out = lines(&big, 1024);
+        assert!(matches!(&out[0], Err(e) if e.contains("exceeds")));
+    }
+
+    #[test]
+    fn exact_cap_is_accepted() {
+        let mut input = vec![b'y'; 1024];
+        input.push(b'\n');
+        let out = lines(&input, 1024);
+        assert_eq!(out[0].as_ref().unwrap().as_ref().unwrap().len(), 1024);
+    }
+
+    #[test]
+    fn eof_mid_line_and_invalid_utf8_fail_closed() {
+        assert!(lines(b"partial", 64)[0].is_err());
+        assert!(lines(b"\xff\xfe\n", 64)[0].is_err());
     }
 }

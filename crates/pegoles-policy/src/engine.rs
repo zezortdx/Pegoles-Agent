@@ -1,51 +1,28 @@
-use pegoles_protocol::{
-    limits, ActionRequest, ComputerAction, Decision, PolicyVerdict, RiskLevel, VirtualPath,
-};
+use pegoles_protocol::{limits, ActionRequest, ComputerAction, Decision, PolicyVerdict, RiskLevel};
 
 /// Normalized agent coordinates must stay inside the unit square.
 fn in_unit_square(x: f64, y: f64) -> bool {
     x.is_finite() && y.is_finite() && (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)
 }
 
-/// Evaluation context. `workspace_root` is a guest path.
-#[derive(Clone, Debug)]
-pub struct PolicyContext {
-    pub workspace_root: VirtualPath,
-}
+/// Task-scoped evaluation context. Empty today: every action in the
+/// vocabulary is judged on its own shape. Future grants (e.g. a task that
+/// may use the network) belong here, set by Core, never by a model.
+#[derive(Clone, Debug, Default)]
+pub struct PolicyContext {}
 
-impl Default for PolicyContext {
-    fn default() -> Self {
-        Self {
-            workspace_root: VirtualPath::new("/home/pegoles/workspace"),
-        }
-    }
-}
-
-/// Deterministic policy entry point.
-pub fn evaluate(req: &ActionRequest, ctx: &PolicyContext) -> PolicyVerdict {
+/// Deterministic policy entry point. The match is exhaustive: a new
+/// action variant does not compile until it gets a rule here.
+pub fn evaluate(req: &ActionRequest, _ctx: &PolicyContext) -> PolicyVerdict {
     use pegoles_protocol::keys::{normalize_key_name, validate_chord};
     match &req.action {
-        ComputerAction::Screenshot | ComputerAction::ObserveScreen => {
-            allow(RiskLevel::Low, "screenshot inside VM is always safe")
-        }
-        ComputerAction::GetDisplayInfo => allow(RiskLevel::Low, "display size probe inside VM"),
-        ComputerAction::MovePointer { x, y } => {
-            if in_unit_square(*x, *y) {
-                allow(RiskLevel::Low, "pointer move inside VM")
-            } else {
-                deny(RiskLevel::Blocked, "pointer coordinates outside 0.0..=1.0")
-            }
-        }
+        ComputerAction::ObserveScreen => allow("observing the VM screen"),
+        ComputerAction::GetDisplayInfo => allow("display size probe inside VM"),
+        ComputerAction::MovePointer { x, y } => pointer(*x, *y, "pointer move inside VM"),
         ComputerAction::Click { x, y, .. }
         | ComputerAction::DoubleClick { x, y, .. }
         | ComputerAction::MouseDown { x, y, .. }
-        | ComputerAction::MouseUp { x, y, .. } => {
-            if in_unit_square(*x, *y) {
-                allow(RiskLevel::Low, "click inside VM")
-            } else {
-                deny(RiskLevel::Blocked, "pointer coordinates outside 0.0..=1.0")
-            }
-        }
+        | ComputerAction::MouseUp { x, y, .. } => pointer(*x, *y, "click inside VM"),
         ComputerAction::Drag {
             from_x,
             from_y,
@@ -55,11 +32,11 @@ pub fn evaluate(req: &ActionRequest, ctx: &PolicyContext) -> PolicyVerdict {
             ..
         } => {
             if !in_unit_square(*from_x, *from_y) || !in_unit_square(*to_x, *to_y) {
-                deny(RiskLevel::Blocked, "drag coordinates outside 0.0..=1.0")
+                deny("drag coordinates outside 0.0..=1.0")
             } else if *duration_ms > limits::MAX_DRAG_MS {
-                deny(RiskLevel::Blocked, "drag duration exceeds safety cap")
+                deny("drag duration exceeds safety cap")
             } else {
-                allow(RiskLevel::Low, "drag inside VM")
+                allow("drag inside VM")
             }
         }
         ComputerAction::Scroll {
@@ -69,225 +46,81 @@ pub fn evaluate(req: &ActionRequest, ctx: &PolicyContext) -> PolicyVerdict {
             delta_y,
         } => {
             if !in_unit_square(*x, *y) {
-                deny(RiskLevel::Blocked, "scroll coordinates outside 0.0..=1.0")
-            } else if delta_x.abs() > limits::MAX_SCROLL_UNITS
+                deny("scroll coordinates outside 0.0..=1.0")
+            } else if !delta_x.is_finite()
+                || !delta_y.is_finite()
+                || delta_x.abs() > limits::MAX_SCROLL_UNITS
                 || delta_y.abs() > limits::MAX_SCROLL_UNITS
             {
-                deny(RiskLevel::Blocked, "scroll delta exceeds safety cap")
+                deny("scroll delta exceeds safety cap")
             } else {
-                allow(RiskLevel::Low, "scroll inside VM")
+                allow("scroll inside VM")
             }
         }
         ComputerAction::KeyPress { key } => match normalize_key_name(key) {
-            Some(_) => allow(RiskLevel::Low, "key press inside VM"),
-            None => deny(RiskLevel::Blocked, "unknown key name"),
+            Some(_) => allow("key press inside VM"),
+            None => deny("unknown key name"),
         },
         ComputerAction::KeyChord { keys } => match validate_chord(keys) {
-            Ok(_) => allow(RiskLevel::Low, "key chord inside VM"),
-            Err(reason) => deny(RiskLevel::Blocked, &reason),
+            Ok(_) => allow("key chord inside VM"),
+            Err(reason) => deny(&reason),
         },
         ComputerAction::TypeText { text, .. } => {
             if text.chars().count() > limits::MAX_TYPE_CHARS {
-                deny(RiskLevel::Blocked, "typed text exceeds safety cap")
-            } else if looks_like_secret(text) {
-                deny(
-                    RiskLevel::Blocked,
-                    "refusing to type a potential credential",
-                )
+                deny("typed text exceeds safety cap")
+            } else if text
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+            {
+                deny("typed text contains control characters")
+            } else if looks_like_private_key_material(text) {
+                deny("refusing to type key material")
             } else {
-                allow(RiskLevel::Low, "typing inside VM")
-            }
-        }
-        ComputerAction::Type { text } => {
-            if looks_like_secret(text) {
-                deny(
-                    RiskLevel::Blocked,
-                    "refusing to type a potential credential",
-                )
-            } else {
-                allow(RiskLevel::Low, "typing inside VM")
+                allow("typing inside VM")
             }
         }
         ComputerAction::Wait { duration_ms } => {
             if *duration_ms > limits::MAX_WAIT_MS {
-                deny(RiskLevel::Blocked, "wait exceeds safety cap")
+                deny("wait exceeds safety cap")
             } else {
-                allow(RiskLevel::Low, "wait inside VM sequence")
+                allow("wait inside VM sequence")
             }
         }
-        ComputerAction::OpenUrl { url } => {
-            if is_http_url(url) {
-                require_approval(
-                    RiskLevel::Medium,
-                    "network access from VM requires approval in Phase 1",
-                )
-            } else {
-                deny(RiskLevel::Blocked, "non-http(s) URL scheme denied")
-            }
-        }
-        ComputerAction::ReadFile { path } => {
-            if is_host_path(path.as_str()) || looks_like_secret(path.as_str()) {
-                deny(RiskLevel::Blocked, "host or credential path access denied")
-            } else {
-                allow(RiskLevel::Low, "guest file read")
-            }
-        }
-        ComputerAction::WriteFile { path, .. } => {
-            if is_host_path(path.as_str()) {
-                deny(RiskLevel::Blocked, "host path write denied")
-            } else if is_within_workspace(path.as_str(), ctx.workspace_root.as_str()) {
-                allow(RiskLevel::Low, "write inside virtual workspace")
-            } else {
-                require_approval(RiskLevel::Medium, "write outside workspace needs approval")
-            }
-        }
-        ComputerAction::Shell { command } => classify_shell(command),
     }
 }
 
 // --- helpers ---
 
-fn allow(risk: RiskLevel, reason: &str) -> PolicyVerdict {
+fn pointer(x: f64, y: f64, reason: &str) -> PolicyVerdict {
+    if in_unit_square(x, y) {
+        allow(reason)
+    } else {
+        deny("pointer coordinates outside 0.0..=1.0")
+    }
+}
+
+fn allow(reason: &str) -> PolicyVerdict {
     PolicyVerdict {
         decision: Decision::Allow,
-        risk,
+        risk: RiskLevel::Low,
         reason: reason.to_string(),
     }
 }
 
-fn deny(risk: RiskLevel, reason: &str) -> PolicyVerdict {
+fn deny(reason: &str) -> PolicyVerdict {
     PolicyVerdict {
         decision: Decision::Deny,
-        risk,
+        risk: RiskLevel::Blocked,
         reason: reason.to_string(),
     }
 }
 
-fn require_approval(risk: RiskLevel, reason: &str) -> PolicyVerdict {
-    PolicyVerdict {
-        decision: Decision::RequireApproval,
-        risk,
-        reason: reason.to_string(),
-    }
-}
-
-fn is_http_url(url: &str) -> bool {
-    let u = url.trim().to_lowercase();
-    u.starts_with("http://") || u.starts_with("https://")
-}
-
-/// Heuristic denylist for anything that smells like the host.
-/// Conservative: deny first, refine with explicit Host Bridge later.
-fn is_host_path(path: &str) -> bool {
-    let p = path.trim().to_lowercase();
-    p.starts_with("/users/")
-        || p.starts_with("/etc/")
-        || p.starts_with("/private/")
-        || p.starts_with("/host")
-        || p.starts_with("~/")
-        || p.starts_with("~")
-        || p.starts_with("c:\\")
-        || p.starts_with("c:/")
-        || p.contains("..")
-        || p.contains("/.ssh/")
-        || p.ends_with("/.ssh")
-        || p.contains("\\.ssh\\")
-}
-
-fn looks_like_secret(s: &str) -> bool {
+/// Tripwire, not a boundary: obvious private-key / cloud-credential
+/// material is never typed. The real protection is that the VM has no
+/// network and nothing typed can leave it.
+fn looks_like_private_key_material(s: &str) -> bool {
     let u = s.to_uppercase();
-    u.contains("AWS_SECRET")
-        || u.contains("AKIA")
-        || u.contains("PRIVATE KEY")
-        || u.contains(".PEM")
-        || u.contains("GITHUB_TOKEN")
-}
-
-fn is_within_workspace(path: &str, workspace: &str) -> bool {
-    let ws = workspace.trim_end_matches('/');
-    path == ws || path.starts_with(&format!("{ws}/"))
-}
-
-fn shell_first_token(command: &str) -> String {
-    let t = command.trim().trim_start_matches("sudo ").trim();
-    t.split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_lowercase()
-        .trim_matches(|c| c == '"' || c == '\'')
-        .to_string()
-}
-
-fn classify_shell(command: &str) -> PolicyVerdict {
-    const SAFE: &[&str] = &[
-        "ls",
-        "pwd",
-        "echo",
-        "cat",
-        "whoami",
-        "date",
-        "uname",
-        "git",
-        "python3",
-        "python",
-        "node",
-        "npm",
-        "lsb_release",
-    ];
-    const GATED: &[&str] = &[
-        "curl",
-        "wget",
-        "ssh",
-        "pip",
-        "pip3",
-        "apt",
-        "apt-get",
-        "npm",
-        "npx",
-        "chmod",
-        "chown",
-        "systemctl",
-        "reboot",
-        "shutdown",
-    ];
-    const BLOCKED_SUBSTR: &[&str] = &[
-        "rm -rf",
-        "rm -rf /",
-        "mkfs",
-        ":(){:|:&}",
-        " dd ",
-        "dd if=",
-        "> /dev/sd",
-        "/etc/passwd",
-        "/etc/shadow",
-        "~/.ssh",
-    ];
-
-    let lower = command.to_lowercase();
-    for pat in BLOCKED_SUBSTR {
-        if lower.contains(pat) {
-            return deny(
-                RiskLevel::Blocked,
-                "destructive or credential-touching command denied",
-            );
-        }
-    }
-    if lower.contains("akexpress") || lower.contains("aws_secret_access_key") {
-        return deny(RiskLevel::Blocked, "credential exfiltration pattern denied");
-    }
-    let tok = shell_first_token(command);
-    if SAFE.contains(&tok.as_str()) {
-        // `git` alone is safe-ish, but allow; network-y subcommands still pass
-        // as Allow in Phase 1 unless destructive — documented limitation.
-        return allow(RiskLevel::Low, "safe read-only/dev command inside VM");
-    }
-    if GATED.contains(&tok.as_str()) {
-        return require_approval(
-            RiskLevel::Medium,
-            "network or privilege-adjacent command needs approval",
-        );
-    }
-    require_approval(RiskLevel::High, "unknown command needs approval")
+    u.contains("PRIVATE KEY-----") || u.contains("AWS_SECRET_ACCESS_KEY") || u.contains("SK-ANT-")
 }
 
 #[cfg(test)]
@@ -304,8 +137,8 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_allows() {
-        let v = evaluate(&req(ComputerAction::Screenshot), &ctx());
+    fn observe_allows() {
+        let v = evaluate(&req(ComputerAction::ObserveScreen), &ctx());
         assert_eq!(v.decision, Decision::Allow);
         assert_eq!(v.risk, RiskLevel::Low);
     }
@@ -426,139 +259,92 @@ mod tests {
     }
 
     #[test]
-    fn write_inside_workspace_allows() {
-        let v = evaluate(
-            &req(ComputerAction::WriteFile {
-                path: VirtualPath::new("/home/pegoles/workspace/notes.md"),
-                content: "hi".into(),
-            }),
-            &ctx(),
-        );
-        assert_eq!(v.decision, Decision::Allow);
-    }
-
-    #[test]
-    fn write_outside_workspace_gates() {
-        let v = evaluate(
-            &req(ComputerAction::WriteFile {
-                path: VirtualPath::new("/tmp/tool-output.txt"),
-                content: "hi".into(),
-            }),
-            &ctx(),
-        );
-        assert_eq!(v.decision, Decision::RequireApproval);
-    }
-
-    #[test]
-    fn write_host_path_denies() {
-        for p in [
-            "/Users/alice/.ssh/id_rsa",
-            "/etc/passwd",
-            "C:\\Windows\\System32",
-            "~/secrets",
-            "/home/pegoles/workspace/../../etc/shadow",
+    fn typing_key_material_and_control_chars_denies() {
+        for text in [
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "export AWS_SECRET_ACCESS_KEY=abc",
+            "sk-ant-api03-xyz",
+            "ok\u{1b}[31m",
+            "bell\u{7}",
         ] {
             let v = evaluate(
-                &req(ComputerAction::WriteFile {
-                    path: VirtualPath::new(p),
-                    content: "x".into(),
+                &req(ComputerAction::TypeText {
+                    text: text.into(),
+                    sensitive: false,
                 }),
                 &ctx(),
             );
-            assert_eq!(v.decision, Decision::Deny, "path: {p}");
-            assert_eq!(v.risk, RiskLevel::Blocked);
+            assert_eq!(v.decision, Decision::Deny, "text: {text:?}");
         }
-    }
-
-    #[test]
-    fn read_credential_path_denies() {
-        let v = evaluate(
-            &req(ComputerAction::ReadFile {
-                path: VirtualPath::new("/home/pegoles/.ssh/id_rsa"),
+        let ok = evaluate(
+            &req(ComputerAction::TypeText {
+                text: "line one\nline two\tTAB unicode ção 漢字".into(),
+                sensitive: false,
             }),
             &ctx(),
         );
-        assert_eq!(v.decision, Decision::Deny);
+        assert_eq!(ok.decision, Decision::Allow);
     }
 
     #[test]
-    fn read_guest_file_allows() {
-        let v = evaluate(
-            &req(ComputerAction::ReadFile {
-                path: VirtualPath::new("/home/pegoles/workspace/main.py"),
-            }),
-            &ctx(),
-        );
-        assert_eq!(v.decision, Decision::Allow);
-    }
-
-    #[test]
-    fn safe_shell_allows() {
-        for c in ["ls -la", "git status", "python3 --version", "echo hello"] {
-            let v = evaluate(&req(ComputerAction::Shell { command: c.into() }), &ctx());
-            assert_eq!(v.decision, Decision::Allow, "cmd: {c}");
-        }
-    }
-
-    #[test]
-    fn network_shell_gates() {
-        for c in [
-            "curl https://example.com",
-            "apt-get install foo",
-            "pip install bar",
+    fn non_finite_scroll_deltas_deny() {
+        for (dx, dy) in [
+            (f64::NAN, 0.0),
+            (0.0, f64::INFINITY),
+            (f64::NEG_INFINITY, 1.0),
         ] {
-            let v = evaluate(&req(ComputerAction::Shell { command: c.into() }), &ctx());
-            assert_eq!(v.decision, Decision::RequireApproval, "cmd: {c}");
+            let v = evaluate(
+                &req(ComputerAction::Scroll {
+                    x: 0.5,
+                    y: 0.5,
+                    delta_x: dx,
+                    delta_y: dy,
+                }),
+                &ctx(),
+            );
+            assert_eq!(v.decision, Decision::Deny);
         }
     }
 
     #[test]
-    fn destructive_shell_denies() {
-        for c in ["rm -rf /", "mkfs.ext4 /dev/sda1", "cat ~/.ssh/id_rsa"] {
-            let v = evaluate(&req(ComputerAction::Shell { command: c.into() }), &ctx());
-            assert_eq!(v.decision, Decision::Deny, "cmd: {c}");
-            assert_eq!(v.risk, RiskLevel::Blocked);
+    fn pointer_coordinates_sweep_matches_unit_square() {
+        // Deterministic sweep incl. edges, negatives, and huge values.
+        let samples = [
+            -1e300, -1.0, -1e-9, 0.0, 1e-9, 0.25, 0.5, 0.999_999, 1.0, 1.000_001, 2.0, 1e300,
+        ];
+        for &x in &samples {
+            for &y in &samples {
+                let v = evaluate(&req(ComputerAction::MovePointer { x, y }), &ctx());
+                let inside = (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y);
+                let want = if inside {
+                    Decision::Allow
+                } else {
+                    Decision::Deny
+                };
+                assert_eq!(v.decision, want, "({x}, {y})");
+            }
         }
     }
 
     #[test]
-    fn typing_secret_denies() {
-        let v = evaluate(
-            &req(ComputerAction::Type {
-                text: "AWS_SECRET_ACCESS_KEY=xyz".into(),
-            }),
-            &ctx(),
-        );
-        assert_eq!(v.decision, Decision::Deny);
-    }
-
-    #[test]
-    fn open_http_url_gates_and_other_schemes_deny() {
-        let v = evaluate(
-            &req(ComputerAction::OpenUrl {
-                url: "https://example.com".into(),
-            }),
-            &ctx(),
-        );
-        assert_eq!(v.decision, Decision::RequireApproval);
-        let v2 = evaluate(
-            &req(ComputerAction::OpenUrl {
-                url: "file:///etc/passwd".into(),
-            }),
-            &ctx(),
-        );
-        assert_eq!(v2.decision, Decision::Deny);
-    }
-
-    #[test]
-    fn unknown_shell_requires_high_approval() {
-        let v = evaluate(
-            &req(ComputerAction::Shell {
-                command: "terraform apply -auto-approve".into(),
-            }),
-            &ctx(),
-        );
-        assert_eq!(v.decision, Decision::RequireApproval);
-        assert_eq!(v.risk, RiskLevel::High);
+    fn nothing_in_the_vocabulary_requires_approval_or_is_high_risk() {
+        // Allowed actions are Low; denials are Blocked. RequireApproval is
+        // reserved for future out-of-VM capabilities.
+        use pegoles_protocol::PointerButton;
+        let actions = [
+            ComputerAction::ObserveScreen,
+            ComputerAction::Click {
+                x: 0.1,
+                y: 0.1,
+                button: PointerButton::Primary,
+            },
+            ComputerAction::KeyPress { key: "Tab".into() },
+            ComputerAction::Wait { duration_ms: 10 },
+        ];
+        for a in actions {
+            let v = evaluate(&req(a), &ctx());
+            assert_ne!(v.decision, Decision::RequireApproval);
+            assert_eq!(v.risk, RiskLevel::Low);
+        }
     }
 }

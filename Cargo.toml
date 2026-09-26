@@ -5,6 +5,7 @@ members = [
   "crates/pegoles-policy",
   "crates/pegoles-core",
   "crates/pegoles-guest-proto",
+  "crates/pegoles-agent",
   "guest/runtime",
   "native/windows/pegoles-vm-host",
   "native/macos/pegoles-macos-embed",
@@ -17,6 +18,7 @@ pegoles-protocol = { path = "crates/pegoles-protocol" }
 pegoles-computer = { path = "crates/pegoles-computer" }
 pegoles-policy = { path = "crates/pegoles-policy" }
 pegoles-core = { path = "crates/pegoles-core" }
+pegoles-agent = { path = "crates/pegoles-agent" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.6", features = ["v4", "serde"] }

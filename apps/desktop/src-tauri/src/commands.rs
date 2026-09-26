@@ -10,6 +10,7 @@
 //! the lock is never held across an `.await`. Only lock-free commands stay
 //! sync (`get_host_capabilities`).
 
+use crate::agent::AgentSupervisor;
 use crate::state::AppState;
 use pegoles_computer::{DisplayGeometry, EffectsRecommendation, ImageStatus, PerformanceProfile};
 use pegoles_core::{ComputerView, CoreError, DisplayBounds, GeometryOutcome};
@@ -28,6 +29,7 @@ pub type SharedState = Arc<Mutex<AppState>>;
 pub struct ScriptCancel(Arc<Mutex<Option<pegoles_core::CancellationToken>>>);
 
 impl ScriptCancel {
+    #[cfg(debug_assertions)]
     fn arm(&self) -> pegoles_core::CancellationToken {
         let token = pegoles_core::CancellationToken::new();
         if let Ok(mut slot) = self.0.lock() {
@@ -36,6 +38,7 @@ impl ScriptCancel {
         token
     }
 
+    #[cfg(debug_assertions)]
     fn disarm(&self) {
         if let Ok(mut slot) = self.0.lock() {
             *slot = None;
@@ -52,6 +55,13 @@ impl ScriptCancel {
     }
 }
 
+/// Lock the app state, recovering from poisoning: a panic in one
+/// command must not turn every later command (including Stop) into a
+/// failure. Core re-validates its own invariants on the next call.
+pub fn lock_state(shared: &SharedState) -> std::sync::MutexGuard<'_, AppState> {
+    shared.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Run `f` with the AppState lock held, on Tauri's blocking pool (never
 /// the main thread). History is synced after every command so
 /// `list_events` mirrors the live stream.
@@ -61,15 +71,43 @@ where
     F: FnOnce(&mut AppState) -> Result<T, String> + Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut guard = shared
-            .lock()
-            .map_err(|_| "app state lock poisoned".to_string())?;
+        let mut guard = lock_state(&shared);
         let result = f(&mut guard);
         guard.sync_history();
         result
     })
     .await
     .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Last computed status, served while a long operation (VM start, an
+/// agent action) holds the app state. Status reads never queue behind
+/// the VM.
+#[derive(Clone, Default)]
+pub struct StatusCache(Arc<Mutex<Option<StatusPayload>>>);
+
+impl StatusCache {
+    pub fn store(&self, status: StatusPayload) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
+    }
+
+    fn get(&self) -> Option<StatusPayload> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Pump Core (guest session, display, lifecycle) and refresh the status
+/// cache if the state is free right now; never waits for it.
+pub fn pump_if_idle(shared: &SharedState, cache: &StatusCache, agent: &AgentSupervisor) -> bool {
+    let mut guard = match shared.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    guard.registry.pump();
+    guard.sync_history();
+    cache.store(status_of(&guard, agent));
+    true
 }
 
 fn err(e: CoreError) -> String {
@@ -80,7 +118,10 @@ fn err(e: CoreError) -> String {
 #[serde(rename_all = "snake_case")]
 pub struct StatusPayload {
     pub core: &'static str,
+    /// `configured` when an API key is available, else `not_configured`.
     pub model: &'static str,
+    /// The task an agent run is working on right now, if any.
+    pub active_task: Option<String>,
     pub backend: &'static str,
     pub computer_created: bool,
     pub computer_state: Option<ComputerState>,
@@ -219,7 +260,10 @@ pub fn accessibility_display() -> AccessibilityDisplay {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        AccessibilityDisplay { reduce_transparency: false, increase_contrast: false }
+        AccessibilityDisplay {
+            reduce_transparency: false,
+            increase_contrast: false,
+        }
     }
 }
 
@@ -252,13 +296,18 @@ fn image_status_str(s: ImageStatus) -> &'static str {
     }
 }
 
-fn status_of(state: &AppState) -> StatusPayload {
+fn status_of(state: &AppState, agent: &AgentSupervisor) -> StatusPayload {
     let info = state.registry.info();
     let cfg = info.as_ref().map(|i| i.config.clone());
     let computer_state = info.as_ref().map(|i| i.state);
     StatusPayload {
         core: "running",
-        model: "not_configured",
+        model: if state.model_configured {
+            "configured"
+        } else {
+            "not_configured"
+        },
+        active_task: agent.active().map(|t| t.to_string()),
         backend: state.registry.backend_kind().as_str(),
         computer_created: info.is_some(),
         computer_state,
@@ -280,25 +329,51 @@ fn status_of(state: &AppState) -> StatusPayload {
 }
 
 /// Status after pumping guest + display + lifecycle reconciliation.
+/// While a long operation holds the state, returns the cached status
+/// (refreshed by the background pump) instead of queueing behind it.
 #[tauri::command]
-pub async fn get_status(state: tauri::State<'_, SharedState>) -> Result<StatusPayload, String> {
-    with_state(state.inner().clone(), |s| {
-        s.registry.pump();
-        Ok(status_of(s))
+pub async fn get_status(
+    state: tauri::State<'_, SharedState>,
+    cache: tauri::State<'_, StatusCache>,
+    agent: tauri::State<'_, AgentSupervisor>,
+) -> Result<StatusPayload, String> {
+    let shared = state.inner().clone();
+    let cache = cache.inner().clone();
+    let agent = agent.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if pump_if_idle(&shared, &cache, &agent) {
+            if let Some(status) = cache.get() {
+                return Ok(status);
+            }
+        }
+        if let Some(status) = cache.get() {
+            return Ok(status);
+        }
+        let mut guard = lock_state(&shared);
+        guard.registry.pump();
+        guard.sync_history();
+        let status = status_of(&guard, &agent);
+        cache.store(status.clone());
+        Ok(status)
     })
     .await
+    .map_err(|e| format!("background task failed: {e}"))?
 }
 
 /// Event-driven refresh: call on `pegoles://display-activity` (native
 /// display wake) or any other nudge. Same work as `get_status`, plus the
 /// events this pump published.
 #[tauri::command]
-pub async fn pump(state: tauri::State<'_, SharedState>) -> Result<PumpPayload, String> {
-    with_state(state.inner().clone(), |s| {
+pub async fn pump(
+    state: tauri::State<'_, SharedState>,
+    agent: tauri::State<'_, AgentSupervisor>,
+) -> Result<PumpPayload, String> {
+    let agent = agent.inner().clone();
+    with_state(state.inner().clone(), move |s| {
         let events = s.registry.pump();
         Ok(PumpPayload {
             events,
-            status: status_of(s),
+            status: status_of(s, &agent),
         })
     })
     .await
@@ -639,6 +714,8 @@ pub async fn list_tasks(state: tauri::State<'_, SharedState>) -> Result<Vec<Agen
 /// control → guest dispatch → lifecycle events). `task_id` attaches the
 /// action to a task for audit; when omitted an ephemeral id is used and
 /// the audit still records the computer + verb (no fake task linkage).
+/// Debug builds only (Design Lab); the product path is `run_task`.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn execute_action(
     state: tauri::State<'_, SharedState>,
@@ -670,8 +747,10 @@ pub async fn execute_action(
 pub async fn cancel_agent_input(
     state: tauri::State<'_, SharedState>,
     script: tauri::State<'_, ScriptCancel>,
+    agent: tauri::State<'_, AgentSupervisor>,
 ) -> Result<(), String> {
     script.trip();
+    agent.cancel(None);
     with_state(state.inner().clone(), |s| {
         s.registry.cancel_agent_input("user requested cancel");
         Ok(())
@@ -694,14 +773,19 @@ pub struct CapturedFramePayload {
 pub async fn capture_screen(
     state: tauri::State<'_, SharedState>,
 ) -> Result<CapturedFramePayload, String> {
-    with_state(state.inner().clone(), |s| {
+    let (meta, bytes) = with_state(state.inner().clone(), |s| {
         let mut out = Vec::new();
-        let meta = s.registry.capture_frame("dev-capture", &mut out)?;
+        let meta = s.registry.capture_frame("preview", &mut out)?;
         let (_, bytes) = s
             .registry
             .last_frame_bytes()
             .ok_or_else(|| "frame cache lost".to_string())?;
-        let png = pegoles_computer::encode_png_rgba(meta.width_px, meta.height_px, &bytes)
+        Ok((meta, bytes))
+    })
+    .await?;
+    // Encode with the app state released.
+    tauri::async_runtime::spawn_blocking(move || {
+        let png = pegoles_computer::encode_png_rgb_fast(meta.width_px, meta.height_px, &bytes)
             .map_err(|e| e.to_string())?;
         Ok(CapturedFramePayload {
             meta,
@@ -709,10 +793,12 @@ pub async fn capture_screen(
         })
     })
     .await
+    .map_err(|e| format!("background task failed: {e}"))?
 }
 
 /// Run a deterministic action script (dev/test only). Acquires Agent
 /// control once, aborts on first terminal failure, always releases.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn run_input_script(
     state: tauri::State<'_, SharedState>,
@@ -742,6 +828,7 @@ pub async fn run_input_script(
 
 /// The deterministic smoke demo steps (precondition: the Pegoles input
 /// fixture runs fullscreen in the guest).
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn demo_script_steps() -> Result<Vec<pegoles_core::ScriptStep>, String> {
     Ok(pegoles_core::pegoles_demo_script())
@@ -832,6 +919,128 @@ pub async fn input_audit(
     .await
 }
 
+// --- agent runs + model settings --------------------------------------
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct ModelSettingsPayload {
+    /// Whether an API key is available. The key itself never leaves Rust.
+    pub configured: bool,
+    pub key_source: Option<crate::agent::KeySource>,
+    pub model: String,
+    pub effort: String,
+    pub models: Vec<&'static str>,
+    pub efforts: Vec<&'static str>,
+}
+
+fn model_settings_payload() -> ModelSettingsPayload {
+    let settings = crate::agent::load_settings();
+    let key_source = crate::agent::load_api_key().map(|(_, source)| source);
+    ModelSettingsPayload {
+        configured: key_source.is_some(),
+        key_source,
+        model: settings.model,
+        effort: settings.effort,
+        models: pegoles_agent::anthropic::SUPPORTED_MODELS.to_vec(),
+        efforts: pegoles_agent::anthropic::EFFORTS.to_vec(),
+    }
+}
+
+/// Keychain + settings file I/O happen off the main thread; the cached
+/// `model_configured` flag feeds `get_status`.
+async fn settings_op(
+    shared: SharedState,
+    op: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<ModelSettingsPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        op()?;
+        let payload = model_settings_payload();
+        lock_state(&shared).model_configured = payload.configured;
+        Ok(payload)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_model_settings(
+    state: tauri::State<'_, SharedState>,
+) -> Result<ModelSettingsPayload, String> {
+    settings_op(state.inner().clone(), || Ok(())).await
+}
+
+/// Store the Anthropic API key in the Keychain. The key is validated for
+/// shape only and is never echoed back, logged, or sent to the guest.
+#[tauri::command]
+pub async fn set_api_key(
+    state: tauri::State<'_, SharedState>,
+    key: String,
+) -> Result<ModelSettingsPayload, String> {
+    settings_op(state.inner().clone(), move || {
+        crate::agent::store_api_key(&key)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_api_key(
+    state: tauri::State<'_, SharedState>,
+) -> Result<ModelSettingsPayload, String> {
+    settings_op(state.inner().clone(), crate::agent::delete_api_key).await
+}
+
+#[tauri::command]
+pub async fn set_model_settings(
+    state: tauri::State<'_, SharedState>,
+    model: String,
+    effort: String,
+) -> Result<ModelSettingsPayload, String> {
+    settings_op(state.inner().clone(), move || {
+        crate::agent::save_settings(&crate::agent::ModelSettings { model, effort })
+    })
+    .await
+}
+
+/// Start the agent on a pending task. The run prepares the computer
+/// (create/boot/resume as needed), then loops observe → plan → act, with
+/// every action checked by Pegoles Policy.
+#[tauri::command]
+pub async fn run_task(
+    state: tauri::State<'_, SharedState>,
+    agent: tauri::State<'_, AgentSupervisor>,
+    task_id: String,
+) -> Result<(), String> {
+    let task: pegoles_protocol::TaskId = task_id.parse().map_err(|_| "invalid task id")?;
+    let shared = state.inner().clone();
+    let agent = agent.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bus = lock_state(&shared).bus.clone();
+        crate::agent::start_run(shared, bus, agent, task)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Stop a task: cancels its run (the current action is interrupted and
+/// held input released), or cancels it outright if it never started.
+#[tauri::command]
+pub async fn cancel_task(
+    state: tauri::State<'_, SharedState>,
+    agent: tauri::State<'_, AgentSupervisor>,
+    script: tauri::State<'_, ScriptCancel>,
+    task_id: String,
+) -> Result<(), String> {
+    let task: pegoles_protocol::TaskId = task_id.parse().map_err(|_| "invalid task id")?;
+    if agent.cancel(Some(task)) {
+        script.trip();
+        return Ok(());
+    }
+    with_state(state.inner().clone(), move |s| {
+        s.tasks.cancel_task(&task).map(|_| ()).map_err(err)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,7 +1072,7 @@ mod tests {
     #[test]
     fn status_payload_flattens_the_computer_view() {
         let mut s = state();
-        let v = serde_json::to_value(status_of(&s)).unwrap();
+        let v = serde_json::to_value(status_of(&s, &AgentSupervisor::default())).unwrap();
         for key in [
             "computer_state",
             "guest_state",
@@ -889,7 +1098,7 @@ mod tests {
         assert_eq!(v["graphical_session"]["state"], "unavailable");
         s.registry.create_default().unwrap();
         s.registry.start().unwrap();
-        let v = serde_json::to_value(status_of(&s)).unwrap();
+        let v = serde_json::to_value(status_of(&s, &AgentSupervisor::default())).unwrap();
         assert_eq!(v["viewport_state"], "ready");
         assert_eq!(v["display_available"], false);
         assert_eq!(v["display_config"], serde_json::Value::Null);

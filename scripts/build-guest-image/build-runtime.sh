@@ -9,7 +9,7 @@ OUT="${1:-/tmp/pgbuild}"
 
 docker run --rm --platform linux/arm64 \
   -v "$ROOT:/work" -v "$OUT:/out" -w /work rust:1.89-bookworm bash -c "
-    cargo build -p pegoles-guest-runtime --release \
+    cargo build -p pegoles-guest-runtime --release --locked \
       --target aarch64-unknown-linux-gnu --target-dir /tmp/gt &&
     cp /tmp/gt/aarch64-unknown-linux-gnu/release/pegoles-guest-runtime /out/ &&
     /out/pegoles-guest-runtime --version

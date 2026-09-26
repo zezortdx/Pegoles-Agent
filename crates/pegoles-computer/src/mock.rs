@@ -237,6 +237,21 @@ impl ComputerBackend for MockComputerBackend {
         self.pressed.clone()
     }
 
+    /// With its input plane on, the mock is a test guest with a 64x36
+    /// screen (the size of the frames it captures).
+    fn graphical_session(&self) -> crate::guest::GraphicalSessionInfo {
+        if !self.input_available() {
+            return crate::guest::GraphicalSessionInfo::default();
+        }
+        crate::guest::GraphicalSessionInfo {
+            state: pegoles_protocol::GraphicalSessionState::Ready,
+            compositor: Some("mock".to_string()),
+            width_px: Some(64),
+            height_px: Some(36),
+            ..Default::default()
+        }
+    }
+
     fn input_capture_frame(
         &mut self,
         _request_id: &str,

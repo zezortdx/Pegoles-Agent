@@ -9,6 +9,14 @@ use serde::{Deserialize, Serialize};
 /// Canonical vsock port. Mirrored in the macOS helper and docs;
 /// this constant is the single source of truth — no magic numbers.
 pub const PEGOLES_VSOCK_PORT: u32 = 4050;
+/// Peer authentication on the host side: the guest runtime dials from a
+/// reserved vsock source port (<= this). Linux lets only a process with
+/// CAP_NET_BIND_SERVICE bind there, and only the runtime's systemd unit
+/// holds it, so no other guest process can impersonate the runtime.
+pub const GUEST_SOURCE_PORT_MAX: u32 = 1023;
+/// Lowest reserved source port the runtime tries (it walks down from
+/// `GUEST_SOURCE_PORT_MAX` while ports are still held by old sockets).
+pub const GUEST_SOURCE_PORT_MIN: u32 = 960;
 
 /// Wire protocol version spoken by this host release.
 pub const GUEST_PROTOCOL_VERSION: u32 = 1;

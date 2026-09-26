@@ -228,11 +228,42 @@ mod tests {
         (tmp, images, computers)
     }
 
+    /// A sealed Pegoles image for the active image id.
     fn seed_ready_image(images_dir: &Path) {
-        let dir = images_dir.join("pegoles-debian-13-arm64");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("base.raw"), b"fake-disk-bytes").unwrap();
-        std::fs::write(dir.join("base.raw.verified"), "abc123").unwrap();
+        std::fs::create_dir_all(images_dir).unwrap();
+        let work = images_dir.join("work.raw");
+        std::fs::write(&work, b"fake-disk-bytes").unwrap();
+        let mut input = crate::image::DerivedManifestInput::v0_1(
+            "13".into(),
+            "arm64".into(),
+            "0.1.0".into(),
+            1,
+            "sourcesha".into(),
+        );
+        input.image_id = crate::image::active_image_id();
+        crate::image::ComputerImageManager::new(images_dir.to_path_buf())
+            .publish_derived(&work, input)
+            .unwrap();
+    }
+
+    #[test]
+    fn create_never_boots_plain_debian_and_leaves_nothing_behind() {
+        // Only the official Debian artifact exists: a product create must
+        // fail closed (no Pegoles runtime inside), not boot it silently.
+        let (_tmp, images, computers) = test_dirs();
+        let official = images.join("pegoles-debian-13-arm64");
+        std::fs::create_dir_all(&official).unwrap();
+        std::fs::write(official.join("base.raw"), b"official").unwrap();
+        std::fs::write(official.join("base.raw.verified"), "abc").unwrap();
+        let transport: Box<dyn HostTransport> = Box::new(FakeTransport::new());
+        let mut b =
+            MacOSVirtualizationBackend::with_transport(images, computers.clone(), transport);
+        let err = b.create(default_config_for_test()).unwrap_err();
+        assert!(matches!(err, ComputerError::ImageMissing(_)), "{err:?}");
+        let leftovers = std::fs::read_dir(&computers)
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(leftovers, 0, "failed create must not leave a computer dir");
     }
 
     #[test]
@@ -279,11 +310,11 @@ mod tests {
             std::fs::read(dir.join("disk.img")).unwrap(),
             b"fake-disk-bytes"
         );
-        // base untouched
-        assert_eq!(
-            std::fs::read(images.join("pegoles-debian-13-arm64").join("base.raw")).unwrap(),
-            b"fake-disk-bytes"
-        );
+        // Sealed base untouched and still read-only.
+        let base = images
+            .join(crate::image::active_image_id())
+            .join("disk.raw");
+        assert_eq!(std::fs::read(&base).unwrap(), b"fake-disk-bytes");
     }
 
     #[test]

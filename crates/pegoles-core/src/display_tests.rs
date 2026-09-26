@@ -49,11 +49,22 @@ fn slot() -> DisplayGeometry {
     geo(240.0, 80.0, 1152.0, 720.0)
 }
 
-fn seed_official_image(images: &Path) {
-    let raw = pegoles_computer::ComputerImageManager::new(images.to_path_buf()).base_raw_path();
-    std::fs::create_dir_all(raw.parent().expect("image dir")).unwrap();
-    std::fs::write(&raw, b"fake-disk").unwrap();
-    std::fs::write(raw.with_file_name("base.raw.verified"), "abc").unwrap();
+/// A sealed Pegoles image for the active image id (fake bytes).
+fn seed_sealed_image(images: &Path) {
+    std::fs::create_dir_all(images).unwrap();
+    let work = images.join("work.raw");
+    std::fs::write(&work, b"fake-disk").unwrap();
+    let mut input = pegoles_computer::DerivedManifestInput::v0_1(
+        "13".into(),
+        "arm64".into(),
+        "0.1.0".into(),
+        1,
+        "sourcesha".into(),
+    );
+    input.image_id = pegoles_computer::active_image_id();
+    pegoles_computer::ComputerImageManager::new(images.to_path_buf())
+        .publish_derived(&work, input)
+        .unwrap();
 }
 
 /// Registry + scripted VM host + recording display, computer created.
@@ -81,7 +92,7 @@ impl Rig {
     fn with_config(display_config: Option<DisplayConfig>, install_display: bool) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let data = tmp.path().to_path_buf();
-        seed_official_image(&data.join("images"));
+        seed_sealed_image(&data.join("images"));
         let bus = EventBus::new();
         let rx = bus.subscribe();
         let mut registry = ComputerRegistry::with_dirs(bus, BackendKind::Mock, data.clone());
@@ -907,13 +918,14 @@ fn default_display_rules() {
 }
 
 fn write_derived_image(images: &Path, graphical: bool) {
-    let dir = images.join(pegoles_computer::PEGOLES_BASE_IMAGE_ID);
+    let image_id = pegoles_computer::active_image_id();
+    let dir = images.join(&image_id);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("disk.raw"), b"derived").unwrap();
     std::fs::write(dir.join("disk.raw.verified"), "abc").unwrap();
     let mut manifest = serde_json::json!({
-        "image_id": pegoles_computer::PEGOLES_BASE_IMAGE_ID,
-        "pegoles_image_version": "0.2",
+        "image_id": image_id,
+        "pegoles_image_version": "0.3",
         "debian_version": "13",
         "architecture": "arm64",
         "guest_runtime_version": "0.2.0",

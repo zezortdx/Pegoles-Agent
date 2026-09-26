@@ -1,6 +1,6 @@
 [package]
 name = "pegoles-guest-runtime"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Pegoles Guest Runtime v0.1: vsock handshake + heartbeat + system info (Linux ARM64 guest)"
 license = "MIT"

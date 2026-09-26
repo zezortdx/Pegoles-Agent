@@ -260,6 +260,36 @@ impl DeadKey {
 /// controls) returns `None` -> structured Unsupported, never silent
 /// substitution.
 pub fn compose_plan(ch: char) -> Option<Vec<KeyStroke>> {
+    // On `us(intl)` these ASCII keys are DEAD keys: typed alone they wait
+    // for a base letter, swallow the next key if it does not compose (so
+    // `"P` vanished and a trailing `"` ate Enter). Dead key + Space yields
+    // the literal character.
+    let literal_dead = match ch {
+        '\'' => Some(DeadKey::Acute),
+        '"' => Some(DeadKey::Diaeresis),
+        '`' => Some(DeadKey::Grave),
+        '~' => Some(DeadKey::Tilde),
+        '^' => Some(DeadKey::Circumflex),
+        _ => None,
+    };
+    // Line breaks and tabs in typed text are the Enter and Tab keys.
+    if ch == '\n' || ch == '\t' {
+        return Some(vec![KeyStroke {
+            keycode: if ch == '\n' { 28 } else { 15 },
+            shift: false,
+            right_alt: false,
+        }]);
+    }
+    if let Some(dead) = literal_dead {
+        return Some(vec![
+            dead.stroke(),
+            KeyStroke {
+                keycode: ascii_keycode(" ")?,
+                shift: false,
+                right_alt: false,
+            },
+        ]);
+    }
     if ch.is_ascii_graphic() || ch == ' ' {
         let keycode = ascii_keycode(&ch.to_string())?;
         return Some(vec![KeyStroke {
@@ -334,6 +364,17 @@ pub fn compose_plan(ch: char) -> Option<Vec<KeyStroke>> {
         right_alt: false,
     });
     Some(plan)
+}
+
+/// The character of a one-key chord naming a single printable char.
+pub fn single_char_key(keys: &[String]) -> Option<char> {
+    match keys {
+        [only] if only.chars().count() == 1 => {
+            let ch = only.chars().next()?;
+            (ch.is_ascii_graphic()).then_some(ch)
+        }
+        _ => None,
+    }
 }
 
 /// Scale guest pixels to touchscreen ABS units (0..=32767).
@@ -730,6 +771,17 @@ pub mod device {
                     let code = keycode(key).ok_or_else(|| format!("unknown key: {key}"))?;
                     self.key(code, *down);
                 }
+                GuestInputOp::Chord { keys } if single_char_key(keys).is_some() => {
+                    // One printable character (a model's `key "A"`, `key
+                    // "'"`): type it like text so Shift and the us(intl)
+                    // dead keys are handled exactly as in TypeText.
+                    let ch = single_char_key(keys).expect("guarded");
+                    let plan =
+                        compose_plan(ch).ok_or_else(|| format!("unsupported key: {ch:?}"))?;
+                    for s in plan {
+                        self.stroke(s);
+                    }
+                }
                 GuestInputOp::Chord { keys } => {
                     // Canonical order: modifiers down first (in listed
                     // order), main key tap, modifiers released reversed.
@@ -817,6 +869,30 @@ mod tests {
     }
 
     #[test]
+    fn single_character_keys_use_the_typing_plan() {
+        assert_eq!(single_char_key(&["A".into()]), Some('A'));
+        assert_eq!(single_char_key(&["'".into()]), Some('\''));
+        assert_eq!(single_char_key(&["Enter".into()]), None);
+        assert_eq!(single_char_key(&["Control".into(), "c".into()]), None);
+        assert!(compose_plan('A').unwrap()[0].shift);
+    }
+
+    #[test]
+    fn dead_key_ascii_types_literally_via_space() {
+        // Regression (hardware 2026-09-26): `echo "Pegoles"` arrived as
+        // `echo egoles` and the trailing quote swallowed Enter.
+        for ch in ['\'', '"', '`', '~', '^'] {
+            let plan = compose_plan(ch).unwrap();
+            assert_eq!(plan.len(), 2, "{ch:?}");
+            assert_eq!(plan[1].keycode, ascii_keycode(" ").unwrap(), "{ch:?}");
+            assert!(!plan[1].shift && !plan[1].right_alt);
+        }
+        // Plain ASCII stays a single stroke.
+        assert_eq!(compose_plan('P').unwrap().len(), 1);
+        assert_eq!(compose_plan('!').unwrap().len(), 1);
+    }
+
+    #[test]
     fn portuguese_italian_accents_compose() {
         // "Pegolés à italiana ção" building blocks.
         let plan = compose_plan('é').unwrap();
@@ -833,7 +909,9 @@ mod tests {
         assert!(compose_plan('ß').is_none());
         assert!(compose_plan('œ').is_none());
         assert!(compose_plan('中').is_none());
-        assert!(compose_plan('\n').is_none());
+        assert_eq!(compose_plan('\n').unwrap()[0].keycode, 28);
+        assert_eq!(compose_plan('\t').unwrap()[0].keycode, 15);
+        assert!(compose_plan('\r').is_none());
     }
 
     #[test]

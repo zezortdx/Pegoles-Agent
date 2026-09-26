@@ -8,7 +8,7 @@ OUT="${1:-/tmp/pgbuild}"
 
 docker run --rm --platform linux/arm64 \
   -v "$ROOT:/work" -v "$OUT:/out" -w /work rust:1.89-bookworm bash -c "
-    cargo build --manifest-path guest/fixture/Cargo.toml --release \
+    cargo build --manifest-path guest/fixture/Cargo.toml --release --locked \
       --target aarch64-unknown-linux-gnu --target-dir /tmp/gf &&
     cp /tmp/gf/aarch64-unknown-linux-gnu/release/pegoles-input-fixture /out/ &&
     file /out/pegoles-input-fixture

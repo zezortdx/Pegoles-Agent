@@ -1,8 +1,10 @@
-//! Phase 5.1 hardware verification: full Core stack against Image v2.
+//! Hardware verification: full Core stack against the product image.
 //!
 //! ```sh
-//! PEGOLES_IMAGE_ID=pegoles-base-0.2 cargo run -p pegoles-computer --example v2_verify
+//! cargo run -p pegoles-core --example v2_verify   # PEGOLES_IMAGE_ID to override
 //! ```
+//!
+//! `PEGOLES_VERIFY_PNG=/path/out.png` saves the last observed frame.
 //!
 //! Boots v2, waits for GuestReady + graphical Ready, prints advertised
 //! capabilities, then runs the deterministic demo script through the REAL
@@ -17,8 +19,7 @@ use pegoles_protocol::GuestRuntimeState;
 use std::time::{Duration, Instant};
 
 fn main() {
-    let image_id = std::env::var("PEGOLES_IMAGE_ID").unwrap_or_else(|_| "pegoles-base-0.1".into());
-    println!("image: {image_id}");
+    println!("image: {}", pegoles_computer::active_image_id());
     let bus = EventBus::new();
     let mut registry = ComputerRegistry::with_backend_kind(bus, BackendKind::MacOSVirtualization);
     // TestDisplay adapter: marks a display as available so VZ attaches a
@@ -39,7 +40,7 @@ fn main() {
         let pumped = registry.pump();
         for e in &pumped {
             let v = serde_json::to_value(e).expect("event serializes");
-            println!("pump event: {}", v["type"].as_str().unwrap_or("?"));
+            println!("pump event: {v}");
         }
         let guest = registry.guest_state();
         let session = registry.graphical_session();
@@ -77,7 +78,13 @@ fn main() {
         println!("unavailable: {}: {}", d.capability, d.reason);
     }
     if !registry.input_available() {
-        eprintln!("V2 VERIFY FAIL: input plane unavailable on v2 image");
+        eprintln!("V2 VERIFY FAIL: input plane unavailable");
+        if let Ok(log) = registry.read_boot_log(80) {
+            for line in log.tail {
+                eprintln!("serial: {line}");
+            }
+        }
+        let _ = registry.destroy();
         std::process::exit(2);
     }
 
@@ -112,6 +119,7 @@ fn main() {
     );
     if report.aborted_at.is_some() || report.steps_executed != report.steps_total {
         eprintln!("V2 VERIFY FAIL: demo aborted");
+        let _ = registry.destroy();
         std::process::exit(2);
     }
     // State assertions: released control, clean pressed, audit rows.
@@ -119,6 +127,19 @@ fn main() {
     assert!(registry.input_status().pressed_clean, "pressed state dirty");
     println!("state after demo: control released, pressed clean");
 
+    if let (Ok(path), Some((meta, rgba))) = (
+        std::env::var("PEGOLES_VERIFY_PNG"),
+        registry.last_frame_bytes(),
+    ) {
+        let png = pegoles_computer::encode_png_rgba(meta.width_px, meta.height_px, &rgba)
+            .expect("encode png");
+        std::fs::write(&path, png).expect("write png");
+        println!(
+            "last frame {}x{} saved to {path}",
+            meta.width_px, meta.height_px
+        );
+    }
     registry.stop().expect("stop");
+    registry.destroy().expect("destroy");
     println!("V2 VERIFY DONE");
 }

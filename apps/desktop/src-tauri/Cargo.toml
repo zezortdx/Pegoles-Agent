@@ -22,6 +22,7 @@ pegoles-guest-proto = { path = "../../../crates/pegoles-guest-proto" }
 pegoles-computer = { workspace = true }
 pegoles-policy = { workspace = true }
 pegoles-core = { workspace = true }
+pegoles-agent = { workspace = true }
 
 # macOS only: in-process VM host + native framebuffer display. Never a
 # dependency of the shared crates (they stay platform-free).
@@ -30,6 +31,8 @@ pegoles-macos-embed = { path = "../../../native/macos/pegoles-macos-embed" }
 # Public AppKit only: the system accessibility display options (Reduce
 # Transparency, Increase Contrast), which WKWebView does not expose to CSS.
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility"] }
+# Keychain storage for the model API key (never a file, never the webview).
+security-framework = "3"
 
 [features]
 default = ["custom-protocol"]

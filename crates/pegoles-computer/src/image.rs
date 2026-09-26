@@ -89,19 +89,27 @@ pub const PEGOLES_IMAGE_VERSION: &str = "0.1";
 /// beside v0.1, never over it.
 pub const PEGOLES_BASE_IMAGE_ID_V2: &str = "pegoles-base-0.2";
 pub const PEGOLES_IMAGE_VERSION_V2: &str = "0.2";
+/// Third derived image: v0.2 + authenticated guest runtime (reserved
+/// vsock source port), correct frame channel order, workspace terminal
+/// instead of the dev fixture, network/remote-login services disabled.
+pub const PEGOLES_BASE_IMAGE_ID_V3: &str = "pegoles-base-0.3";
+pub const PEGOLES_IMAGE_VERSION_V3: &str = "0.3";
+/// The image a normal create boots. Older images predate the runtime
+/// authentication the host now requires and cannot connect.
+pub const PEGOLES_PRODUCT_IMAGE_ID: &str = PEGOLES_BASE_IMAGE_ID_V3;
 /// Env override selecting the boot image (dev/provisioning). Unset →
-/// v0.1 (unchanged default). Unknown values fail closed (missing dir →
+/// the product image. Unknown values fail closed (missing dir →
 /// `Missing`, never a silent fallback to another image).
 pub const IMAGE_ID_ENV: &str = "PEGOLES_IMAGE_ID";
 
-/// Which derived image this process boots. v0.1 unless overridden.
-/// Unknown values are returned as-is: their directory does not exist,
-/// so status resolves to `Missing` with an explicit error (fail closed,
-/// never a silent fallback to another image).
+/// Which derived image this process boots: the product image unless
+/// overridden. Unknown values are returned as-is: their directory does
+/// not exist, so status resolves to `Missing` with an explicit error
+/// (fail closed, never a silent fallback to another image).
 pub fn active_image_id() -> String {
     match std::env::var(IMAGE_ID_ENV).map(|v| v.trim().to_string()) {
         Ok(v) if !v.is_empty() => v,
-        _ => PEGOLES_BASE_IMAGE_ID.to_string(),
+        _ => PEGOLES_PRODUCT_IMAGE_ID.to_string(),
     }
 }
 
@@ -689,8 +697,9 @@ impl ComputerImageManager {
         }
         if !allow_official {
             return Err(ComputerError::ImageMissing(format!(
-                "{} has no {:?} artifact and official fallback is disabled",
-                PEGOLES_BASE_IMAGE_ID, format
+                "Pegoles image {} is not installed ({:?})",
+                active_image_id(),
+                format
             )));
         }
         Ok(BootSource::Official(self.load()?))
@@ -838,6 +847,13 @@ pub struct DerivedManifestInput {
 }
 
 impl DerivedManifestInput {
+    /// Same input, sealed as the image this process boots (tests).
+    #[cfg(test)]
+    pub(crate) fn for_active_image(mut self) -> Self {
+        self.image_id = active_image_id();
+        self
+    }
+
     /// v0.1-shaped input (headless, no caps): preserves legacy call sites.
     pub fn v0_1(
         debian_version: String,
@@ -910,16 +926,27 @@ struct DerivedPaths {
     manifest: PathBuf,
 }
 
+/// Clone the sealed base into a private per-computer disk (APFS clone
+/// on macOS via `fs::copy`). Source and destination must be regular
+/// files; the copy is owner-only (0600) inside an owner-only dir.
 fn instantiate_from(src_raw: &Path, dest_disk: &Path) -> Result<()> {
+    require_regular_file(src_raw)?;
     if let Some(parent) = dest_disk.parent() {
         fs::create_dir_all(parent).map_err(|e| ComputerError::Backend(e.to_string()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
+    }
+    if fs::symlink_metadata(dest_disk).is_ok() {
+        require_regular_file(dest_disk)?;
     }
     fs::copy(src_raw, dest_disk).map_err(|e| ComputerError::Backend(e.to_string()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let dest_rw = fs::Permissions::from_mode(0o644);
-        fs::set_permissions(dest_disk, dest_rw)
+        fs::set_permissions(dest_disk, fs::Permissions::from_mode(0o600))
             .map_err(|e| ComputerError::Backend(e.to_string()))?;
     }
     Ok(())
@@ -1047,8 +1074,20 @@ pub fn check_kernel_config(config_text: &str) -> GuestKernelCapabilities {
     }
 }
 
+/// HTTPS-only agent with bounded redirects: a redirect can never
+/// downgrade the official download to plain HTTP.
+fn download_agent() -> ureq::Agent {
+    ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .https_only(true)
+            .max_redirects(5)
+            .build(),
+    )
+}
+
 fn http_get_text(url: &str) -> Result<String> {
-    let mut res = ureq::get(url)
+    let mut res = download_agent()
+        .get(url)
         .call()
         .map_err(|e| ComputerError::Backend(format!("download failed for {url}: {e}")))?;
     res.body_mut()
@@ -1090,7 +1129,17 @@ pub fn sha512_file(path: &Path) -> Result<String> {
 }
 
 fn download_to(url: &str, dest_part: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-    let mut res = ureq::get(url)
+    download_with(&download_agent(), url, dest_part, progress)
+}
+
+fn download_with(
+    agent: &ureq::Agent,
+    url: &str,
+    dest_part: &Path,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<()> {
+    let mut res = agent
+        .get(url)
         .call()
         .map_err(|e| ComputerError::Backend(format!("download failed for {url}: {e}")))?;
     let total: u64 = res
@@ -1121,10 +1170,15 @@ fn download_to(url: &str, dest_part: &Path, progress: &mut dyn FnMut(u64, u64)) 
 }
 
 fn extract_tar_xz(archive: &Path, dest_dir: &Path) -> Result<()> {
-    // System bsdtar handles xz; this is first-party installer behavior.
+    // System bsdtar handles xz; this is first-party installer behavior
+    // with fixed arguments. bsdtar refuses absolute and `..` member paths
+    // by default; ownership/permission bits from the archive are ignored.
     let status = std::process::Command::new("/usr/bin/tar")
+        .env_clear()
         .arg("-xJf")
         .arg(archive)
+        .arg("--no-same-owner")
+        .arg("--no-same-permissions")
         .arg("-C")
         .arg(dest_dir)
         .status()
@@ -1137,15 +1191,31 @@ fn extract_tar_xz(archive: &Path, dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The `.raw` member of an extracted archive. Regular files only: a
+/// symlink member (e.g. pointing at a host secret) is never followed.
 fn find_extracted_raw(dir: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("raw") && path.is_file() {
+        let regular = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if regular && path.extension().and_then(|e| e.to_str()) == Some("raw") {
             return Some(path);
         }
     }
     None
+}
+
+/// Refuse anything but a regular file (never follow a symlink).
+fn require_regular_file(path: &Path) -> Result<()> {
+    let meta = fs::symlink_metadata(path).map_err(|e| ComputerError::Backend(e.to_string()))?;
+    if meta.file_type().is_file() {
+        Ok(())
+    } else {
+        Err(ComputerError::ImageVerificationFailed(format!(
+            "{} is not a regular file",
+            path.display()
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -1227,7 +1297,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o644, "instance disk must be writable");
+            assert_eq!(mode, 0o600, "instance disk: owner read-write only");
         }
     }
 
@@ -1250,15 +1320,48 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out.bin");
         let mut seen = vec![];
-        download_to(&format!("http://{addr}/file.bin"), &dest, &mut |d, t| {
-            seen.push((d, t))
-        })
+        // Plain-HTTP agent for the loopback fixture only; production
+        // downloads always go through the HTTPS-only agent.
+        download_with(
+            &ureq::Agent::new_with_defaults(),
+            &format!("http://{addr}/file.bin"),
+            &dest,
+            &mut |d, t| seen.push((d, t)),
+        )
         .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&dest).unwrap().len(), len);
         let (last_d, last_t) = seen.last().copied().unwrap();
         assert_eq!(last_d as usize, len);
         assert_eq!(last_t as usize, len);
+    }
+
+    #[test]
+    fn production_downloads_refuse_plain_http() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = download_to(
+            "http://127.0.0.1:9/never.bin",
+            &dir.path().join("x"),
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, ComputerError::Backend(_)));
+        assert!(!dir.path().join("x").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instantiate_refuses_symlinked_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        fs::write(&secret, b"host secret").unwrap();
+        let link = dir.path().join("base.raw");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let dest = dir.path().join("vm").join("disk.img");
+        assert!(instantiate_from(&link, &dest).is_err());
+        assert!(!dest.exists());
+        // Extraction lookup never returns a symlinked .raw either.
+        assert!(find_extracted_raw(dir.path()).is_none());
     }
 
     #[test]
@@ -1360,10 +1463,10 @@ mod tests {
     }
 
     #[test]
-    fn active_image_id_defaults_to_v0_1() {
+    fn active_image_id_defaults_to_the_product_image() {
         let saved = std::env::var(IMAGE_ID_ENV).ok();
         std::env::remove_var(IMAGE_ID_ENV);
-        assert_eq!(active_image_id(), PEGOLES_BASE_IMAGE_ID);
+        assert_eq!(active_image_id(), PEGOLES_PRODUCT_IMAGE_ID);
         std::env::set_var(IMAGE_ID_ENV, PEGOLES_BASE_IMAGE_ID_V2);
         assert_eq!(active_image_id(), PEGOLES_BASE_IMAGE_ID_V2);
         // Unknown ids fail closed downstream (missing dir), never remap.
@@ -1497,7 +1600,8 @@ mod tests {
                 "0.1.0".into(),
                 1,
                 "sourcesha".into(),
-            ),
+            )
+            .for_active_image(),
         )
         .unwrap();
         assert_eq!(mgr.derived_status(), ImageStatus::Ready);
@@ -1584,10 +1688,11 @@ mod tests {
                     "0.1.0".into(),
                     1,
                     "sourcesha".into(),
-                ),
+                )
+                .for_active_image(),
             )
             .unwrap();
-        assert_eq!(manifest.image_id, PEGOLES_BASE_IMAGE_ID);
+        assert_eq!(manifest.image_id, active_image_id());
         assert_eq!(manifest.source_image_sha512, "sourcesha");
         assert_ne!(manifest.image_sha512, manifest.source_image_sha512);
         assert_eq!(manifest.image_sha512.len(), 128);

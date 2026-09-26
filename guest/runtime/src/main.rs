@@ -36,9 +36,13 @@ use std::time::Duration;
 mod vsock {
     use crate::connector::resolve_host_endpoint;
 
-    /// AF_VSOCK connect to the resolved host endpoint.
+    /// AF_VSOCK connect to the resolved host endpoint from a RESERVED
+    /// source port. The host accepts only ports <= GUEST_SOURCE_PORT_MAX,
+    /// which Linux lets only CAP_NET_BIND_SERVICE holders bind: that
+    /// capability is what authenticates this process as the runtime.
     pub fn connect(port: u32) -> std::io::Result<std::os::fd::OwnedFd> {
-        use std::os::fd::FromRawFd;
+        use pegoles_guest_proto::{GUEST_SOURCE_PORT_MAX, GUEST_SOURCE_PORT_MIN};
+        use std::os::fd::{AsRawFd, FromRawFd};
         let endpoint = resolve_host_endpoint();
         debug_assert_eq!(port, endpoint.port);
         let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) };
@@ -47,18 +51,47 @@ mod vsock {
         }
         // SAFETY: fd is a fresh, owned socket (or we return early above).
         let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
-        addr.svm_family = libc::AF_VSOCK as u16;
-        addr.svm_cid = endpoint.host_cid;
-        addr.svm_port = endpoint.port;
+        let vm_addr = |cid: u32, port: u32| {
+            // SAFETY: sockaddr_vm is plain old data; zero is a valid value.
+            let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+            addr.svm_family = libc::AF_VSOCK as u16;
+            addr.svm_cid = cid;
+            addr.svm_port = port;
+            addr
+        };
+        let len = std::mem::size_of::<libc::sockaddr_vm>() as u32;
+        let mut bound = Err(std::io::Error::from(std::io::ErrorKind::AddrInUse));
+        for source in (GUEST_SOURCE_PORT_MIN..=GUEST_SOURCE_PORT_MAX).rev() {
+            let local = vm_addr(libc::VMADDR_CID_ANY, source);
+            // SAFETY: valid fd and a correctly sized sockaddr_vm.
+            let ret = unsafe {
+                libc::bind(
+                    owned.as_raw_fd(),
+                    &local as *const _ as *const libc::sockaddr,
+                    len,
+                )
+            };
+            if ret == 0 {
+                bound = Ok(());
+                break;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::AddrInUse {
+                // EACCES: the unit did not grant CAP_NET_BIND_SERVICE.
+                bound = Err(err);
+                break;
+            }
+        }
+        bound?;
+        let remote = vm_addr(endpoint.host_cid, endpoint.port);
+        // SAFETY: valid fd and a correctly sized sockaddr_vm.
         let ret = unsafe {
             libc::connect(
                 owned.as_raw_fd(),
-                &addr as *const _ as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_vm>() as u32,
+                &remote as *const _ as *const libc::sockaddr,
+                len,
             )
         };
-        use std::os::fd::AsRawFd;
         if ret != 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -300,12 +333,13 @@ fn serve_inner(
     let mut reader = BufReader::new(unsafe { std::fs::File::from_raw_fd(read_fd) });
     let mut writer = unsafe { std::fs::File::from_raw_fd(fd) };
     // Heartbeat-class wakeups for the capability monitor: a quiet
-    // connection still re-checks cheap signals every 10 s (never
-    // pixels). Uses the raw fd (BufReader has no timeout API).
+    // connection still re-checks cheap signals every 2 s (never pixels:
+    // file reads + one Wayland registry roundtrip). Uses the raw fd
+    // (BufReader has no timeout API).
     {
         use std::os::fd::AsRawFd;
         let tv = libc::timeval {
-            tv_sec: 10,
+            tv_sec: 2,
             tv_usec: 0,
         };
         unsafe {
@@ -441,8 +475,8 @@ fn serve_inner(
                     // request id, ok=false) so the host fails fast instead
                     // of timing out a 30 s transfer.
                     match capture::capture() {
-                        Ok((width_px, height_px, mut pixels)) => {
-                            capture::argb_to_rgba(&mut pixels);
+                        // `capture()` already returns RGBA (see capture.rs).
+                        Ok((width_px, height_px, pixels)) => {
                             let total = match capture::chunk_count(pixels.len()) {
                                 Ok(n) => n,
                                 Err(e) => {
@@ -534,6 +568,13 @@ fn main() {
         );
         return;
     }
+    // Not dumpable: other processes of the same guest user (GUI apps)
+    // cannot ptrace us or read our memory to borrow the reserved-port
+    // capability or the live control connection.
+    // SAFETY: prctl with integer arguments only.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     // The uinput device lives for the whole process (reused across
     // reconnects). Open lazily: a missing /dev/uinput simply means no
     // "input" capability is advertised — never a crash.
@@ -543,7 +584,11 @@ fn main() {
     // Persistent across connections: capability-flip reconnect budget
     // converges instead of looping on persistent disagreement.
     let mut flips = FlipBudget::new();
-    // Capped backoff: 1,2,4,8,15,30,30…s. Retries continue while the
+    // First boot: the compositor usually starts a moment after us. Give
+    // it a bounded head start so the first hello can already advertise
+    // frame capture (otherwise the host waits for a capability flip).
+    wait_for_compositor(Duration::from_secs(15));
+    // Capped backoff: 1,2,4,5,5…s. Retries continue while the
     // process lives; systemd Restart=on-failure covers real crashes.
     // Exit codes: 0 only on clean shutdown paths (none currently — the
     // loop is infinite by design; SIGTERM from systemd ends us).
@@ -573,13 +618,27 @@ fn main() {
             }
         }
         // A long-lived connection means the setup works: retry fast next
-        // time. Quick failures back off exponentially, capped at 30 s.
+        // time. Quick failures back off exponentially, capped at 5 s so a
+        // runtime restart reconnects within seconds.
         if started.elapsed() > Duration::from_secs(60) {
             backoff = Duration::from_secs(1);
         } else {
-            backoff = std::cmp::min(backoff * 2, Duration::from_secs(30));
+            backoff = std::cmp::min(backoff * 2, Duration::from_secs(5));
         }
         std::thread::sleep(backoff);
+    }
+}
+
+/// Wait until the Wayland socket exists, at most `max`. Returns early on
+/// headless images (no WAYLAND_DISPLAY configured).
+#[cfg(target_os = "linux")]
+fn wait_for_compositor(max: Duration) {
+    let Some(path) = capture::display_socket_path() else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + max;
+    while !std::path::Path::new(&path).exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
