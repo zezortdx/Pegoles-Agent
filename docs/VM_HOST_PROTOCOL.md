@@ -83,3 +83,22 @@ capabilities and optional fields (e.g. `CreateParams.seed_iso_path`,
 `macStart` forks. Guest channel events (`guest_connected/guest_frame/
 guest_disconnected`) have the same shape on virtio and Hyper-V sockets;
 only the transport underneath differs (`WINDOWS_BACKEND.md`).
+
+## Guest connection rules (0.1 hardening)
+
+- A computer has at most one live guest connection. A new connection from
+  the reserved port range supersedes the old one: the helper shuts the old
+  socket down (SHUT_RDWR) before closing it and emits
+  `guest_disconnected` with reason `superseded` before `guest_connected`,
+  in that order. Core then requires a fresh `GuestHello` handshake; the
+  new connection inherits nothing from the old one.
+- A `GuestHello` repeated on an already greeted connection is a protocol
+  violation (kick + error), not a new handshake.
+- Per guest link (not per connection): a line token bucket (10k lines/s,
+  20k burst) on a monotonic clock, and a rate limit on accepts (burst 8,
+  0.5/s), so reconnecting cannot refill either.
+- Rust bounds each pump by lines (2048) and bytes (8 MiB), keeps at most
+  64 queued host actions per connection (overflow: kick + error), never
+  sends from inside another helper call, and gives every helper call one
+  overall deadline that guest traffic cannot extend.
+

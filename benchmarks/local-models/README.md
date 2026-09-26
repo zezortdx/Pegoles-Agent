@@ -84,7 +84,7 @@ python3 benchmarks/local-models/summarize.py benchmarks/local-models/runs/<name>
 
 Models must be installed first
 (`cargo run -p pegoles-inference --example models -- install <id>`),
-and the runtime set up (`scripts/local-model/setup-runtime.sh`).
+and the runtime built (`scripts/local-model/build-runtime.sh`).
 
 ## Results (M4 Pro 24 GB, image `pegoles-base-0.3` with the capture-leak fix, 2026-09-26)
 

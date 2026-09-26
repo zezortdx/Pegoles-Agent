@@ -194,12 +194,19 @@ conversion).
 
 ## Runtime (Python + MLX)
 
-`<data>/runtime/mlx-venv`, created by `scripts/local-model/setup-runtime.sh`
-from `workers/mlx/requirements.lock` (every package pinned to a version
-and to its PyPI SHA-256 digests; wheels only). The app reports
-"runtime missing" when absent. Shipping the runtime inside the app
-bundle (or a verified runtime download) is not done yet — see
-`docs/PROJECT_STATE.md`.
+Shipped inside the app at `Contents/Resources/runtime/python`, built by
+`scripts/local-model/build-runtime.sh`: python-build-standalone CPython
+3.12.14 (release 20260924, pinned by SHA-256) plus exactly the 33 wheels in
+`workers/mlx/requirements.lock` (every file pinned by SHA-256, wheels only,
+`--no-deps`; the server, audio, OpenCV, SciPy and CLI extras of mlx-vlm
+are not shipped because the worker never imports them). pip, setuptools,
+console scripts, the test suite and Tk are removed; bytecode is
+precompiled with hash-checked `.pyc`, so two builds produce the same tree
+digest (`runtime-manifest.json`). The app never runs pip, never resolves
+dependencies and never downloads Python code. Release builds run only
+this interpreter; debug builds also find `target/pegoles-runtime`.
+Licenses of everything shipped: `THIRD_PARTY_NOTICES.md` in the bundle
+(`scripts/release/third-party-notices.sh`).
 
 ## Model choice
 

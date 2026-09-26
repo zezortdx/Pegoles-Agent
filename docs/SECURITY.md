@@ -23,12 +23,13 @@ document states what is enforced today, where, and what is not.
 | Boundary | Trust | Enforcement |
 |---|---|---|
 | Model → host | untrusted (local and cloud alike) | model output is parsed into typed actions only — cloud: `pegoles-agent/src/anthropic.rs::translate`; local: `pegoles-agent/src/local/parse.rs` (exactly one tool call, allow-listed keys, bounded finite coordinates, no control/bidi/zero-width text); unknown tools, out-of-screen coordinates and unsupported members become error results, never actions |
-| Local model worker → host | untrusted process | `workers/mlx/pegoles_mlx_worker.py` runs under `sandbox-exec` (mandatory; missing → Pegoles Local refuses to run): no network (TCP and DNS verified denied), no file contents under `$HOME` except the runtime, the model store and the worker script, no writes except the per-user temp/cache area; cleared environment (no API key), `python -I`; replies bounded (1 MiB/line), invalid or oversized → killed; timeouts and unhonored cancels → killed |
-| Model files → worker | untrusted bytes | compiled-in catalog pins repository commit and SHA-256 of every file; only safetensors/JSON/text/Jinja files; any model JSON with `auto_map`/`custom_pipelines` refused; full re-hash before load; transformers' dynamic-module loader disabled in the worker, `trust_remote_code=False` |
+| Local model worker → host | untrusted process | the interpreter shipped in the signed bundle only (`Contents/Resources/runtime`); `workers/mlx/pegoles_mlx_worker.py` runs under `sandbox-exec` (mandatory; missing → Pegoles Local refuses to run): no network (TCP, UDP, DNS, unix sockets), no fork, no exec but its own interpreter, no Apple Events, Mach lookups only for `com.apple.MTLCompilerService` (no LaunchServices, pasteboard, Keychain, WindowServer), no signals to or inspection of other processes, IOKit only GPU/IOSurface clients, no file contents under `$HOME` except the runtime, the model store and the worker script, writes only to a private 0700 temp dir (emptied on spawn); cleared environment (no API key), `python -I`, own process group (killed as a group); protocol on a private stdout duplicate; replies bounded (1 MiB/line), stderr drained in bounded chunks, stalled writes, garbage, oversize, timeouts and unhonored cancels → killed. Pinned by `worker::tests::sandbox_blocks_escapes` (17 probes against the real runtime, with an unsandboxed control) |
+| Model files → worker | untrusted bytes | compiled-in catalog pins repository commit and SHA-256 of every file; only safetensors/JSON/text/Jinja files; any model JSON with `auto_map`/`custom_pipelines` refused; staged files always re-hashed, moved into place only after the whole tree verified; full re-hash before every (re)load; transformers' dynamic-module loader disabled in the worker, `trust_remote_code=False` |
+| Guest image → VM | untrusted bytes | compiled-in pin (`pegoles-computer/catalog/images.json`): archive SHA-256 and size, disk SHA-512 and size; HTTPS-only resumable download bounded to the pin; pure-Rust gzip bounded to the pinned disk size; manifest written from the pin; atomic install. Release builds report any installed image that does not match the pin as invalid and re-hash the disk once per session before cloning it; never a generic Debian fallback |
 | Action → execution | untrusted | `pegoles-policy::evaluate` (exhaustive, deterministic) on every action, then Core's executor (rate limit, control arbitration) |
 | Guest → host | hostile | vsock frames ≤ 64 KiB, UTF-8, typed parse, bounded fields; frame reassembly caps; per-connection line-rate limit; bounded queues everywhere between guest and Core |
 | Guest process → host channel | hostile | the helper accepts a vsock peer only from a reserved source port (≤ 1023), which only the runtime (CAP_NET_BIND_SERVICE via its unit) can bind |
-| Webview → Core | semi-trusted UI | fixed command set, no path/URL/process arguments; strict CSP in release; Design Lab commands compiled only in debug builds |
+| Webview → Core | semi-trusted UI | app ACL (`build.rs` + `capabilities/default.json`): only the commands the release UI invokes, event listen/unlisten, window dragging; no path/URL/process arguments; navigation away from the app origin refused; strict CSP in release; Design Lab and diagnostic commands compiled and granted only in debug builds; switching to a cloud planner and storing an API key need a native macOS alert the page cannot answer (Cancel is the keyboard default; 30 s cooldown after a decline), and the key is typed into the alert's secure field, never the webview |
 | Host → model provider | external service | HTTPS only; sends the objective, screenshots of the VM and the model's own history; never host files, host screen, or the key in content |
 
 ## Invariants (enforced)
@@ -84,10 +85,13 @@ document states what is enforced today, where, and what is not.
    files (no symlink following), extraction ignores archive ownership
    and modes. A normal create boots only a sealed Pegoles image; booting
    plain Debian is a debug-build image-builder path.
-10. **Secrets.** The Anthropic key is stored in the macOS Keychain
-   (service `dev.pegoles.agent`) or read from `ANTHROPIC_API_KEY`; it is
-   never returned to the webview, never logged (`Debug` redacts it),
-   never placed in model context, and never sent to the guest. No
+10. **Secrets.** The Anthropic key is typed into a native secure field
+   (never the webview's DOM), stored in the macOS Keychain (service
+   `dev.pegoles.agent`) or read from `ANTHROPIC_API_KEY`; it is never
+   returned to the webview, never logged (`Debug` redacts it), never
+   placed in model context, never sent to the guest or the local worker,
+   and the Anthropic client follows no redirects (the key header only
+   ever goes to the compiled-in endpoint). No
    credentials are baked into the guest image (root and `pegoles`
    accounts are locked; sshd and its vsock/unix socket activation are
    masked).
@@ -130,12 +134,18 @@ offline VM". Reset returns the VM to the sealed image.
   its security properties are unverified.
 - The MLX worker's sandbox uses `sandbox-exec`, which Apple marks
   deprecated; it can still read files outside `$HOME` (system
-  libraries, `/opt`) and file metadata under `$HOME`. A compromised
-  worker (e.g. malicious weights exploiting a parser) could lie to the
-  planner — which is already untrusted — but has no network to
-  exfiltrate through.
-- The Python runtime is installed by a hash-locked script today, not
-  shipped signed inside the app.
+  libraries, `/opt`) and file metadata under `$HOME`, and can fill its
+  private temp dir while it runs (it is emptied on the next spawn). A
+  compromised worker (e.g. malicious weights exploiting a parser) could
+  lie to the planner — which is already untrusted — but has no network,
+  no other process and no app launch to exfiltrate through.
+- The bundled Python runtime is signed with the app; its hardened
+  runtime (library validation) can only be exercised with a Developer ID
+  build (ad-hoc local builds cannot use it).
+- The release `sign` job trusts the unsigned bundle produced by the
+  release `build` job of the same commit (a dependency compromised at
+  its locked version could alter what gets signed; it can no longer use
+  the signing identity).
 
 ## Tests that pin these properties
 
@@ -150,8 +160,15 @@ local parser: hostile coordinates, schema escapes, NaN/Infinity, bidi,
 multiple calls; local planner: garbage output fails closed, loop and
 oscillation brakes, crash restart, cancel during inference),
 `pegoles-inference` (store: resume, corruption, oversize, symlinks,
-extra files, remote-code JSON; worker supervisor: crash, garbage,
-oversized reply, hang, unhonored cancel), the hardware E2E
+extra files, remote-code JSON, staged files never trusted by size;
+worker supervisor: crash, garbage, oversized reply, hang, unhonored
+cancel, closed stdout, stalled stdin, stray prints; sandbox escapes
+against the real runtime), `pegoles-computer` image distribution
+(tampered/oversized/corrupt archives, decompression to other bytes,
+resume, mirrors, cancel, pins enforced at boot),
+`pegoles-agent/tests/security_matrix.rs` (a planner that follows prompt
+injection through the real executor and policy), `apps/desktop` (ACL
+equals the invoked command set, native consent, XSS regressions), the hardware E2E
 `crates/pegoles-agent/examples/agent_e2e.rs`, the hostile-model run
 `local_bench --safety` (real VM + policy) and the keyless local E2E
 `apps/desktop/src-tauri/examples/local_e2e.rs`.

@@ -5,6 +5,32 @@ hosting: UI + isolated VM + compositor + browser + runtime + local model
 + orchestration. Performance is architecture, not cleanup. Security
 boundaries are never traded for speed anywhere below.
 
+## Release candidate 0.1.0-rc.1, measured (M4 Pro 24 GB, macOS 26.5, 2026-09-26)
+
+After the release hardening, on the sanitized v0.3 image and the bundled
+runtime. Caveat: another GPU-heavy application (a flight simulator) was
+running on the same Mac during these runs, so small regressions against
+the earlier tables are within that noise; nothing was tuned for speed.
+
+| Metric | Value | Source |
+|---|---|---|
+| VM start → guest ready | 3.4 s (3.1–3.4 s over 12 cycles) | `agent_e2e`, `release_soak` |
+| First computer of an app session | + ≈ 4.5 s: the 3 GB image is re-hashed against its pin before the first clone (once per session) | `agent_e2e` prepare 8.2 s vs 3.6 s second session |
+| Observe (capture + PNG) p50 / p95 | 136 / 156 ms over 1200 captures (141 / 161 ms in `agent_e2e`) | `release_soak` |
+| Cancel → stopped | 1 ms (scripted wait); 2.2–3.0 s during local inference | `agent_e2e`, `local_e2e` |
+| Guest runtime killed → ready again | 2.9 s | `agent_e2e` |
+| Teardown (stop + destroy) | 0.9 s (scripted), 2.8 s with the worker | `agent_e2e`, `local_e2e` |
+| Keyless task "create hello.txt … cat it" | 38.7 s and 53.0 s (2 passing runs) | `local_e2e` |
+| Worker killed mid-task → task completed | 18–50 s | `local_e2e` |
+| Model verify / load | 1.4 s / 1.2–1.5 s (MAI-UI-2B 6-bit) | `local_bench` |
+| First token at 1024 px / 1440 px | 0.93 s / 2.0 s (unchanged by the sandbox) | `worker_probe` |
+| Memory peak | worker 3.9–4.0 GB, VM 0.5 GB, app 0.05–0.12 GB | `local_e2e` |
+| Guest memory over 2212 captures | flat (1256 → 1292 MiB available) | `capture_soak` |
+| Host process over 12 lifecycles | footprint falls (380 → 126 MB), 4 descriptors throughout | `release_soak` |
+| Computer image install (local archive) | 11.2 s to verify + unpack + hash 3 GB; 1.7 GB allocated (sparse) | `install_image` |
+| Shipped runtime | 497 MB on disk, 59 native libraries | `build-runtime.sh` |
+| DMG | 170 MB (app + runtime, no image or model) | `package-macos.sh` |
+
 ## Agent path, measured (M4 Pro, image v0.3, release build, 2026-09-26)
 
 `cargo run --release -p pegoles-agent --example agent_e2e` (real VM, the

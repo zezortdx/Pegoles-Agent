@@ -1,4 +1,4 @@
-# Guest Runtime v0.1 (`pegoles-guest-runtime`)
+# Guest Runtime (`pegoles-guest-runtime`, 0.2.0 in image v0.3)
 
 Tiny Linux service (guest side of `GUEST_PROTOCOL.md`). ~700 KB static-ish
 binary, three deps (`serde`, `serde_json`, `libc`). Deliberately absent:
@@ -20,21 +20,26 @@ process execution, network use.
 
 ## systemd
 
-Unit: `guest/runtime/pegoles-guest-runtime.service`. `User=pegoles`
-(system user, nologin), `Restart=on-failure`, `RestartSec=5s`.
-Hardening reviewed flag by flag (all compatible with AF_VSOCK + read-only
-OS facts; `RestrictAddressFamilies` deliberately NOT set — AF_UNIX and
-AF_VSOCK must both work, and older systemd lacks AF_VSOCK in that
-directive; re-scope if a future systemd supports it):
+Unit: `scripts/build-guest-image/seed/units/pegoles-guest-runtime.service`
+(the image's copy; `guest/runtime/pegoles-guest-runtime.service` is kept
+byte-identical and a guest-proto test fails if they drift). `User=pegoles`,
+`Restart=always`, `RestartSec=2s`, `StartLimitIntervalSec=0` (a guest app
+killing the runtime in a loop never leaves the unit failed).
 
-`NoNewPrivileges`, `PrivateTmp`, `ProtectHome`, `ProtectSystem=strict`,
-`ProtectKernelTunables/Modules`, `ProtectControlGroups`,
+Its only capability is `CAP_NET_BIND_SERVICE` (ambient and bounding set):
+it dials the host from a reserved vsock source port (<= 1023), and the
+helper accepts no other peer, so no other guest process can impersonate
+it. Hardening: `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`,
+`ProtectSystem=strict`, `ProtectKernelTunables/Modules/Logs`,
+`ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
 `LockPersonality`, `RestrictSUIDSGID`, `RestrictRealtime`,
-`CapabilityBoundingSet=` (empty), `ReadOnlyPaths=/etc/os-release /etc/hostname`.
+`RestrictNamespaces`, `RestrictAddressFamilies=AF_VSOCK AF_UNIX`,
+`SystemCallArchitectures=native`, `MemoryDenyWriteExecute`, `UMask=0077`,
+`ReadOnlyPaths=/etc/os-release /etc/hostname`. The process also sets
+`PR_SET_DUMPABLE 0` itself.
 
-Starts `After=systemd-user-sessions.service`; needs no network
-(`After=` has no network target on purpose — Ready with zero functional
-interfaces is an architecture proof).
+Starts after `pegoles-weston.service` (it captures the screen and injects
+input through Weston and uinput); needs no network (the VM has none).
 
 ## Build (cross)
 

@@ -10,14 +10,26 @@ those before large changes.
 
 ## Gates
 
-- `bash scripts/check.sh` — fmt, clippy `-D warnings`, cargo test, Swift
-  build, frontend lint/typecheck/vitest/build. Keep it green.
+- `bash scripts/check.sh` — frontend lint/typecheck/vitest/build (first:
+  the Tauri crate embeds `dist/`), fmt, clippy `-D warnings`, cargo test
+  `--locked`, Swift build. Keep it green. CI (`.github/workflows/ci.yml`)
+  runs the same plus release-profile tests and supply-chain checks
+  (`cargo deny check`, `cargo audit`, `pnpm audit --prod`).
 - Hardware E2E (Apple Silicon, sealed image `pegoles-base-0.3`):
   `cargo build --release -p pegoles-agent --example agent_e2e`, copy
   `native/macos/pegoles-vm-host/.build/release/pegoles-vm-host` next to
   the example binary, run it. Release builds ignore dev overrides.
-- The Swift helper must be re-signed after every rebuild:
-  `codesign --entitlements apps/desktop/src-tauri/entitlements/vm-host.plist -f -s - <helper>`.
+- The Swift helper must be re-signed after every rebuild (check.sh
+  rebuilds it): `bash scripts/codesign-dev.sh` (entitlements in
+  `apps/desktop/src-tauri/entitlements/vm-host.plist`; the app itself
+  gets none).
+- Release soak on hardware: `examples/release_soak.rs` in pegoles-agent
+  (VM lifecycles, observations, worker restarts; fails on growth or
+  leftovers).
+- Packaging: `bash scripts/package-macos.sh [build|sign|all]` (ad-hoc
+  without `PEGOLES_SIGN_IDENTITY`), then `scripts/release/notarize.sh`;
+  `scripts/release/verify-artifact.sh <app|dmg> [--signed|--distribution]`.
+  Release gates and their evidence: `docs/RELEASE_GATES.md`.
 
 ## Local models
 
@@ -32,7 +44,9 @@ those before large changes.
 - Benchmark on the real VM: `local_bench` (see
   `benchmarks/local-models/README.md`); keyless product-path E2E:
   `cargo build --release -p pegoles-desktop --example local_e2e`, copy the
-  signed helper next to it, run.
+  signed helper next to it, and link `target/release/Resources/runtime`
+  → `target/pegoles-runtime` and `target/release/Resources/workers/mlx` →
+  `workers/mlx` (release builds look only in `../Resources`), run.
 - The worker must stay sandboxed (`sandbox-exec`, fail closed) with a
   cleared environment; model output is only ever parsed by
   `pegoles-agent/src/local/parse.rs` into typed actions.
@@ -53,18 +67,25 @@ those before large changes.
 
 ## Guest image loop (fast)
 
-`scripts/build-guest-image/build-runtime.sh <out>` (Docker) →
-`patch-image.sh <provisioned.img> <runtime> <out.img>` (debugfs, no boot)
-→ `PEGOLES_DEBS_DIR=<debs> cargo run -p pegoles-computer --example
+`scripts/build-guest-image/build-runtime.sh <out>` (Docker, image pinned
+by digest) → `patch-image.sh <provisioned.img> <runtime> <out.img>`
+(debugfs, no boot) → `sanitize-image.sh <out.img>` (removes SSH host keys
+and the random seed; required before publishing) →
+`PEGOLES_DEBS_DIR=<debs> cargo run -p pegoles-computer --example
 seal_image -- <out.img>`. Unit files live in
 `scripts/build-guest-image/seed/units/` and feed both the full cloud-init
-build and the patch path. The repo path contains a space: quote paths.
+build and the patch path. Publishing a new image means a new archive
+(`gzip -9 -n`), new pins in `crates/pegoles-computer/catalog/images.json`
+(release builds refuse anything else), and a new package manifest in
+`scripts/build-guest-image/manifests/`. Install through the product
+installer: `examples/install_image.rs` (`--from-file` for a local
+archive); debug app builds accept `PEGOLES_IMAGE_ARCHIVE=<archive>`.
+The repo path contains a space: quote paths.
 
 ## Environment gotchas
 
-- Port 1420 on the dev machine belongs to another project; run Vite on
-  1430 (`npx vite --port 1430 --strictPort` in apps/desktop) and override
-  `devUrl` for `tauri dev`.
+- Port 1420 on the dev machine belongs to another project; Vite runs on
+  1430 (`devUrl` in tauri.conf.json already points there).
 - Disk space is tight; each VM computer is an APFS clone of the image but
   grows as the guest writes. Destroy test computers.
 - The UI can be previewed without a backend at `#/dev/shell/<scenario>`.
