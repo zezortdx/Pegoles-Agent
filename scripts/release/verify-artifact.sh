@@ -79,9 +79,16 @@ if [ "$SIGNED" = 1 ]; then
     || fail "app not signed with a Developer ID Application certificate"
 fi
 
+# Mach-O by magic bytes (thin and universal, either byte order).
+is_macho() {
+  case "$(head -c 4 "$1" 2>/dev/null | xxd -p)" in
+    feedface | feedfacf | cefaedfe | cffaedfe | cafebabe | bebafeca) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 machos=0
 while IFS= read -r -d '' f; do
-  file -b "$f" | grep -q '^Mach-O' || continue
+  is_macho "$f" || continue
   machos=$((machos + 1))
   info="$(codesign -dv --verbose=4 "$f" 2>&1)" || fail "unsigned Mach-O: $f"
   codesign --verify --strict "$f" 2>/dev/null || fail "invalid signature: $f"
@@ -95,11 +102,24 @@ ok "$machos Mach-O files signed$([ "$SIGNED" = 1 ] && echo ", hardened runtime, 
 
 bad="$(find "$APP" -perm -g+w -o -perm -o+w | head -5)"
 [ -z "$bad" ] || fail "group/other-writable files: $bad"
+bad="$(find "$APP" \( -perm -4000 -o -perm -2000 -o -perm -1000 \) | head -5)"
+[ -z "$bad" ] || fail "setuid/setgid/sticky files: $bad"
 while IFS= read -r -d '' l; do
   t="$(cd "$(dirname "$l")" && realpath "$(readlink "$l")" 2>/dev/null || true)"
   case "$t" in "$(cd "$APP" && pwd -P)"/*) ;; *) fail "symlink escapes the bundle: $l" ;; esac
 done < <(find "$APP" -type l -print0)
 ok "permissions and symlinks"
+
+# The worker, its lock and the runtime's recorded lock digest must be the
+# ones in this checkout (the bundle may have been built elsewhere).
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+cmp -s "$WORKER" "$REPO/workers/mlx/pegoles_mlx_worker.py" || fail "bundled worker differs from the checkout"
+cmp -s "$APP/Contents/Resources/runtime/requirements.lock" "$REPO/workers/mlx/requirements.lock" \
+  || fail "bundled requirements.lock differs from the checkout"
+lock_sha="$(shasum -a 256 "$REPO/workers/mlx/requirements.lock" | cut -d' ' -f1)"
+grep -q "\"requirements_lock_sha256\": \"$lock_sha\"" "$APP/Contents/Resources/runtime/runtime-manifest.json" \
+  || fail "runtime manifest was not built from this checkout's lock"
+ok "worker, lock and runtime manifest match the checkout"
 
 # certifi's cacert.pem is the public Mozilla CA bundle (required by the
 # HTTP stack mlx-vlm imports); any other PEM is refused.

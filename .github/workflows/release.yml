@@ -174,13 +174,25 @@ jobs:
           name: unsigned-${{ needs.build.outputs.tag }}
           path: ${{ runner.temp }}/unsigned
       - name: Unpack the unsigned bundle
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           u="$RUNNER_TEMP/unsigned"
           (cd "$u" && shasum -a 256 -c unsigned-app.tar.sha256)
           mkdir -p target/release/bundle/macos target/release-artifacts
-          tar -C target/release/bundle/macos -xpf "$u/unsigned-app.tar"
-          find "$u" -maxdepth 1 -type f ! -name 'unsigned-app.tar*' -exec cp {} target/release-artifacts/ \;
+          # No -p: modes are normalized by the sign stage; setuid bits are refused.
+          tar -C target/release/bundle/macos -xf "$u/unsigned-app.tar"
+          # Only the two files the build job is expected to hand over.
+          for f in build-manifest.json "pegoles-${VERSION}.cdx.json"; do
+            cp "$u/$f" target/release-artifacts/
+          done
+          python3 - "$GITHUB_SHA" <<'PY'
+          import json, sys
+          m = json.load(open("target/release-artifacts/build-manifest.json"))
+          assert m["git"]["commit"] == sys.argv[1], "build manifest is for another commit"
+          assert m["git"]["dirty"] is False, "build manifest says the tree was dirty"
+          PY
           ls -la target/release-artifacts
 
       - name: Import the signing certificate into a temporary keychain
@@ -267,13 +279,20 @@ jobs:
         with:
           name: release-${{ needs.build.outputs.tag }}
           path: dist
-      - name: Checksums match
+      - name: Exactly the expected assets, checksums match
         working-directory: dist
-        run: sha256sum --strict -c SHA256SUMS
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s\n' "Pegoles_${VERSION}_arm64.dmg" SHA256SUMS build-manifest.json "pegoles-${VERSION}.cdx.json" | sort)"
+          actual="$(find . -mindepth 1 -maxdepth 1 -printf "%f\n" | sort)"
+          [ "$expected" = "$actual" ] || { echo "::error::unexpected release assets: $actual"; exit 1; }
+          sha256sum --strict -c SHA256SUMS
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            dist/*.dmg
+            dist/Pegoles_${{ needs.build.outputs.version }}_arm64.dmg
             dist/SHA256SUMS
       - name: Create the draft release (never published automatically)
         env:
@@ -300,4 +319,5 @@ jobs:
           pegoles-${VERSION}.cdx.json is the CycloneDX SBOM.
           EOF
           gh release create "$TAG" --draft --verify-tag "${prerelease[@]}" \
-            --title "Pegoles Agent $VERSION" --notes-file notes.md dist/*
+            --title "Pegoles Agent $VERSION" --notes-file notes.md \
+            "dist/Pegoles_${VERSION}_arm64.dmg" dist/SHA256SUMS dist/build-manifest.json "dist/pegoles-${VERSION}.cdx.json"

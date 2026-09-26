@@ -96,6 +96,8 @@ sign_bundle() {
   fi
   # Extended attributes (quarantine, Finder info) break code signatures.
   xattr -cr "$APP"
+  # Normalize modes: nothing setuid/setgid/sticky or writable by others.
+  chmod -R u+rwX,go-w,-s,-t "$APP"
 
   sign() { # sign <path> [runtime|noruntime] [entitlements.plist]
     local path="$1" mode="${2:-runtime}" ent="${3:-}"
@@ -108,7 +110,14 @@ sign_bundle() {
     [ -n "$ent" ] && args+=(--entitlements "$ent")
     codesign "${args[@]}" "$path"
   }
-  is_macho() { file -b "$1" | grep -q '^Mach-O'; }
+  # Mach-O by magic bytes (thin and universal, either byte order), not by
+  # file(1)'s wording, which varies ("setuid Mach-O ...").
+  is_macho() {
+    case "$(head -c 4 "$1" 2>/dev/null | xxd -p)" in
+      feedface | feedfacf | cefaedfe | cffaedfe | cafebabe | bebafeca) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
 
   local py="$APP/Contents/Resources/runtime/python/bin/python3.12" count=0
   while IFS= read -r -d '' f; do

@@ -73,5 +73,14 @@ for f in /root/.ssh/authorized_keys /home/debian/.ssh/authorized_keys; do
     echo "FAIL: $f is not empty" >&2; fail=1
   fi
 done
+# Every account must be locked with no password at all ('*' or '!...'):
+# PAM's nullok in common-auth would otherwise let an empty password field
+# turn any guest process into root through su.
+shadow="$("$DEBUGFS" -R "cat /etc/shadow" "$FS" 2>/dev/null)"
+[ -n "$shadow" ] || { echo "FAIL: cannot read /etc/shadow" >&2; fail=1; }
+unlocked="$(printf '%s\n' "$shadow" | awk -F: 'NF > 1 && $2 !~ /^[!*]/ {print $1}')"
+if [ -n "$unlocked" ]; then
+  echo "FAIL: accounts with a usable or empty password: $unlocked" >&2; fail=1
+fi
 [ "$fail" = 0 ] || exit 1
-echo "sanitized: no SSH host keys, no random seed, no private keys or authorized keys"
+echo "sanitized: no SSH host keys, no random seed, no private keys or authorized keys, every account locked"
