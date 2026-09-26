@@ -457,7 +457,32 @@ impl ComputerImageManager {
     }
 
     /// Status of one named derived image (v0.1 default; v0.2 for Phase 5.1).
+    /// Release builds additionally require the installed image to match
+    /// the pin compiled into the app (`catalog/images.json`); anything else
+    /// is `Invalid` and never boots.
     pub fn derived_status_for(&self, image_id: &str) -> ImageStatus {
+        self.derived_status_with(image_id, crate::image_release::pins_enforced())
+    }
+
+    fn derived_status_with(&self, image_id: &str, enforce_pins: bool) -> ImageStatus {
+        let status = self.derived_status_unpinned(image_id);
+        if !enforce_pins || status != ImageStatus::Ready {
+            return status;
+        }
+        match crate::image_release::release_image(image_id) {
+            Some(pin)
+                if crate::image_release::installed_matches_pin(
+                    &self.derived_dir_for(image_id),
+                    pin,
+                ) =>
+            {
+                ImageStatus::Ready
+            }
+            _ => ImageStatus::Invalid,
+        }
+    }
+
+    fn derived_status_unpinned(&self, image_id: &str) -> ImageStatus {
         let dir = self.derived_dir_for(image_id);
         let manifest_path = dir.join("manifest.json");
         let manifest: Option<DerivedManifest> = fs::read_to_string(&manifest_path)
@@ -505,6 +530,37 @@ impl ComputerImageManager {
         )
         .map_err(|e| ComputerError::Backend(e.to_string()))?;
         serde_json::from_str(&raw).map_err(|e| ComputerError::Backend(e.to_string()))
+    }
+
+    /// Hash the installed image against its release pin (once per app
+    /// session per file). Fails closed when the image has no pin.
+    pub fn verify_pinned(&self, image_id: &str) -> Result<()> {
+        let pin = crate::image_release::release_image(image_id).ok_or_else(|| {
+            ComputerError::ImageVerificationFailed(format!(
+                "{image_id} is not a released Pegoles image"
+            ))
+        })?;
+        crate::image_release::verify_installed(&self.derived_dir_for(image_id), pin)
+    }
+
+    /// Download, verify and install the pinned release image this build
+    /// boots (`active_image_id`). See `image_release::install`.
+    pub fn install_release_image(
+        &self,
+        progress: &mut dyn FnMut(crate::image_release::InstallStage, u64, u64),
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<PathBuf> {
+        let id = active_image_id();
+        let pin = crate::image_release::release_image(&id).ok_or_else(|| {
+            ComputerError::ImageMissing(format!("{id} has no release download in this build"))
+        })?;
+        crate::image_release::install(
+            &self.images_dir,
+            pin,
+            &crate::image_release::HttpsSource::default(),
+            progress,
+            cancel,
+        )
     }
 
     /// Seal a provisioned work disk as the derived base image: copy it in,
@@ -690,9 +746,12 @@ impl ComputerImageManager {
         format: DiskFormat,
         allow_official: bool,
     ) -> Result<BootSource> {
-        let building = std::env::var("PEGOLES_SEED_ISO")
-            .ok()
-            .is_some_and(|p| !p.trim().is_empty());
+        // Builders exist only in debug builds; a release never skips the
+        // sealed image because of an environment variable.
+        let building = cfg!(debug_assertions)
+            && std::env::var("PEGOLES_SEED_ISO")
+                .ok()
+                .is_some_and(|p| !p.trim().is_empty());
         if !building && self.derived_status() == ImageStatus::Ready {
             if let Ok(disk) = self.derived_disk_for_format(format) {
                 return Ok(BootSource::Derived(disk));
@@ -742,9 +801,29 @@ impl ComputerImageManager {
         format: DiskFormat,
         allow_official: bool,
     ) -> Result<BootSource> {
+        self.instantiate_boot_source_with(
+            computer_id,
+            dest_disk,
+            format,
+            allow_official,
+            crate::image_release::pins_enforced(),
+        )
+    }
+
+    fn instantiate_boot_source_with(
+        &self,
+        computer_id: &ComputerId,
+        dest_disk: &Path,
+        format: DiskFormat,
+        allow_official: bool,
+        enforce_pins: bool,
+    ) -> Result<BootSource> {
         let source = self.boot_source_for_format_with_fallback(format, allow_official)?;
         match &source {
             BootSource::Derived(raw) => {
+                if enforce_pins {
+                    self.verify_pinned(&active_image_id())?;
+                }
                 instantiate_from(raw, dest_disk)?;
             }
             BootSource::Official(_) => {
@@ -1472,6 +1551,16 @@ mod tests {
         let saved = std::env::var(IMAGE_ID_ENV).ok();
         std::env::remove_var(IMAGE_ID_ENV);
         assert_eq!(active_image_id(), PEGOLES_PRODUCT_IMAGE_ID);
+        if !cfg!(debug_assertions) {
+            // Release builds never honour the override.
+            std::env::set_var(IMAGE_ID_ENV, PEGOLES_BASE_IMAGE_ID_V2);
+            assert_eq!(active_image_id(), PEGOLES_PRODUCT_IMAGE_ID);
+            match saved {
+                Some(v) => std::env::set_var(IMAGE_ID_ENV, v),
+                None => std::env::remove_var(IMAGE_ID_ENV),
+            }
+            return;
+        }
         std::env::set_var(IMAGE_ID_ENV, PEGOLES_BASE_IMAGE_ID_V2);
         assert_eq!(active_image_id(), PEGOLES_BASE_IMAGE_ID_V2);
         // Unknown ids fail closed downstream (missing dir), never remap.
@@ -1620,17 +1709,69 @@ mod tests {
         let normal = mgr.boot_source_for_format_with_fallback(DiskFormat::Raw, true);
         assert!(matches!(normal, Ok(BootSource::Derived(_))));
         std::env::set_var("PEGOLES_SEED_ISO", "/tmp/does-not-need-to-exist.iso");
-        // No official artifact cached in this temp dir → fails closed on
-        // the official path, but crucially NOT Derived.
         let building = mgr.boot_source_for_format_with_fallback(DiskFormat::Raw, true);
-        assert!(
-            !matches!(building, Ok(BootSource::Derived(_))),
-            "builder must not clone the derived image"
-        );
+        if cfg!(debug_assertions) {
+            // No official artifact cached in this temp dir → fails closed on
+            // the official path, but crucially NOT Derived.
+            assert!(
+                !matches!(building, Ok(BootSource::Derived(_))),
+                "builder must not clone the derived image"
+            );
+        } else {
+            // Release builds have no builder mode: the env var is ignored.
+            assert!(matches!(building, Ok(BootSource::Derived(_))));
+        }
         match saved_seed {
             Some(v) => std::env::set_var("PEGOLES_SEED_ISO", v),
             None => std::env::remove_var("PEGOLES_SEED_ISO"),
         }
+    }
+
+    /// A sealed image that is not the pinned release image is `Invalid` and
+    /// never cloned when pins are enforced (release builds), whatever its
+    /// own manifest and marker say.
+    #[test]
+    fn enforced_pins_reject_an_unpinned_sealed_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ComputerImageManager::new(dir.path().to_path_buf());
+        let work = dir.path().join("work.raw");
+        fs::write(&work, b"self-consistent but not the release").unwrap();
+        let mut input = DerivedManifestInput::v0_1(
+            "13".into(),
+            "arm64".into(),
+            "0.2.0".into(),
+            1,
+            "sourcesha".into(),
+        );
+        input.image_id = PEGOLES_PRODUCT_IMAGE_ID.to_string();
+        mgr.publish_derived(&work, input).unwrap();
+        let id = PEGOLES_PRODUCT_IMAGE_ID;
+        assert_eq!(mgr.derived_status_with(id, false), ImageStatus::Ready);
+        assert_eq!(mgr.derived_status_with(id, true), ImageStatus::Invalid);
+        assert!(matches!(
+            mgr.verify_pinned(id),
+            Err(ComputerError::ImageVerificationFailed(_))
+        ));
+        let saved = std::env::var(IMAGE_ID_ENV).ok();
+        std::env::remove_var(IMAGE_ID_ENV);
+        let dest = dir.path().join("vm").join("disk.img");
+        let refused = mgr.instantiate_boot_source_with(
+            &ComputerId::new(),
+            &dest,
+            DiskFormat::Raw,
+            false,
+            true,
+        );
+        assert!(matches!(
+            refused,
+            Err(ComputerError::ImageVerificationFailed(_))
+        ));
+        assert!(!dest.exists(), "nothing is cloned from an unpinned image");
+        if let Some(v) = saved {
+            std::env::set_var(IMAGE_ID_ENV, v);
+        }
+        // An id with no pin at all is refused too.
+        assert!(mgr.verify_pinned("pegoles-base-9.9").is_err());
     }
 
     #[test]

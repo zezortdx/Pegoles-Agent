@@ -13,6 +13,7 @@ pub mod error;
 pub mod governor;
 pub mod guest;
 pub mod image;
+pub mod image_release;
 pub mod input;
 pub mod macos;
 pub mod mock;

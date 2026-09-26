@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "images": [
+    {
+      "id": "pegoles-base-0.3",
+      "version": "0.3",
+      "debian_version": "13",
+      "architecture": "arm64",
+      "guest_runtime_version": "0.2.0",
+      "guest_protocol_version": 1,
+      "source_image_sha512": "7bacdeb825f81b7eb5fcd35330ce7160ed60413adfa61f37cff3c4028fdc61dbd444e046c58934cd0494192f53fa2cbcfcca1e8e1d337755b34c6c90dc72f62b",
+      "built_at": "2026-09-26T17:00:14.795255+00:00",
+      "graphical": {
+        "compositor": "weston 14.0.2-1",
+        "terminal": "foot 1.21.0-2"
+      },
+      "capabilities": ["input", "frame"],
+      "disk": {
+        "file_name": "disk.raw",
+        "bytes": 3221225472,
+        "sha512": "766188e53acdfe8cd110ee90c8792cbdf7e6588a7c22c135fba7a2840f5e8cd4dcfc3328f442bf927d6a10a4d6ef91282930853d9056ee24be55b8aab3b616cf"
+      },
+      "archive": {
+        "file_name": "pegoles-base-0.3-arm64.raw.gz",
+        "compression": "gzip",
+        "bytes": 561846260,
+        "sha256": "a938365cf6b47a3df43cd0b529a1e791b757e2251963b182b8bfc4b400d1a2b1",
+        "urls": [
+          "https://github.com/UNPUBLISHED/pegoles-agent/releases/download/guest-image-0.3/pegoles-base-0.3-arm64.raw.gz"
+        ]
+      },
+      "provenance": {
+        "build": "Debian 13 nocloud arm64 (source_image_sha512, SHA512SUMS of cdimage.debian.org) provisioned once with the NoCloud seed in scripts/build-guest-image (pinned .deb bundle), patched without booting by patch-image.sh (guest runtime 0.2.0, units, sysctl, masked network/ssh/apt services), sanitized by sanitize-image.sh, sealed by crates/pegoles-computer/examples/seal_image.rs, archived with gzip -9 -n",
+        "packages_manifest": "scripts/build-guest-image/manifests/pegoles-base-0.3.packages.txt",
+        "packages_manifest_sha256": "af247bf3c4bc0388723a3159a1c656118dccbed2c0bff3cae0621d0c9abe5439",
+        "sanitized": [
+          "SSH host keys removed (/etc/ssh/ssh_host_*)",
+          "systemd random seed removed (/var/lib/systemd/random-seed)",
+          "root and debian accounts locked, authorized_keys empty (verified)"
+        ]
+      }
+    }
+  ]
+}
