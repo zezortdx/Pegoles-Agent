@@ -65,6 +65,26 @@ jobs:
           queries: security-extended
       - if: matrix.build-mode == 'manual'
         run: swift build -c release --package-path native/macos/pegoles-vm-host
+      # A private repository without GitHub Code Security cannot store code
+      # scanning results: there, the results stay in the run (artifact) and
+      # .github/scripts/codeql-gate.py fails the job the way the code
+      # scanning check would. Public repositories upload as usual.
+      - name: Repository visibility
+        id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "private=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" >> "$GITHUB_OUTPUT"
       - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: /language:${{ matrix.language }}
+          upload: ${{ steps.visibility.outputs.private == 'false' && 'always' || 'never' }}
+          output: ${{ runner.temp }}/codeql-sarif
+      - if: steps.visibility.outputs.private != 'false'
+        run: python3 .github/scripts/codeql-gate.py "$RUNNER_TEMP/codeql-sarif"
+      - if: always() && steps.visibility.outputs.private != 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql-sarif
+          retention-days: 30
+          if-no-files-found: ignore

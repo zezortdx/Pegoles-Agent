@@ -18,6 +18,9 @@ concurrency:
 jobs:
   dependency-review:
     name: Dependency review
+    # Needs GitHub Code Security on a private repository; skipped there
+    # (the supply-chain job in ci.yml still fails on known vulnerabilities).
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

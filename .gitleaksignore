@@ -1,0 +1,11 @@
+# Reviewed gitleaks findings that are not secrets. Each entry is one exact
+# finding (commit:path:rule:line); anything else in these files, or any
+# change to these lines in a later commit, is reported again.
+#
+# Policy tripwire fixtures: truncated, non-functional key headers and the
+# AWS documentation example prefix, typed at the policy to prove it denies
+# key material. They are not keys and never were.
+b11394b124329eb42939584007abbb8da9c7ae0f:crates/pegoles-policy/tests/escape_matrix.rs:private-key:412
+38399572a5fef9e9590dbbf1bf9687687d81a178:crates/pegoles-agent/tests/security_matrix.rs:private-key:359
+38399572a5fef9e9590dbbf1bf9687687d81a178:crates/pegoles-agent/tests/security_matrix.rs:generic-api-key:361
+38399572a5fef9e9590dbbf1bf9687687d81a178:crates/pegoles-agent/tests/security_matrix.rs:private-key:594

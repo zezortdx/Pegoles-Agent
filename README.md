@@ -47,7 +47,7 @@ and keyboard, and saved task history across restarts.
 1. Download `Pegoles_<version>_arm64.dmg` from GitHub Releases and verify it:
    ```bash
    shasum -a 256 -c SHA256SUMS --ignore-missing
-   gh attestation verify Pegoles_<version>_arm64.dmg --repo <owner>/<repo>
+   gh attestation verify Pegoles_<version>_arm64.dmg --repo zezortdx/Pegoles-Agent
    ```
 2. Open the DMG and drag **Pegoles Agent** to Applications.
 3. On first launch, choose **Set up computer** (downloads and checks the

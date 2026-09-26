@@ -3,10 +3,9 @@
 # Security reports never go through public issues. GitHub links SECURITY.md
 # ("Report a security vulnerability") in the issue template chooser
 # automatically, and SECURITY.md routes reports to private vulnerability
-# reporting. Once the repository's owner/name exist, add the direct link
-# below (docs/GITHUB_RELEASE_CHECKLIST.md); GitHub rejects relative URLs here.
+# reporting (GitHub rejects relative URLs here).
 blank_issues_enabled: false
-# contact_links:
-#  - name: Report a security vulnerability (private)
-#    url: https://github.com/<owner>/<repo>/security/advisories/new
-#    about: Do not open a public issue for a vulnerability; see SECURITY.md.
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/zezortdx/Pegoles-Agent/security/advisories/new
+    about: Do not open a public issue for a vulnerability; see SECURITY.md.
