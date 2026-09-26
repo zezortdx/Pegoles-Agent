@@ -43,19 +43,41 @@ const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// MLX buffer-cache ceiling for the worker.
 pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Seatbelt profile for the worker (later rules win). No network at all
-/// (TCP and DNS verified denied). No file contents under the user's home
-/// are readable except the runtime, the model store and the worker
-/// script (metadata stays readable: Python resolves its own path);
-/// nothing is writable except the per-user temporary/cache area, where
-/// Metal keeps its shader cache.
+/// Seatbelt profile for the worker (later rules win). The worker is
+/// treated as compromisable (it parses model files and runs a large native
+/// stack), so the profile removes every way out that it does not need:
+/// - no network at all (TCP, UDP, DNS and unix sockets);
+/// - no exec of anything but its own interpreter (so no `open`, no
+///   `osascript`, no shell), no Apple Events;
+/// - no Mach services except the Metal compiler: in particular no
+///   LaunchServices (which would launch an unsandboxed app or open a
+///   URL for it), pasteboard, Keychain (securityd), WindowServer or
+///   preferences daemons;
+/// - no signals to, and no inspection of (arguments, environment),
+///   other processes; IOKit limited to the GPU and IOSurface clients;
+/// - no file contents under the user's home except the runtime, the model
+///   store and the worker script (metadata stays readable: Python
+///   resolves its own path);
+/// - writes only to a private temporary directory.
+/// `tests::sandbox_blocks_escapes` pins these against the real runtime.
 const SANDBOX_PROFILE: &str = r#"(version 1)
 (allow default)
 (deny network*)
+(deny process-exec*)
+(allow process-exec (literal (param "PYTHON")))
+(deny appleevent-send)
+(deny signal)
+(allow signal (target self))
+(deny process-info*)
+(allow process-info* (target self))
+(deny iokit-open)
+(allow iokit-open (iokit-user-client-class "AGXDeviceUserClient" "IOSurfaceRootUserClient"))
+(deny mach-lookup)
+(allow mach-lookup (global-name "com.apple.MTLCompilerService"))
 (deny file-read-data (subpath (param "HOME")))
 (allow file-read-data (literal (param "HOME")) (subpath (param "RUNTIME")) (subpath (param "MODELS")) (subpath (param "SCRIPT_DIR")))
 (deny file-write*)
-(allow file-write* (subpath "/private/var/folders") (literal "/dev/null") (literal "/dev/dtracehelper"))
+(allow file-write* (subpath (param "TMP")) (literal "/dev/null") (literal "/dev/dtracehelper"))
 "#;
 
 #[derive(Clone, Debug)]
@@ -93,22 +115,34 @@ impl MlxWorkerConfig {
         }
     }
 
-    /// The product layout: the runtime venv under the Pegoles data dir,
-    /// the worker script shipped next to the executable (app bundle
-    /// `Resources/workers/mlx/`), or the repository copy in debug builds.
+    /// The product layout: the interpreter shipped inside the signed app
+    /// bundle (`Resources/runtime/python`, built by
+    /// `scripts/local-model/build-runtime.sh`) and the worker script next
+    /// to it (`Resources/workers/mlx/`). Debug builds also accept the
+    /// repository's build output. Release builds never run a Python found
+    /// in a user-writable location such as the data directory.
     pub fn discover(data_dir: &Path) -> Result<Self, InferenceError> {
-        let python = data_dir.join("runtime/mlx-venv/bin/python");
-        if !python.exists() {
-            return Err(InferenceError::RuntimeMissing(
-                "the Pegoles Local runtime is not set up on this Mac".into(),
-            ));
-        }
-        let script = worker_script_candidates()
-            .into_iter()
-            .find(|p| p.is_file())
-            .ok_or_else(|| {
-                InferenceError::RuntimeMissing("the local model worker is missing".into())
-            })?;
+        Self::discover_from(
+            &runtime_candidates(),
+            &worker_script_candidates(),
+            data_dir,
+        )
+    }
+
+    fn discover_from(
+        pythons: &[PathBuf],
+        scripts: &[PathBuf],
+        data_dir: &Path,
+    ) -> Result<Self, InferenceError> {
+        let python = pythons.iter().find(|p| p.is_file()).ok_or_else(|| {
+            InferenceError::RuntimeMissing(
+                "the Pegoles Local runtime is missing from this installation; reinstall Pegoles"
+                    .into(),
+            )
+        })?;
+        let script = scripts.iter().find(|p| p.is_file()).ok_or_else(|| {
+            InferenceError::RuntimeMissing("the local model worker is missing".into())
+        })?;
         if !Path::new(SANDBOX_EXEC).exists() {
             return Err(InferenceError::RuntimeMissing(
                 "macOS sandboxing (sandbox-exec) is unavailable, so Pegoles Local cannot run \
@@ -116,11 +150,17 @@ impl MlxWorkerConfig {
                     .into(),
             ));
         }
-        Ok(Self::new(python, script, crate::models_dir(data_dir)))
+        let canonical = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
+        Ok(Self::new(
+            canonical(python),
+            canonical(script),
+            crate::models_dir(data_dir),
+        ))
     }
 
-    /// `sandbox-exec` arguments: the profile and its parameters.
-    fn sandbox_args(&self) -> Result<Vec<String>, InferenceError> {
+    /// `sandbox-exec` arguments: the profile and its parameters. Values are
+    /// passed as `-D` parameters, never spliced into the profile text.
+    fn sandbox_args(&self, tmp: &Path) -> Result<Vec<String>, InferenceError> {
         let abs = |p: &Path| -> Result<String, InferenceError> {
             let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
             p.to_str()
@@ -133,7 +173,7 @@ impl MlxWorkerConfig {
         let home = std::env::var("HOME").map_err(|_| {
             InferenceError::RuntimeMissing("HOME is not set; cannot sandbox the worker".into())
         })?;
-        // bin/python -> the venv root.
+        // bin/python3.12 -> the runtime root.
         let venv = self
             .python
             .parent()
@@ -147,6 +187,10 @@ impl MlxWorkerConfig {
             "-D".into(),
             format!("HOME={}", abs(Path::new(&home))?),
             "-D".into(),
+            format!("TMP={}", abs(tmp)?),
+            "-D".into(),
+            format!("PYTHON={}", abs(&self.python)?),
+            "-D".into(),
             format!("RUNTIME={}", abs(venv)?),
             "-D".into(),
             format!("MODELS={}", abs(&self.models_root)?),
@@ -158,12 +202,90 @@ impl MlxWorkerConfig {
     }
 }
 
+/// The worker's private temporary directory: `pegoles-mlx` inside the
+/// per-user Darwin temp dir, owned by this user, mode 0700, never a
+/// symlink. It is the only place the sandboxed worker may write.
+fn worker_tmp_dir() -> Result<PathBuf, InferenceError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let base = darwin_user_temp_dir().ok_or_else(|| {
+        InferenceError::RuntimeMissing("no per-user temporary directory".into())
+    })?;
+    let dir = base.join("pegoles-mlx");
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            return Err(InferenceError::RuntimeMissing(format!(
+                "cannot create the worker temp dir: {e}"
+            )))
+        }
+    }
+    let meta = std::fs::symlink_metadata(&dir)
+        .map_err(|e| InferenceError::RuntimeMissing(format!("worker temp dir: {e}")))?;
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    if !meta.is_dir() || meta.uid() != uid {
+        return Err(InferenceError::RuntimeMissing(
+            "the worker temp dir is not a directory owned by this user".into(),
+        ));
+    }
+    if meta.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| InferenceError::RuntimeMissing(format!("worker temp dir: {e}")))?;
+    }
+    Ok(dir)
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_user_temp_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: the buffer is valid for `buf.len()` bytes; confstr writes at
+    // most that many bytes including the terminating NUL.
+    let n = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if n == 0 || n > buf.len() {
+        return None;
+    }
+    buf.truncate(n - 1);
+    let p = PathBuf::from(std::ffi::OsString::from_vec(buf));
+    p.is_absolute().then_some(p)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn darwin_user_temp_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Interpreter path inside a runtime tree built by `build-runtime.sh`.
+const RUNTIME_PYTHON: &str = "runtime/python/bin/python3.12";
+
+fn runtime_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            out.push(dir.join("../Resources").join(RUNTIME_PYTHON));
+        }
+    }
+    if cfg!(debug_assertions) {
+        out.push(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/pegoles-runtime/python/bin/python3.12"),
+        );
+    }
+    out
+}
+
 fn worker_script_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             out.push(dir.join("../Resources/workers/mlx/pegoles_mlx_worker.py"));
-            out.push(dir.join("workers/mlx/pegoles_mlx_worker.py"));
         }
     }
     if cfg!(debug_assertions) {
@@ -256,14 +378,17 @@ impl MlxWorkerBackend {
                 self.cfg.python.display()
             )));
         }
+        let mut private_tmp = None;
         let mut cmd = if self.cfg.sandbox {
             if !Path::new(SANDBOX_EXEC).exists() {
                 return Err(InferenceError::RuntimeMissing(
                     "sandbox-exec is unavailable; refusing to run the model unsandboxed".into(),
                 ));
             }
+            let tmp = worker_tmp_dir()?;
             let mut c = Command::new(SANDBOX_EXEC);
-            c.args(self.cfg.sandbox_args()?).arg(&self.cfg.python);
+            c.args(self.cfg.sandbox_args(&tmp)?).arg(&self.cfg.python);
+            private_tmp = Some(tmp);
             c
         } else {
             Command::new(&self.cfg.python)
@@ -282,8 +407,16 @@ impl MlxWorkerBackend {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Ok(tmp) = std::env::var("TMPDIR") {
-            cmd.env("TMPDIR", tmp);
+        // Set after env_clear (which also drops earlier explicit values).
+        match private_tmp {
+            Some(tmp) => {
+                cmd.env("TMPDIR", tmp);
+            }
+            None => {
+                if let Ok(tmp) = std::env::var("TMPDIR") {
+                    cmd.env("TMPDIR", tmp);
+                }
+            }
         }
         let mut child = cmd
             .spawn()
@@ -862,6 +995,140 @@ mod tests {
         assert_eq!(err, InferenceError::OutOfMemory("metal oom".into()));
     }
 
+    /// Escape attempts from inside the real sandbox profile, run with the
+    /// real runtime built by `scripts/local-model/build-runtime.sh` (skipped
+    /// when it has not been built, e.g. in CI). Every probe is first run
+    /// unsandboxed as a control (it must work there, so "blocked" really
+    /// means the sandbox), then under the worker profile, where it must
+    /// fail; Metal and the private temp dir must keep working.
+    const ESCAPE_PROBES: &str = r#"
+import ctypes, json, os, socket, subprocess, sys
+parent, port, home_dir, outside, private = sys.argv[1:6]
+parent, port = int(parent), int(port)
+res = {}
+def probe(name, fn):
+    try:
+        fn()
+        res[name] = "allowed"
+    except Exception:
+        res[name] = "blocked"
+libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+def lookup(service):
+    port = ctypes.c_uint32(0)
+    bp = ctypes.c_uint32.in_dll(libc, "bootstrap_port")
+    if libc.bootstrap_look_up(bp, service.encode(), ctypes.byref(port)) != 0:
+        raise OSError("lookup failed")
+def pidpath(pid):
+    buf = ctypes.create_string_buffer(4096)
+    if libc.proc_pidpath(pid, buf, 4096) <= 0:
+        raise OSError("proc_pidpath failed")
+def write(path):
+    with open(path, "w") as f:
+        f.write("x")
+    os.unlink(path)
+def metal():
+    import mlx.core as mx
+    x = (mx.arange(4096, dtype=mx.float32) * 3 + 1).sum()
+    mx.eval(x)
+    assert mx.metal.is_available() and x.item() > 0
+probe("exec", lambda: subprocess.run(["/usr/bin/true"], check=True))
+probe("tcp_loopback", lambda: socket.create_connection(("127.0.0.1", port), timeout=3).close())
+probe("dns_socket", lambda: socket.socket(socket.AF_UNIX).connect("/var/run/mDNSResponder"))
+probe("read_home", lambda: open(os.path.join(home_dir, "canary"), "rb").read())
+probe("write_home", lambda: write(os.path.join(home_dir, "written")))
+probe("write_shared_tmp", lambda: write(os.path.join(outside, "pegoles-sbx-probe-%d" % os.getpid())))
+probe("launchservices", lambda: lookup("com.apple.coreservices.launchservicesd"))
+probe("pasteboard", lambda: lookup("com.apple.pasteboard.1"))
+probe("securityd", lambda: lookup("com.apple.SecurityServer"))
+probe("securityd_xpc", lambda: lookup("com.apple.securityd.xpc"))
+probe("lsd_open", lambda: lookup("com.apple.lsd.open"))
+probe("appleevents", lambda: lookup("com.apple.coreservices.appleevents"))
+probe("windowserver", lambda: lookup("com.apple.windowserver.active"))
+probe("cfprefsd", lambda: lookup("com.apple.cfprefsd.daemon"))
+probe("signal_parent", lambda: os.kill(parent, 0))
+probe("inspect_parent", lambda: pidpath(parent))
+probe("metal", metal)
+probe("write_private_tmp", lambda: write(os.path.join(private, "ok-%d" % os.getpid())))
+print(json.dumps(res))
+"#;
+
+    const ESCAPES: [&str; 16] = [
+        "exec",
+        "tcp_loopback",
+        "dns_socket",
+        "read_home",
+        "write_home",
+        "write_shared_tmp",
+        "launchservices",
+        "pasteboard",
+        "securityd",
+        "securityd_xpc",
+        "lsd_open",
+        "appleevents",
+        "windowserver",
+        "cfprefsd",
+        "signal_parent",
+        "inspect_parent",
+    ];
+
+    #[test]
+    fn sandbox_blocks_escapes() {
+        let python = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/pegoles-runtime/python/bin/python3.12");
+        if !python.is_file() || !Path::new(SANDBOX_EXEC).exists() {
+            eprintln!("skipped: build the runtime with scripts/local-model/build-runtime.sh");
+            return;
+        }
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        // A canary directory under HOME (outside every allowed subpath).
+        let home_dir = tempfile::tempdir_in(&home).unwrap();
+        std::fs::write(home_dir.path().join("canary"), "secret").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let models = tempfile::tempdir().unwrap();
+        let script = models.path().join("worker.py");
+        std::fs::write(&script, "").unwrap();
+        let cfg = MlxWorkerConfig::new(python.clone(), script, models.path().to_path_buf());
+        let tmp = worker_tmp_dir().unwrap();
+        let outside = tmp.parent().unwrap().to_path_buf();
+        let run = |sandboxed: bool| -> Value {
+            let mut cmd = if sandboxed {
+                let mut c = Command::new(SANDBOX_EXEC);
+                c.args(cfg.sandbox_args(&tmp).unwrap()).arg(&python);
+                c
+            } else {
+                Command::new(&python)
+            };
+            let out = cmd
+                .args(["-I", "-c", ESCAPE_PROBES])
+                .arg(std::process::id().to_string())
+                .arg(&port)
+                .arg(home_dir.path())
+                .arg(&outside)
+                .arg(&tmp)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("TMPDIR", &tmp)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "probe script failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            serde_json::from_slice(&out.stdout).unwrap()
+        };
+        let control = run(false);
+        let boxed = run(true);
+        for probe in ESCAPES {
+            assert_eq!(control[probe], "allowed", "control {probe}: {control}");
+            assert_eq!(boxed[probe], "blocked", "{probe} escaped the sandbox: {boxed}");
+        }
+        assert_eq!(boxed["metal"], "allowed", "{boxed}");
+        assert_eq!(boxed["write_private_tmp"], "allowed", "{boxed}");
+        assert!(!home_dir.path().join("written").exists());
+    }
+
     #[test]
     fn missing_runtime_is_a_clear_error() {
         let cfg = MlxWorkerConfig::new(
@@ -872,8 +1139,26 @@ mod tests {
         let mut w = MlxWorkerBackend::new(cfg);
         assert!(matches!(w.spawn(), Err(InferenceError::RuntimeMissing(_))));
         let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("worker.py");
+        std::fs::write(&script, "").unwrap();
+        // No interpreter at any candidate: a clear error, never a fallback.
         assert!(matches!(
-            MlxWorkerConfig::discover(tmp.path()),
+            MlxWorkerConfig::discover_from(
+                &[tmp.path().join("runtime/python/bin/python3.12")],
+                std::slice::from_ref(&script),
+                tmp.path(),
+            ),
+            Err(InferenceError::RuntimeMissing(_))
+        ));
+        // An interpreter but no worker script: also refused.
+        let python = tmp.path().join("python3.12");
+        std::fs::write(&python, "").unwrap();
+        assert!(matches!(
+            MlxWorkerConfig::discover_from(
+                std::slice::from_ref(&python),
+                &[tmp.path().join("missing.py")],
+                tmp.path(),
+            ),
             Err(InferenceError::RuntimeMissing(_))
         ));
     }

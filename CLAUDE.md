@@ -17,12 +17,15 @@ those before large changes.
   `native/macos/pegoles-vm-host/.build/release/pegoles-vm-host` next to
   the example binary, run it. Release builds ignore dev overrides.
 - The Swift helper must be re-signed after every rebuild:
-  `codesign --entitlements apps/desktop/src-tauri/entitlements/macos.plist -f -s - <helper>`.
+  `codesign --entitlements apps/desktop/src-tauri/entitlements/vm-host.plist -f -s - <helper>`.
 
 ## Local models
 
-- Runtime: `bash scripts/local-model/setup-runtime.sh` (hash-locked
-  venv at `<data>/runtime/mlx-venv`). Models: `cargo run -p
+- Runtime: `bash scripts/local-model/build-runtime.sh` builds the
+  relocatable interpreter + hash-locked wheels that ship inside the app
+  (`target/pegoles-runtime`, reproducible). Release builds only use the
+  copy in `Contents/Resources/runtime`; debug builds also find
+  `target/pegoles-runtime`. Models: `cargo run -p
   pegoles-inference --example models -- list|install <id>|verify <id>`
   (weights live in `<data>/models`, never in Git; catalog pinned in
   `crates/pegoles-inference/catalog/models.json`).

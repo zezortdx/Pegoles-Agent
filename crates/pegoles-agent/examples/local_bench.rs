@@ -893,7 +893,9 @@ fn main() {
         return;
     }
 
-    let python = data_dir().join("runtime/mlx-venv/bin/python");
+    // The runtime built by scripts/local-model/build-runtime.sh.
+    let python = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/pegoles-runtime/python/bin/python3.12");
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/mlx/pegoles_mlx_worker.py");
     let seed: u64 = 7;

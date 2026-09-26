@@ -30,9 +30,11 @@ fn main() {
     let verified = ModelStore::new(models_dir(&data))
         .verify(&spec)
         .expect("verified model");
-    // Release builds only look next to the executable: point at the repo copy.
+    // Release builds only look inside an app bundle: point at the repo's
+    // runtime build (scripts/local-model/build-runtime.sh) and worker copy.
     let mut cfg = MlxWorkerConfig::new(
-        data.join("runtime/mlx-venv/bin/python"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/pegoles-runtime/python/bin/python3.12"),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/mlx/pegoles_mlx_worker.py"),
         models_dir(&data),
     );
