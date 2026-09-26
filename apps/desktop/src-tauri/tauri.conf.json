@@ -39,7 +39,7 @@
     "active": true,
     "targets": "all",
     "macOS": {
-      "entitlements": "entitlements/macos.plist"
+      "minimumSystemVersion": "14.0"
     },
     "icon": [
       "icons/32x32.png",

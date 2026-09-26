@@ -28,7 +28,7 @@ cd native/macos/pegoles-vm-host && swift build -c release
 Rust locates the helper via `PEGOLES_VM_HOST`, else the dev build tree,
 else the Tauri bundle `Resources/` dir. The helper process itself needs
 `com.apple.security.virtualization` in its signature — see
-`scripts/codesign-dev.sh` and `apps/desktop/src-tauri/entitlements/macos.plist`.
+`scripts/codesign-dev.sh` and `apps/desktop/src-tauri/entitlements/vm-host.plist`.
 
 ## Threading (hard-won, verified with crash logs)
 

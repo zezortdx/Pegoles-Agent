@@ -6,7 +6,7 @@
 //!
 //! ```sh
 //! (cd native/macos/pegoles-vm-host && swift build -c release)
-//! codesign --entitlements apps/desktop/src-tauri/entitlements/macos.plist -f -s - \
+//! codesign --entitlements apps/desktop/src-tauri/entitlements/vm-host.plist -f -s - \
 //!   native/macos/pegoles-vm-host/.build/release/pegoles-vm-host
 //! cargo run -p pegoles-agent --example agent_e2e
 //! ```

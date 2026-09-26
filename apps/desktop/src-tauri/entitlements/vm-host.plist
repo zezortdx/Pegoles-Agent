@@ -2,10 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Required to create and run VMs with Apple Virtualization.framework.
-	     Without it, VZVirtualMachine creation/start fails and the backend
-	     reports error code `not_entitled`. No other entitlement is requested:
-	     no bridged networking, no extra capabilities. -->
+	<!-- Entitlements of the VM helper (Contents/MacOS/pegoles-vm-host) ONLY.
+	     The helper is the only process that uses Virtualization.framework;
+	     the app itself and the bundled Python runtime get no entitlements.
+	     Without this one, VZVirtualMachine creation/start fails and the
+	     backend reports error code `not_entitled`. Nothing else is requested:
+	     no bridged networking, no JIT, no library-validation exceptions. -->
 	<key>com.apple.security.virtualization</key>
 	<true/>
 </dict>
