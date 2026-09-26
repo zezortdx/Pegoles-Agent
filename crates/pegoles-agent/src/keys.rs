@@ -24,6 +24,11 @@ pub fn parse_key_combo(combo: &str) -> Result<Vec<String>, String> {
 }
 
 pub fn key_name(token: &str) -> Option<String> {
+    // Key names are ASCII. Lowercasing first would let look-alikes in
+    // (KELVIN SIGN lowercases to `k`): refuse them, as the protocol does.
+    if !token.is_ascii() {
+        return None;
+    }
     let lower = token.to_lowercase();
     let named = match lower.as_str() {
         "return" | "enter" | "kp_enter" => "Enter",

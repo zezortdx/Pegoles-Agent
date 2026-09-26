@@ -177,9 +177,10 @@ fn extract_thought(raw: &str) -> Option<String> {
 
 /// Bidi overrides/isolates, zero-width and other invisible formatting
 /// characters: they can make displayed text read differently from what
-/// it is.
+/// it is. The shared definition Pegoles Policy applies to typed text, so
+/// this parser refuses exactly what the policy would deny.
 pub fn is_invisible_format(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}' | '\u{00AD}')
+    pegoles_protocol::is_invisible_format(c)
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -548,6 +549,9 @@ fn qwen_action(
         other => Err(format!("unknown action {:?}", short(other))),
     }
 }
+
+#[cfg(test)]
+mod props;
 
 #[cfg(test)]
 mod tests {

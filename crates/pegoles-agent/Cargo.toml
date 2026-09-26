@@ -2,6 +2,7 @@
 name = "pegoles-agent"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Pegoles agent orchestrator: task loop, planners (model / scripted), budgets, cancellation"
 license = "MIT"
 
@@ -25,3 +26,4 @@ hex = { workspace = true }
 png = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true }
+proptest = { workspace = true }

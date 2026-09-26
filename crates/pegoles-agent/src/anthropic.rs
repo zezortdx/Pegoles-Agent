@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use pegoles_core::CancellationToken;
-use pegoles_protocol::{limits, ComputerAction, PointerButton};
+use pegoles_protocol::{is_invisible_format, limits, ComputerAction, PointerButton};
 use serde_json::{json, Value};
 
 use crate::planner::{
@@ -44,6 +44,13 @@ const MAX_IMAGES_PER_CONVERSATION: usize = 12;
 /// Same, by encoded size: incompressible guest screens must not push a
 /// request past the API's size limits.
 const MAX_IMAGE_BYTES_PER_CONVERSATION: usize = 12 * 1024 * 1024;
+/// Same, for text: assistant blocks (kept verbatim, as the API requires)
+/// and tool-result text. A provider cannot grow the conversation, which
+/// is re-sent on every request, without bound.
+const MAX_TEXT_BYTES_PER_CONVERSATION: usize = 2 * 1024 * 1024;
+/// Largest response accepted. A `MAX_TOKENS` reply is a small fraction
+/// of this; anything bigger is refused, never parsed or kept.
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 /// Upper bound for a single `key` call's `repeat` (the executor paces
 /// input; this keeps one call from monopolizing a turn).
 const MAX_KEY_REPEAT: u64 = 20;
@@ -115,6 +122,7 @@ pub struct AnthropicPlanner {
     cursor: (u32, u32),
     images: usize,
     image_bytes: usize,
+    text_bytes: usize,
     last_image: Option<Screenshot>,
     recent_notes: VecDeque<String>,
 }
@@ -135,6 +143,7 @@ impl AnthropicPlanner {
             cursor: (0, 0),
             images: 0,
             image_bytes: 0,
+            text_bytes: 0,
             last_image: None,
             recent_notes: VecDeque::new(),
         }
@@ -173,8 +182,10 @@ impl AnthropicPlanner {
             carried.push('\n');
         }
         carried.push_str("The attached screenshot is the most recent view of the screen.");
+        let objective = objective_text(&self.objective);
+        self.text_bytes = objective.len() + carried.len();
         let mut content = vec![
-            json!({"type": "text", "text": objective_text(&self.objective)}),
+            json!({"type": "text", "text": objective}),
             json!({"type": "text", "text": carried}),
         ];
         if let Some(shot) = &self.last_image {
@@ -217,10 +228,12 @@ impl Planner for AnthropicPlanner {
         self.last_image = Some(screen.clone());
         self.images = 1;
         self.image_bytes = screen.png.len();
+        let objective = objective_text(objective);
+        self.text_bytes = objective.len();
         self.messages = vec![json!({
             "role": "user",
             "content": [
-                {"type": "text", "text": objective_text(objective)},
+                {"type": "text", "text": objective},
                 image_block(screen),
             ]
         })];
@@ -251,13 +264,22 @@ impl Planner for AnthropicPlanner {
                     _ => None,
                 })
                 .sum();
+            let new_text: usize = outcomes
+                .iter()
+                .map(|o| match &o.result {
+                    Ok(CallOutput::Text(t)) | Err(t) => t.len(),
+                    Ok(CallOutput::Image(_)) => 0,
+                })
+                .sum();
             if self.images + new_images > MAX_IMAGES_PER_CONVERSATION
                 || self.image_bytes + new_bytes > MAX_IMAGE_BYTES_PER_CONVERSATION
+                || self.text_bytes + new_text > MAX_TEXT_BYTES_PER_CONVERSATION
             {
                 self.rollover(&summarize_outcomes(&outcomes));
             } else {
                 self.images += new_images;
                 self.image_bytes += new_bytes;
+                self.text_bytes += new_text;
                 self.messages
                     .push(json!({"role": "user", "content": tool_results(&outcomes)}));
             }
@@ -267,7 +289,17 @@ impl Planner for AnthropicPlanner {
         loop {
             let body = build_request(&self.cfg, &self.messages);
             let response = self.transport.send(&body, cancel)?;
+            // The HTTP transport caps the body too; this holds for any
+            // transport, before anything of the reply is kept.
+            let size = response.to_string().len();
+            if size > MAX_RESPONSE_BYTES {
+                return Err(PlannerError::Protocol(format!(
+                    "the model's response is larger than {} MiB",
+                    MAX_RESPONSE_BYTES >> 20
+                )));
+            }
             parsed = parse_response(&response)?;
+            self.text_bytes += size;
             self.messages
                 .push(json!({"role": "assistant", "content": parsed.content.clone()}));
             if parsed.stop_reason == "pause_turn" && pauses < 3 {
@@ -377,6 +409,10 @@ pub struct ParsedResponse {
     pub refusal: Option<String>,
 }
 
+/// Far above what a turn may execute (the runner caps calls per turn);
+/// a response with more tool calls is refused as malformed.
+const MAX_TOOL_USES_PER_RESPONSE: usize = 64;
+
 pub fn parse_response(v: &Value) -> Result<ParsedResponse, PlannerError> {
     let content = v["content"]
         .as_array()
@@ -400,6 +436,12 @@ pub fn parse_response(v: &Value) -> Result<ParsedResponse, PlannerError> {
     }
     if tool_uses.iter().any(|t| t.id.is_empty()) {
         return Err(PlannerError::Protocol("tool_use without id".to_string()));
+    }
+    if tool_uses.len() > MAX_TOOL_USES_PER_RESPONSE {
+        return Err(PlannerError::Protocol(format!(
+            "response has {} tool calls (at most {MAX_TOOL_USES_PER_RESPONSE})",
+            tool_uses.len()
+        )));
     }
     let refusal = (stop_reason == "refusal").then(|| {
         let d = &v["stop_details"];
@@ -449,15 +491,20 @@ pub fn tool_results(outcomes: &[CallOutcome]) -> Vec<Value> {
 }
 
 fn summarize_outcomes(outcomes: &[CallOutcome]) -> String {
-    outcomes
+    const SHOWN: usize = 16;
+    let mut parts: Vec<String> = outcomes
         .iter()
+        .take(SHOWN)
         .map(|o| match &o.result {
             Ok(CallOutput::Image(_)) => "screenshot taken".to_string(),
             Ok(CallOutput::Text(t)) => t.chars().take(80).collect(),
             Err(e) => format!("error: {}", e.chars().take(120).collect::<String>()),
         })
-        .collect::<Vec<_>>()
-        .join("; ")
+        .collect();
+    if outcomes.len() > SHOWN {
+        parts.push(format!("and {} more", outcomes.len() - SHOWN));
+    }
+    parts.join("; ")
 }
 
 // --- translation: toolset member → typed actions -------------------------
@@ -560,16 +607,36 @@ fn translate_member(
         }
         "type" => {
             let text = input["text"].as_str().ok_or("type needs text")?;
-            let chars: Vec<char> = text.chars().collect();
-            Ok(chars
-                .chunks(limits::MAX_TYPE_CHARS)
-                .map(|c| {
-                    Step::Act(ComputerAction::TypeText {
-                        text: c.iter().collect(),
-                        sensitive: false,
-                    })
-                })
-                .collect())
+            // The same rules as Pegoles Policy and the local parser, so
+            // both providers refuse alike and the model reads why. Longer
+            // text is refused, never split: one call stays one bounded
+            // action.
+            if text.is_empty() {
+                return Err("type needs non-empty text".to_string());
+            }
+            if text.chars().count() > limits::MAX_TYPE_CHARS {
+                return Err(format!(
+                    "type text is longer than {} characters; type it in parts",
+                    limits::MAX_TYPE_CHARS
+                ));
+            }
+            if text
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+            {
+                return Err("type text contains control characters".to_string());
+            }
+            if text.chars().any(is_invisible_format) {
+                return Err(
+                    "type text contains invisible formatting characters (bidi controls, \
+                     zero-width characters); type visible text only"
+                        .to_string(),
+                );
+            }
+            Ok(vec![Step::Act(ComputerAction::TypeText {
+                text: text.to_string(),
+                sensitive: false,
+            })])
         }
         "key" => {
             let combo = input["text"].as_str().ok_or("key needs text")?;
@@ -672,15 +739,28 @@ pub struct HttpTransport {
     agent: ureq::Agent,
 }
 
+/// Agent settings. Redirects are never followed: a redirect would carry
+/// the `x-api-key` header (only `Authorization` and cookies are dropped)
+/// to whatever host the `Location` names. A 3xx is an error instead.
+fn agent_config(timeout: Duration) -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::Agent::config_builder()
+        .https_only(true)
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .timeout_global(Some(timeout))
+}
+
+/// Why one POST produced no reply to interpret.
+enum PostError {
+    /// Connection-level failure: worth retrying.
+    Transport(String),
+    /// Larger than any real reply: never retried.
+    TooLarge,
+}
+
 impl HttpTransport {
     pub fn new(cfg: &AnthropicConfig) -> Self {
-        let agent = ureq::Agent::new_with_config(
-            ureq::Agent::config_builder()
-                .https_only(true)
-                .http_status_as_error(false)
-                .timeout_global(Some(cfg.request_timeout))
-                .build(),
-        );
+        let agent = ureq::Agent::new_with_config(agent_config(cfg.request_timeout).build());
         Self {
             api_key: cfg.api_key.clone(),
             endpoint: cfg.endpoint.clone(),
@@ -689,7 +769,7 @@ impl HttpTransport {
         }
     }
 
-    fn post_once(&self, body: String) -> Result<(u16, Option<u64>, String), String> {
+    fn post_once(&self, body: String) -> Result<(u16, Option<u64>, String), PostError> {
         let mut req = self
             .agent
             .post(&self.endpoint)
@@ -699,14 +779,24 @@ impl HttpTransport {
         if let Some(beta) = self.beta {
             req = req.header("anthropic-beta", beta);
         }
-        let mut res = req.send(body).map_err(|e| e.to_string())?;
+        let mut res = req
+            .send(body)
+            .map_err(|e| PostError::Transport(e.to_string()))?;
         let status = res.status().as_u16();
         let retry_after = res
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok());
-        let text = res.body_mut().read_to_string().map_err(|e| e.to_string())?;
+        let text = res
+            .body_mut()
+            .with_config()
+            .limit(MAX_RESPONSE_BYTES as u64)
+            .read_to_string()
+            .map_err(|e| match e {
+                ureq::Error::BodyExceedsLimit(_) => PostError::TooLarge,
+                other => PostError::Transport(other.to_string()),
+            })?;
         Ok((status, retry_after, text))
     }
 }
@@ -763,18 +853,30 @@ impl ModelTransport for HttpTransport {
             };
             let (status, retry_after, text) = match outcome {
                 Ok(parts) => parts,
-                Err(e) if attempt < MAX_RETRIES => {
+                Err(PostError::TooLarge) => {
+                    return Err(PlannerError::Protocol(format!(
+                        "the model's response is larger than {} MiB",
+                        MAX_RESPONSE_BYTES >> 20
+                    )))
+                }
+                Err(PostError::Transport(_)) if attempt < MAX_RETRIES => {
                     attempt += 1;
                     sleep_cancellable(Duration::from_secs(1 << attempt), cancel)?;
-                    let _ = e;
                     continue;
                 }
-                Err(e) => return Err(PlannerError::Unavailable(e)),
+                Err(PostError::Transport(e)) => return Err(PlannerError::Unavailable(e)),
             };
             match status {
                 200 => {
                     return serde_json::from_str(&text)
                         .map_err(|e| PlannerError::Protocol(format!("invalid JSON: {e}")))
+                }
+                // Never followed (see `agent_config`), never retried.
+                300..=399 => {
+                    return Err(PlannerError::Protocol(format!(
+                        "HTTP {status}: the API answered with a redirect, which Pegoles \
+                         does not follow"
+                    )))
                 }
                 401 | 403 => return Err(PlannerError::Auth(api_error_message(&text))),
                 429 if attempt < MAX_RETRIES => {
@@ -1023,9 +1125,9 @@ mod tests {
         );
         let wait = translate(&t("wait", json!({"duration":65})), (200, 200), &mut cursor);
         assert_eq!(wait.steps.unwrap().len(), 3); // 30 + 30 + 5 s
-        let long = "a".repeat(limits::MAX_TYPE_CHARS + 5);
-        let typed = translate(&t("type", json!({ "text": long })), (200, 200), &mut cursor);
-        assert_eq!(typed.steps.unwrap().len(), 2);
+        let full = "a".repeat(limits::MAX_TYPE_CHARS);
+        let typed = translate(&t("type", json!({ "text": full })), (200, 200), &mut cursor);
+        assert_eq!(typed.steps.unwrap().len(), 1);
         let pos = translate(&t("cursor_position", json!({})), (200, 200), &mut cursor);
         assert_eq!(pos.steps, Ok(vec![Step::Reply("X=100,Y=100".into())]));
         translate(
@@ -1194,5 +1296,239 @@ mod tests {
     fn api_error_bodies_never_leak_beyond_the_message() {
         let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
         assert_eq!(api_error_message(body), "invalid x-api-key");
+    }
+
+    fn typed(text: &str) -> Result<Vec<Step>, String> {
+        let t = ToolUse {
+            id: "t".into(),
+            name: "type".into(),
+            toolset: Some("computer".into()),
+            input: json!({ "text": text }),
+        };
+        translate(&t, (100, 100), &mut (0, 0)).steps
+    }
+
+    #[test]
+    fn typed_text_follows_the_same_rules_as_policy_and_the_local_parser() {
+        // Longer than one action may carry: refused, never split into a
+        // run of actions (one call stays one bounded action).
+        let long = typed(&"a".repeat(limits::MAX_TYPE_CHARS + 1)).unwrap_err();
+        assert!(long.contains("longer than"), "{long}");
+        let huge = typed(&"é".repeat(400 * limits::MAX_TYPE_CHARS));
+        assert!(huge.is_err());
+        // Bidi overrides, isolates, zero-width and other format characters.
+        for hostile in [
+            "rm \u{202E}txt.exe",
+            "a\u{200B}b",
+            "a\u{2066}b\u{2069}",
+            "\u{FEFF}echo",
+            "tag\u{E0041}",
+        ] {
+            let e = typed(hostile).unwrap_err();
+            assert!(e.contains("invisible"), "{hostile:?}: {e}");
+        }
+        assert!(typed("a\u{7}b").unwrap_err().contains("control"));
+        assert!(typed("a\u{1b}[2Jb").is_err());
+        assert!(typed("").is_err());
+        assert_eq!(
+            typed("ls -la\n\techo ok").unwrap(),
+            vec![Step::Act(ComputerAction::TypeText {
+                text: "ls -la\n\techo ok".into(),
+                sensitive: false
+            })]
+        );
+    }
+
+    #[test]
+    fn oversized_responses_are_refused_before_they_are_kept() {
+        let big = "x".repeat(MAX_RESPONSE_BYTES + 1);
+        let (mut p, _) = planner_with(vec![json!({
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": big}]
+        })]);
+        p.start("x", &shot(10, 10)).unwrap();
+        let err = p.next(vec![], &CancellationToken::new()).unwrap_err();
+        assert!(
+            matches!(&err, PlannerError::Protocol(m) if m.contains("larger than")),
+            "{err:?}"
+        );
+        assert_eq!(p.messages.len(), 1, "nothing of the reply was kept");
+    }
+
+    #[test]
+    fn provider_text_kept_in_the_conversation_is_bounded() {
+        // A provider that pads every reply (and every pause) with large
+        // text blocks: the conversation re-sent on each request rolls
+        // over by text size too, like screenshots.
+        let pad = "p".repeat(300 * 1024);
+        let mut replies = Vec::new();
+        for i in 0..24 {
+            replies.push(json!({"stop_reason":"pause_turn","content":[
+                {"type":"text","text": pad},
+            ]}));
+            replies.push(json!({"stop_reason":"tool_use","content":[
+                {"type":"thinking","thinking": pad, "signature": "s"},
+                tool_use(&format!("k{i}"),"key",json!({"text":"Return"}))
+            ]}));
+        }
+        let (mut p, seen) = planner_with(replies);
+        p.start("x", &shot(10, 10)).unwrap();
+        let mut outcomes = vec![];
+        for _ in 0..24 {
+            let PlannerTurn::Calls { calls, .. } =
+                p.next(outcomes, &CancellationToken::new()).unwrap()
+            else {
+                panic!("expected calls")
+            };
+            outcomes = vec![CallOutcome {
+                call_id: calls[0].call_id.clone(),
+                result: Ok(CallOutput::Text("OK".into())),
+                skipped: false,
+            }];
+        }
+        let seen = seen.lock().unwrap();
+        let largest = seen.iter().map(|b| b.to_string().len()).max().unwrap();
+        // The rollover threshold plus one turn's worth of replies.
+        assert!(
+            largest < MAX_TEXT_BYTES_PER_CONVERSATION + 4 * pad.len(),
+            "a request carried {largest} bytes"
+        );
+        assert!(
+            seen.iter()
+                .skip(1)
+                .any(|b| b["messages"].as_array().unwrap().len() == 1),
+            "the conversation rolled over"
+        );
+    }
+
+    #[test]
+    fn a_response_with_too_many_tool_calls_is_refused() {
+        let blocks: Vec<Value> = (0..=MAX_TOOL_USES_PER_RESPONSE)
+            .map(|i| json!({"type": "tool_use", "id": format!("t{i}"), "name": "computer", "input": {}}))
+            .collect();
+        let res = parse_response(&json!({"content": blocks, "stop_reason": "tool_use"}));
+        assert!(matches!(res, Err(PlannerError::Protocol(_))));
+    }
+
+    #[test]
+    fn the_http_transport_never_follows_redirects_and_is_https_only() {
+        let t = HttpTransport::new(&cfg("claude-opus-5"));
+        assert_eq!(t.agent.config().max_redirects(), 0);
+        assert!(t.agent.config().https_only());
+    }
+
+    /// Plain-HTTP stand-in for an API origin on localhost: answers every
+    /// connection with `reply` and records each request head.
+    fn serve(reply: Vec<u8>) -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let seen = heads.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 16 * 1024];
+                let mut head = None;
+                loop {
+                    match s.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                    let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let text = String::from_utf8_lossy(&buf[..end]).to_string();
+                    let body_len = text
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())?
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + body_len {
+                        head = Some(text);
+                        break;
+                    }
+                }
+                seen.lock().unwrap().push(head.unwrap_or_default());
+                let _ = s.write_all(&reply);
+                let _ = s.flush();
+            }
+        });
+        (addr, heads)
+    }
+
+    fn plain_http_transport(endpoint: String) -> HttpTransport {
+        // The production agent settings, minus HTTPS (localhost test only).
+        HttpTransport {
+            api_key: "sk-ant-redirect-secret".into(),
+            endpoint,
+            beta: None,
+            agent: ureq::Agent::new_with_config(
+                agent_config(Duration::from_secs(10))
+                    .https_only(false)
+                    .build(),
+            ),
+        }
+    }
+
+    #[test]
+    fn redirects_are_errors_and_never_carry_the_key_elsewhere() {
+        for code in [
+            "301 Moved Permanently",
+            "302 Found",
+            "307 Temporary Redirect",
+        ] {
+            let (elsewhere, stolen) = serve(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_vec(),
+            );
+            let redirect = format!(
+                "HTTP/1.1 {code}\r\nlocation: http://{elsewhere}/steal\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            );
+            let (origin, asked) = serve(redirect.into_bytes());
+            let t = plain_http_transport(format!("http://{origin}/v1/messages"));
+            let err = t
+                .send(&json!({"model": "m"}), &CancellationToken::new())
+                .unwrap_err();
+            assert!(
+                matches!(&err, PlannerError::Protocol(m) if m.contains("redirect")),
+                "{code}: {err:?}"
+            );
+            assert_eq!(asked.lock().unwrap().len(), 1, "{code}: never retried");
+            assert!(
+                stolen.lock().unwrap().is_empty(),
+                "{code}: the redirect target was contacted: {:?}",
+                stolen.lock().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_bodies_are_refused_without_retrying() {
+        let body = json!({
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "a".repeat(MAX_RESPONSE_BYTES + 1024)}]
+        })
+        .to_string();
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(body.as_bytes());
+        let (origin, asked) = serve(reply);
+        let t = plain_http_transport(format!("http://{origin}/v1/messages"));
+        let err = t
+            .send(&json!({"model": "m"}), &CancellationToken::new())
+            .unwrap_err();
+        assert!(
+            matches!(&err, PlannerError::Protocol(m) if m.contains("larger than")),
+            "{err:?}"
+        );
+        assert_eq!(asked.lock().unwrap().len(), 1, "never retried");
     }
 }

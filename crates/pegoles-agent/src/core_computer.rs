@@ -4,20 +4,26 @@
 //!
 //! Lock discipline: Core is only held for one action, one observation,
 //! or one readiness probe at a time. Waits sleep with the lock released,
-//! so status polling, guest heartbeats and cancellation never stall
-//! behind an agent run.
+//! and long typed text is dispatched as several short actions with the
+//! lock released between them, so status polling, guest heartbeats and
+//! cancellation never stall behind an agent run.
 
 use std::time::{Duration, Instant};
 
 use pegoles_core::{CancellationToken, ComputerRegistry, EventBus, TaskManager};
 use pegoles_policy::PolicyContext;
 use pegoles_protocol::{
-    ActionId, ActionOutcome, ActionResult, AgentEvent, ComputerAction, ComputerState, ControlOwner,
-    GuestRuntimeState, TaskId, TaskStatus,
+    ActionId, ActionOutcome, ActionRequest, ActionResult, AgentEvent, ComputerAction, ComputerId,
+    ComputerState, ControlOwner, Decision, GuestRuntimeState, TaskId, TaskStatus,
 };
 
 use crate::planner::Screenshot;
 use crate::runner::AgentComputer;
+
+/// Characters of typed text dispatched per Core lock: a few guest
+/// primitives (about 2 s of paced keystrokes), not the 30-60 s a full
+/// `MAX_TYPE_CHARS` action takes.
+pub const TYPE_CHARS_PER_LOCK: usize = 4 * pegoles_computer::input::TYPE_SLICE_CHARS;
 
 /// Exclusive access to Core. Implementations recover a poisoned lock and
 /// keep their own bookkeeping (e.g. event history) in sync afterwards.
@@ -29,8 +35,9 @@ pub struct CoreComputer<A: CoreAccess> {
     access: A,
     bus: EventBus,
     ctx: PolicyContext,
-    /// When the last input action was dispatched: actions are paced to
-    /// the executor's rate brake instead of being rejected by it.
+    /// When the executor was last entered: actions, waits and
+    /// observations all count against its rate brake, so all of them are
+    /// paced to it instead of being rejected by it.
     last_act: std::sync::Mutex<Option<Instant>>,
     /// Budget for create/start + guest runtime readiness.
     pub prepare_timeout: Duration,
@@ -70,6 +77,78 @@ impl<A: CoreAccess> CoreComputer<A> {
             reason,
         )
     }
+
+    /// One action through the executor under one short lock.
+    fn execute(
+        &self,
+        task: TaskId,
+        action: ComputerAction,
+        cancel: &CancellationToken,
+    ) -> ActionResult {
+        self.pace();
+        self.access.with_core(|r, _| {
+            r.execute_action(task, action, false, &self.ctx, cancel, false)
+                .0
+        })
+    }
+
+    /// Long text as consecutive executor actions, one lock each: every
+    /// part is rate-limited, policy-checked, ownership-checked and
+    /// audited on its own, and Stop or a takeover lands between parts.
+    /// Policy judges the WHOLE text first (the key-material tripwire
+    /// must see strings a part boundary would cut); text it would refuse
+    /// goes through the executor unsplit, so the denial is recorded
+    /// exactly as before.
+    fn type_in_parts(
+        &self,
+        task: TaskId,
+        text: String,
+        sensitive: bool,
+        cancel: &CancellationToken,
+    ) -> ActionResult {
+        // Policy judges an action's shape only; the ids are placeholders.
+        let whole = ActionRequest::new(
+            task,
+            ComputerId::new(),
+            ComputerAction::TypeText {
+                text: text.clone(),
+                sensitive,
+            },
+        );
+        if pegoles_policy::evaluate(&whole, &self.ctx).decision != Decision::Allow {
+            return self.execute(task, whole.action, cancel);
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let total = chars.len();
+        let mut typed = 0;
+        let mut last = None;
+        for part in chars.chunks(TYPE_CHARS_PER_LOCK) {
+            if typed > 0 && cancel.is_cancelled() {
+                return partial(Self::interrupted("cancelled mid-action"), typed, total);
+            }
+            let text = part.iter().collect();
+            let result = self.execute(task, ComputerAction::TypeText { text, sensitive }, cancel);
+            if result.outcome != ActionOutcome::Executed {
+                return partial(result, typed, total);
+            }
+            typed += part.len();
+            last = Some(result);
+        }
+        // Only called for text longer than one part: some part ran.
+        last.unwrap_or_else(|| Self::interrupted("nothing was typed"))
+    }
+}
+
+/// A failure after some text was already typed says how much, so the
+/// planner does not type it all again.
+fn partial(mut result: ActionResult, typed: usize, total: usize) -> ActionResult {
+    if typed > 0 {
+        result.message = format!(
+            "{} (the first {typed} of {total} characters were typed)",
+            result.message
+        );
+    }
+    result
 }
 
 enum Readiness {
@@ -147,6 +226,7 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
     }
 
     fn observe(&self, task: TaskId, cancel: &CancellationToken) -> Result<Screenshot, String> {
+        self.pace();
         let (meta, rgba) = self.access.with_core(|r, _| {
             let (result, _) = r.execute_action(
                 task,
@@ -189,6 +269,7 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
             return Self::interrupted("the agent no longer controls the computer");
         }
         if let ComputerAction::Wait { duration_ms } = action {
+            self.pace();
             let ticket = match self
                 .access
                 .with_core(|r, _| r.begin_wait(task, duration_ms, &self.ctx))
@@ -209,11 +290,14 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
                 .access
                 .with_core(|r, _| r.end_wait(ticket, interrupted));
         }
-        self.pace();
-        let result = self.access.with_core(|r, _| {
-            r.execute_action(task, action, false, &self.ctx, cancel, false)
-                .0
-        });
+        let result = match action {
+            ComputerAction::TypeText { text, sensitive }
+                if text.chars().count() > TYPE_CHARS_PER_LOCK =>
+            {
+                self.type_in_parts(task, text, sensitive, cancel)
+            }
+            action => self.execute(task, action, cancel),
+        };
         if result.outcome == ActionOutcome::Interrupted {
             cancel.cancel();
         }
@@ -415,5 +499,196 @@ mod tests {
         cancel.cancel();
         let result = waiter.join().unwrap();
         assert_eq!(result.outcome, ActionOutcome::Interrupted);
+    }
+
+    #[test]
+    fn observations_and_waits_are_paced_not_rate_limited() {
+        // Found by the security matrix: after a sustained burst of paced
+        // input, an unpaced screenshot hit the executor's rate brake and
+        // the run failed on its final evidence frame.
+        let (core, bus, _dir) = rig();
+        let task = core.lock().unwrap().1.submit_task("x").unwrap().id;
+        let computer = computer(&core, bus);
+        let cancel = CancellationToken::new();
+        computer.prepare(&cancel).unwrap();
+        for _ in 0..10 {
+            let r = computer.act(task, ComputerAction::KeyPress { key: "a".into() }, &cancel);
+            assert_eq!(r.outcome, ActionOutcome::Executed, "{}", r.message);
+            let w = computer.act(task, ComputerAction::Wait { duration_ms: 1 }, &cancel);
+            assert_eq!(w.outcome, ActionOutcome::Executed, "{}", w.message);
+            if let Err(e) = computer.observe(task, &cancel) {
+                panic!("observation rejected: {e}");
+            }
+        }
+    }
+
+    /// Core behind its mutex, watched from outside: records the text each
+    /// lock hold dispatched to the guest, and plays a human takeover once
+    /// `take_over_after` parts were typed.
+    struct Probe {
+        core: Arc<Mutex<(ComputerRegistry, TaskManager)>>,
+        events: Mutex<tokio::sync::broadcast::Receiver<AgentEvent>>,
+        typed_per_hold: Mutex<Vec<Vec<String>>>,
+        take_over_after: Option<usize>,
+    }
+
+    impl CoreAccess for Probe {
+        fn with_core<R>(&self, f: impl FnOnce(&mut ComputerRegistry, &mut TaskManager) -> R) -> R {
+            let result = {
+                let mut guard = self.core.lock().unwrap_or_else(|e| e.into_inner());
+                let parts: usize = self
+                    .typed_per_hold
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(Vec::len)
+                    .sum();
+                if self.take_over_after.is_some_and(|n| parts >= n) {
+                    guard.0.cancel_agent_input("takeover");
+                    guard.0.end_agent_session(&mut Vec::new());
+                }
+                let (r, t) = &mut *guard;
+                f(r, t)
+            };
+            let mut typed = Vec::new();
+            let mut rx = self.events.lock().unwrap();
+            while let Ok(event) = rx.try_recv() {
+                if let AgentEvent::ActionStarted { request, .. } = event {
+                    if let ComputerAction::TypeText { text, .. } = request.action {
+                        typed.push(text);
+                    }
+                }
+            }
+            if !typed.is_empty() {
+                self.typed_per_hold.lock().unwrap().push(typed);
+            }
+            result
+        }
+    }
+
+    fn probed(take_over_after: Option<usize>) -> (CoreComputer<Probe>, TaskId, tempfile::TempDir) {
+        let (core, bus, dir) = rig();
+        let task = core.lock().unwrap().1.submit_task("type").unwrap().id;
+        let probe = Probe {
+            core,
+            events: Mutex::new(bus.subscribe()),
+            typed_per_hold: Mutex::new(Vec::new()),
+            take_over_after,
+        };
+        let mut computer = CoreComputer::new(probe, bus);
+        computer.prepare_timeout = Duration::from_secs(3);
+        computer.prepare(&CancellationToken::new()).unwrap();
+        (computer, task, dir)
+    }
+
+    fn text_of(n: usize) -> String {
+        (0..n).map(|i| (b'a' + (i % 26) as u8) as char).collect()
+    }
+
+    #[test]
+    fn long_text_is_typed_in_parts_with_core_released_between_them() {
+        let (computer, task, _dir) = probed(None);
+        let text = text_of(1000);
+        let result = computer.act(
+            task,
+            ComputerAction::TypeText {
+                text: text.clone(),
+                sensitive: false,
+            },
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            result.outcome,
+            ActionOutcome::Executed,
+            "{}",
+            result.message
+        );
+        let holds = computer.access.typed_per_hold.lock().unwrap().clone();
+        // One part per lock hold, each at most TYPE_CHARS_PER_LOCK, in
+        // order, nothing lost.
+        assert_eq!(holds.len(), text.len().div_ceil(TYPE_CHARS_PER_LOCK));
+        assert!(holds.iter().all(|h| h.len() == 1), "{holds:?}");
+        assert!(holds
+            .iter()
+            .all(|h| h[0].chars().count() <= TYPE_CHARS_PER_LOCK));
+        assert_eq!(holds.concat().concat(), text);
+
+        // Short text stays one action.
+        let (computer, task, _dir) = probed(None);
+        let short = text_of(TYPE_CHARS_PER_LOCK);
+        computer.act(
+            task,
+            ComputerAction::TypeText {
+                text: short.clone(),
+                sensitive: false,
+            },
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            *computer.access.typed_per_hold.lock().unwrap(),
+            vec![vec![short]]
+        );
+    }
+
+    #[test]
+    fn key_material_cut_by_a_part_boundary_is_still_refused() {
+        let (computer, task, _dir) = probed(None);
+        // "PRIVATE " ends the first part and "KEY-----" starts the second:
+        // neither part alone trips the policy's tripwire.
+        let marker = "-----BEGIN RSA PRIVATE KEY-----";
+        let prefix = "a".repeat(TYPE_CHARS_PER_LOCK - 8 - marker.find("PRIVATE").unwrap());
+        let text = format!("{prefix}{marker}\nMIIEow{}", "b".repeat(300));
+        let first: String = text.chars().take(TYPE_CHARS_PER_LOCK).collect();
+        assert!(first.ends_with("PRIVATE "), "{first}");
+        let result = computer.act(
+            task,
+            ComputerAction::TypeText {
+                text,
+                sensitive: false,
+            },
+            &CancellationToken::new(),
+        );
+        assert_eq!(result.outcome, ActionOutcome::Blocked, "{}", result.message);
+        assert!(
+            computer.access.typed_per_hold.lock().unwrap().is_empty(),
+            "nothing reached the guest"
+        );
+    }
+
+    #[test]
+    fn a_takeover_between_parts_stops_the_rest() {
+        let (computer, task, _dir) = probed(Some(1));
+        let cancel = CancellationToken::new();
+        let result = computer.act(
+            task,
+            ComputerAction::TypeText {
+                text: text_of(1000),
+                sensitive: false,
+            },
+            &cancel,
+        );
+        assert_eq!(
+            result.outcome,
+            ActionOutcome::Interrupted,
+            "{}",
+            result.message
+        );
+        assert!(
+            result
+                .message
+                .contains(&format!("first {TYPE_CHARS_PER_LOCK} of 1000")),
+            "{}",
+            result.message
+        );
+        let parts: usize = computer
+            .access
+            .typed_per_hold
+            .lock()
+            .unwrap()
+            .iter()
+            .map(Vec::len)
+            .sum();
+        assert_eq!(parts, 1);
+        assert!(cancel.is_cancelled(), "the run ends");
     }
 }
