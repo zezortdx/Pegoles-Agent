@@ -9,15 +9,23 @@
 //! (request size, reply size, timeout); cancellation is cooperative first
 //! (the worker stops between tokens) and forceful after a grace period
 //! (kill). A crashed or killed worker is respawned on the next request
-//! and the model reloaded. The worker runs with a cleared environment
-//! (no API keys, offline flags), under `sandbox-exec` with the network
-//! denied and user files read-only when available.
+//! and the model re-verified and reloaded. The worker runs with a cleared
+//! environment (no API keys, offline flags), under `sandbox-exec` with the
+//! network denied and user files read-only when available. Its pipes are
+//! served by threads (stdin writer, stdout reader, stderr drain), so a
+//! worker that stops reading or floods stderr cannot stall or exhaust the
+//! host. It runs in its own process group, which is killed as a whole.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::ffi::{CStr, CString};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,7 +37,7 @@ use crate::backend::{
     InferenceError, LoadReport, Part, Role, Timings,
 };
 use crate::hardware;
-use crate::store::VerifiedModel;
+use crate::store::{ModelStore, VerifiedModel};
 
 pub const PROTOCOL_VERSION: u64 = 1;
 /// Largest reply line accepted from the worker (text is capped at 32K
@@ -37,7 +45,51 @@ pub const PROTOCOL_VERSION: u64 = 1;
 const MAX_REPLY_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_LINES: usize = 40;
 const MAX_STDERR_LINE_CHARS: usize = 400;
+/// Bytes kept of one stderr line (room for `MAX_STDERR_LINE_CHARS` of any
+/// UTF-8); the rest of a longer line is read and dropped.
+const MAX_STDERR_LINE_BYTES: usize = MAX_STDERR_LINE_CHARS * 4;
 const POLL: Duration = Duration::from_millis(25);
+/// A worker whose stdout closed gets this long to exit on its own (so its
+/// status can be reported) before it is killed.
+const EXIT_GRACE: Duration = Duration::from_secs(1);
+/// How long the stderr drain may take to catch up once the worker is gone.
+const STDERR_SETTLE: Duration = Duration::from_millis(250);
+/// Deepest level below the worker's temp dir that is emptied on spawn
+/// (bounds the host's stack and open descriptors). Only a hostile worker
+/// nests deeper; what lies below is left in place.
+const MAX_CLEAR_DEPTH: usize = 16;
+/// Listing passes per directory while emptying it (a directory changed
+/// while listed can skip entries; something that keeps writing to it
+/// cannot hold a spawn).
+const MAX_CLEAR_PASSES: usize = 4;
+/// Whole-cleanup budget: entries visited and wall time. A spawn never waits
+/// longer than this on what an earlier (possibly hostile) worker left
+/// behind; whatever is left over is tried again at the next spawn.
+const MAX_CLEAR_ENTRIES: usize = 100_000;
+const MAX_CLEAR_TIME: Duration = Duration::from_secs(2);
+
+struct ClearBudget {
+    entries_left: usize,
+    until: Instant,
+}
+
+impl ClearBudget {
+    fn new() -> Self {
+        Self {
+            entries_left: MAX_CLEAR_ENTRIES,
+            until: Instant::now() + MAX_CLEAR_TIME,
+        }
+    }
+
+    fn spend(&mut self) -> bool {
+        if self.entries_left == 0 || Instant::now() >= self.until {
+            self.entries_left = 0;
+            return false;
+        }
+        self.entries_left -= 1;
+        true
+    }
+}
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// MLX buffer-cache ceiling for the worker.
@@ -47,6 +99,7 @@ pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 /// treated as compromisable (it parses model files and runs a large native
 /// stack), so the profile removes every way out that it does not need:
 /// - no network at all (TCP, UDP, DNS and unix sockets);
+/// - no fork (nothing can leave the process group the supervisor kills);
 /// - no exec of anything but its own interpreter (so no `open`, no
 ///   `osascript`, no shell), no Apple Events;
 /// - no Mach services except the Metal compiler: in particular no
@@ -59,10 +112,12 @@ pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 ///   store and the worker script (metadata stays readable: Python
 ///   resolves its own path);
 /// - writes only to a private temporary directory.
+///
 /// `tests::sandbox_blocks_escapes` pins these against the real runtime.
 const SANDBOX_PROFILE: &str = r#"(version 1)
 (allow default)
 (deny network*)
+(deny process-fork)
 (deny process-exec*)
 (allow process-exec (literal (param "PYTHON")))
 (deny appleevent-send)
@@ -122,11 +177,7 @@ impl MlxWorkerConfig {
     /// repository's build output. Release builds never run a Python found
     /// in a user-writable location such as the data directory.
     pub fn discover(data_dir: &Path) -> Result<Self, InferenceError> {
-        Self::discover_from(
-            &runtime_candidates(),
-            &worker_script_candidates(),
-            data_dir,
-        )
+        Self::discover_from(&runtime_candidates(), &worker_script_candidates(), data_dir)
     }
 
     fn discover_from(
@@ -161,14 +212,22 @@ impl MlxWorkerConfig {
     /// `sandbox-exec` arguments: the profile and its parameters. Values are
     /// passed as `-D` parameters, never spliced into the profile text.
     fn sandbox_args(&self, tmp: &Path) -> Result<Vec<String>, InferenceError> {
-        let abs = |p: &Path| -> Result<String, InferenceError> {
-            let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let param = |p: &Path| -> Result<String, InferenceError> {
             p.to_str()
                 .filter(|s| p.is_absolute() && !s.contains('"'))
                 .map(str::to_string)
                 .ok_or_else(|| {
                     InferenceError::RuntimeMissing(format!("unusable path {}", p.display()))
                 })
+        };
+        let abs = |p: &Path| param(&canonical(p));
+        // Only the temp dir's parent is resolved: the worker can replace
+        // the temp dir itself with a symlink, which must not turn into
+        // write access to the link's target for the next worker.
+        let tmp = match (tmp.parent(), tmp.file_name()) {
+            (Some(parent), Some(name)) => param(&canonical(parent).join(name))?,
+            _ => return Err(InferenceError::RuntimeMissing("bad worker temp dir".into())),
         };
         let home = std::env::var("HOME").map_err(|_| {
             InferenceError::RuntimeMissing("HOME is not set; cannot sandbox the worker".into())
@@ -187,7 +246,7 @@ impl MlxWorkerConfig {
             "-D".into(),
             format!("HOME={}", abs(Path::new(&home))?),
             "-D".into(),
-            format!("TMP={}", abs(tmp)?),
+            format!("TMP={tmp}"),
             "-D".into(),
             format!("PYTHON={}", abs(&self.python)?),
             "-D".into(),
@@ -203,25 +262,32 @@ impl MlxWorkerConfig {
 }
 
 /// The worker's private temporary directory: `pegoles-mlx` inside the
-/// per-user Darwin temp dir, owned by this user, mode 0700, never a
-/// symlink. It is the only place the sandboxed worker may write.
-fn worker_tmp_dir() -> Result<PathBuf, InferenceError> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-    let base = darwin_user_temp_dir().ok_or_else(|| {
-        InferenceError::RuntimeMissing("no per-user temporary directory".into())
-    })?;
+/// per-user Darwin temp dir. It is the only place the sandboxed worker may
+/// write. Returned with a descriptor on it (see `open_private_dir`).
+fn worker_tmp_dir() -> Result<(PathBuf, OwnedFd), InferenceError> {
+    let base = darwin_user_temp_dir()
+        .ok_or_else(|| InferenceError::RuntimeMissing("no per-user temporary directory".into()))?;
     let dir = base.join("pegoles-mlx");
-    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+    let fd = open_private_dir(&dir)?;
+    Ok((dir, fd))
+}
+
+/// Creates `dir` (mode 0700) if needed and opens it: it must be a real
+/// directory owned by this user, never a symlink, and is made private
+/// (0700) through the descriptor, never through the path, which the
+/// worker can swap (it may write to the directory itself).
+fn open_private_dir(dir: &Path) -> Result<OwnedFd, InferenceError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let fail = |e: std::io::Error| InferenceError::RuntimeMissing(format!("worker temp dir: {e}"));
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => {
-            return Err(InferenceError::RuntimeMissing(format!(
-                "cannot create the worker temp dir: {e}"
-            )))
-        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(fail(e)),
     }
-    let meta = std::fs::symlink_metadata(&dir)
-        .map_err(|e| InferenceError::RuntimeMissing(format!("worker temp dir: {e}")))?;
+    let path = CString::new(dir.as_os_str().as_bytes())
+        .map_err(|_| InferenceError::RuntimeMissing("bad worker temp dir".into()))?;
+    let dir = std::fs::File::from(open_dir_at(libc::AT_FDCWD, &path).map_err(fail)?);
+    let meta = dir.metadata().map_err(fail)?;
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     if !meta.is_dir() || meta.uid() != uid {
@@ -229,11 +295,104 @@ fn worker_tmp_dir() -> Result<PathBuf, InferenceError> {
             "the worker temp dir is not a directory owned by this user".into(),
         ));
     }
-    if meta.permissions().mode() & 0o077 != 0 {
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| InferenceError::RuntimeMissing(format!("worker temp dir: {e}")))?;
+    if meta.permissions().mode() & 0o777 != 0o700 {
+        dir.set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(fail)?;
     }
-    Ok(dir)
+    Ok(dir.into())
+}
+
+/// Opens `name` in `parent` as a directory: never through a symlink and
+/// never blocking (a FIFO is refused, not opened). A directory made
+/// unreadable is first given back to its owner (not through a symlink).
+fn open_dir_at(parent: RawFd, name: &CStr) -> std::io::Result<OwnedFd> {
+    let open = || {
+        let flags = libc::O_RDONLY
+            | libc::O_DIRECTORY
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | libc::O_CLOEXEC;
+        // SAFETY: `parent` is an open directory (or AT_FDCWD) and `name` is
+        // NUL-terminated.
+        let fd = unsafe { libc::openat(parent, name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `fd` was just opened and nothing else owns it.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    match open() {
+        Err(e) if e.raw_os_error() == Some(libc::EACCES) => {
+            // SAFETY: as above; AT_SYMLINK_NOFOLLOW never reaches a link's target.
+            unsafe { libc::fchmodat(parent, name.as_ptr(), 0o700, libc::AT_SYMLINK_NOFOLLOW) };
+            open()
+        }
+        r => r,
+    }
+}
+
+/// Removes everything inside the directory open as `dir` (not the
+/// directory itself), best effort and within `budget`. Entries a worker
+/// made immutable (chflags) or nested deeper than `MAX_CLEAR_DEPTH` can
+/// survive; nothing on the host reads this directory. It works through descriptors only: each
+/// subdirectory is opened relative to its parent's descriptor without
+/// following symlinks, and each removal is an `unlinkat` of one name in an
+/// open directory. Whatever the worker (or something it forked) swaps for
+/// a symlink, at any level and at any moment, a removal may fail but never
+/// reaches outside the directory that was opened.
+fn clear_dir(dir: OwnedFd, depth: usize, budget: &mut ClearBudget) {
+    // SAFETY: `dir` is an open directory descriptor.
+    let stream = unsafe { libc::fdopendir(dir.as_raw_fd()) };
+    if stream.is_null() {
+        return;
+    }
+    // The stream owns the descriptor now (closedir closes it).
+    let fd = dir.into_raw_fd();
+    for _ in 0..MAX_CLEAR_PASSES {
+        let mut removed = false;
+        loop {
+            // SAFETY: `stream` is open; the entry is copied before the next call.
+            let entry = unsafe { libc::readdir(stream) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: `d_name` of a returned entry is NUL-terminated.
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_owned();
+            if !matches!(name.as_bytes(), b"." | b"..") {
+                if !budget.spend() {
+                    break;
+                }
+                removed |= remove_entry(fd, &name, depth, budget);
+            }
+        }
+        if !removed || budget.entries_left == 0 {
+            break;
+        }
+        // SAFETY: `stream` is open.
+        unsafe { libc::rewinddir(stream) };
+    }
+    // SAFETY: `stream` is open and closed exactly once.
+    unsafe { libc::closedir(stream) };
+}
+
+/// Removes one entry of the open directory `parent` (at `depth`): a real
+/// directory is emptied (above `MAX_CLEAR_DEPTH`) and removed; anything
+/// else, a symlink included, is unlinked where it is, never followed.
+fn remove_entry(parent: RawFd, name: &CStr, depth: usize, budget: &mut ClearBudget) -> bool {
+    let flags = match open_dir_at(parent, name) {
+        Ok(sub) => {
+            if depth < MAX_CLEAR_DEPTH {
+                let sub = std::fs::File::from(sub);
+                // Listing and unlinking inside it need rwx.
+                let _ = sub.set_permissions(std::fs::Permissions::from_mode(0o700));
+                clear_dir(sub.into(), depth + 1, budget);
+            }
+            libc::AT_REMOVEDIR
+        }
+        Err(_) => 0,
+    };
+    // SAFETY: `parent` is an open directory and `name` is NUL-terminated.
+    unsafe { libc::unlinkat(parent, name.as_ptr(), flags) == 0 }
 }
 
 #[cfg(target_os = "macos")]
@@ -305,16 +464,67 @@ enum Line {
 
 struct Proc {
     child: Child,
-    stdin: ChildStdin,
+    /// Request lines, written in order by a dedicated thread: a worker that
+    /// stops reading stdin stalls that thread, never `request()`, whose
+    /// timeout and cancel rules then kill the worker.
+    stdin: Sender<Vec<u8>>,
     rx: Receiver<Line>,
     stderr: Arc<Mutex<VecDeque<String>>>,
+    /// Disconnects once the stderr drain has read everything.
+    stderr_done: Receiver<()>,
+    /// Also the id of the worker's process group.
     pid: i32,
+    /// Set once the worker has been waited for (its group id is then free).
+    reaped: bool,
+}
+
+/// A worker never outlives its `Proc`: dropping it on any path (a failed
+/// spawn included) kills its process group and reaps it.
+impl Drop for Proc {
+    fn drop(&mut self) {
+        self.terminate();
+    }
 }
 
 impl Proc {
-    fn kill(mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+    fn kill(self) {
+        drop(self);
+    }
+
+    /// Whether the worker has exited, without reaping it: until `terminate`
+    /// reaps it, its pid keeps its process group id from being reused.
+    fn exited(&self) -> bool {
+        // SAFETY: an all-zero siginfo_t is a valid value.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+        // SAFETY: `info` is a valid out-pointer; WNOWAIT leaves the child unreaped.
+        let r = unsafe { libc::waitid(libc::P_PID, self.pid as libc::id_t, &mut info, flags) };
+        r != 0 || si_pid(&info) != 0
+    }
+
+    /// Kills the worker's whole process group (the worker and whatever it
+    /// forked; a process that left the group with `setsid` is out of
+    /// reach, still sandboxed) and reaps the worker. The group is signalled
+    /// before the reap, never after, so the signal cannot reach a group
+    /// that reuses the id.
+    fn terminate(&mut self) -> Option<ExitStatus> {
+        if !self.reaped {
+            // SAFETY: killpg has no memory-safety preconditions.
+            unsafe { libc::killpg(self.pid, libc::SIGKILL) };
+            let _ = self.child.kill();
+            self.reaped = true;
+        }
+        self.child.wait().ok()
+    }
+
+    /// Lets the worker exit on its own within `grace` (for its status),
+    /// then kills its group: never an unbounded wait.
+    fn reap(&mut self, grace: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + grace;
+        while !self.exited() && Instant::now() < deadline {
+            std::thread::sleep(POLL);
+        }
+        self.terminate()
     }
 
     fn stderr_tail(&self, n: usize) -> String {
@@ -327,6 +537,17 @@ impl Proc {
             .collect::<Vec<_>>()
             .join(" | ")
     }
+}
+
+#[cfg(target_vendor = "apple")]
+fn si_pid(info: &libc::siginfo_t) -> libc::pid_t {
+    info.si_pid
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn si_pid(info: &libc::siginfo_t) -> libc::pid_t {
+    // SAFETY: `info` was filled by waitid (or zeroed), so the field is set.
+    unsafe { info.si_pid() }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -385,7 +606,8 @@ impl MlxWorkerBackend {
                     "sandbox-exec is unavailable; refusing to run the model unsandboxed".into(),
                 ));
             }
-            let tmp = worker_tmp_dir()?;
+            let (tmp, fd) = worker_tmp_dir()?;
+            clear_dir(fd, 0, &mut ClearBudget::new());
             let mut c = Command::new(SANDBOX_EXEC);
             c.args(self.cfg.sandbox_args(&tmp)?).arg(&self.cfg.python);
             private_tmp = Some(tmp);
@@ -404,6 +626,9 @@ impl MlxWorkerBackend {
             .env("PYTHONUNBUFFERED", "1")
             .env("TOKENIZERS_PARALLELISM", "false")
             .current_dir("/")
+            // Its own group: killing the group also ends what it forked,
+            // which would otherwise keep its pipes (and our threads) alive.
+            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -426,32 +651,38 @@ impl MlxWorkerBackend {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr_pipe = child.stderr.take().expect("piped stderr");
         let (tx, rx) = mpsc::channel();
+        let (lines_tx, lines_rx) = mpsc::channel();
+        let (done_tx, stderr_done) = mpsc::channel::<()>();
+        let stderr = Arc::new(Mutex::new(VecDeque::new()));
+        let sink = stderr.clone();
+        // Owns the child from here: if a thread below cannot start, the
+        // early return drops it, which kills and reaps the worker.
+        let proc = Proc {
+            child,
+            stdin: lines_tx,
+            rx,
+            stderr,
+            stderr_done,
+            pid,
+            reaped: false,
+        };
+        let thread_failed = |e: std::io::Error| InferenceError::WorkerCrashed(e.to_string());
+        std::thread::Builder::new()
+            .name("pegoles-mlx-stdin".into())
+            .spawn(move || write_requests(stdin, lines_rx))
+            .map_err(thread_failed)?;
         std::thread::Builder::new()
             .name("pegoles-mlx-stdout".into())
             .spawn(move || read_replies(stdout, tx))
-            .map_err(|e| InferenceError::WorkerCrashed(e.to_string()))?;
-        let stderr = Arc::new(Mutex::new(VecDeque::new()));
-        let sink = stderr.clone();
+            .map_err(thread_failed)?;
         std::thread::Builder::new()
             .name("pegoles-mlx-stderr".into())
             .spawn(move || {
-                for line in BufReader::new(stderr_pipe).lines() {
-                    let Ok(line) = line else { break };
-                    let mut q = sink.lock().unwrap_or_else(|e| e.into_inner());
-                    if q.len() == MAX_STDERR_LINES {
-                        q.pop_front();
-                    }
-                    q.push_back(line.chars().take(MAX_STDERR_LINE_CHARS).collect());
-                }
+                drain_stderr(stderr_pipe, &sink);
+                drop(done_tx);
             })
-            .map_err(|e| InferenceError::WorkerCrashed(e.to_string()))?;
-        self.proc = Some(Proc {
-            child,
-            stdin,
-            rx,
-            stderr,
-            pid,
-        });
+            .map_err(thread_failed)?;
+        self.proc = Some(proc);
         // Request ids are per process: a respawned worker starts over.
         self.next_id = 1;
         self.loaded = None;
@@ -507,11 +738,12 @@ impl MlxWorkerBackend {
             .proc
             .as_mut()
             .ok_or_else(|| InferenceError::WorkerCrashed("worker is not running".into()))?;
-        if let Err(e) = proc.stdin.write_all(&line).and_then(|_| proc.stdin.flush()) {
+        if proc.stdin.send(line).is_err() {
+            // The writer stopped at a failed write: stdin is closed.
             let tail = proc.stderr_tail(4);
             self.kill();
             return Err(InferenceError::WorkerCrashed(format!(
-                "write failed: {e}; {tail}"
+                "write failed: the worker closed its input; {tail}"
             )));
         }
         let started = Instant::now();
@@ -553,9 +785,14 @@ impl MlxWorkerBackend {
                     ));
                 }
                 Ok(Line::Eof) | Err(RecvTimeoutError::Disconnected) => {
+                    // stdout closed: the worker is exiting, or it broke the
+                    // protocol and stays alive. Reaped within a bound either
+                    // way (the caller holds the shared backend lock).
+                    let mut proc = self.proc.take().expect("present during request");
+                    let status = proc.reap(EXIT_GRACE);
+                    let _ = proc.stderr_done.recv_timeout(STDERR_SETTLE);
                     let tail = proc.stderr_tail(6);
-                    let status = proc.child.wait().ok();
-                    self.proc = None;
+                    drop(proc);
                     self.loaded = None;
                     let oom = tail.to_lowercase().contains("memory");
                     let msg = format!(
@@ -583,8 +820,7 @@ impl MlxWorkerBackend {
             } else if cancelled() {
                 let cancel = json!({"v": PROTOCOL_VERSION, "id": 0, "op": "cancel", "target": id});
                 let proc = self.proc.as_mut().expect("present");
-                let _ = writeln!(proc.stdin, "{cancel}");
-                let _ = proc.stdin.flush();
+                let _ = proc.stdin.send(format!("{cancel}\n").into_bytes());
                 cancel_deadline = Some(Instant::now() + self.cfg.cancel_grace);
             }
             if started.elapsed() > timeout {
@@ -595,8 +831,8 @@ impl MlxWorkerBackend {
     }
 
     fn ensure_running(&mut self) -> Result<(), InferenceError> {
-        if let Some(p) = self.proc.as_mut() {
-            if matches!(p.child.try_wait(), Ok(None)) {
+        if let Some(p) = self.proc.as_ref() {
+            if !p.exited() {
                 return Ok(());
             }
             self.kill();
@@ -615,6 +851,60 @@ impl MlxWorkerBackend {
             process_footprint_bytes: proc_mem.map(|m| m.phys_footprint_bytes),
             process_peak_footprint_bytes: proc_mem.map(|m| m.lifetime_max_phys_footprint_bytes),
         }
+    }
+}
+
+/// Writes request lines in order; stops at the first failed write (the
+/// worker is gone or closed stdin, which its reply reader reports).
+fn write_requests(mut stdin: impl Write, lines: Receiver<Vec<u8>>) {
+    for line in lines {
+        if stdin.write_all(&line).and_then(|()| stdin.flush()).is_err() {
+            return;
+        }
+    }
+}
+
+/// Keeps the worker's last `MAX_STDERR_LINES` stderr lines for error
+/// messages. Reads raw chunks, so a line without a newline never grows
+/// past `MAX_STDERR_LINE_BYTES`; decodes lossily; and drains until EOF
+/// whatever the bytes are (a stopped drain would break the worker's
+/// logging).
+fn drain_stderr(mut pipe: impl Read, sink: &Mutex<VecDeque<String>>) {
+    let push = |line: &[u8]| {
+        let text = String::from_utf8_lossy(line)
+            .chars()
+            .take(MAX_STDERR_LINE_CHARS)
+            .collect();
+        let mut q = sink.lock().unwrap_or_else(|e| e.into_inner());
+        if q.len() == MAX_STDERR_LINES {
+            q.pop_front();
+        }
+        q.push_back(text);
+    };
+    let mut buf = [0u8; 8192];
+    let mut line = Vec::with_capacity(MAX_STDERR_LINE_BYTES);
+    loop {
+        let n = match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        for piece in buf[..n].split_inclusive(|&b| b == b'\n') {
+            let (body, complete) = match piece.split_last() {
+                Some((b'\n', body)) => (body, true),
+                _ => (piece, false),
+            };
+            let room = MAX_STDERR_LINE_BYTES - line.len();
+            line.extend_from_slice(&body[..body.len().min(room)]);
+            if complete {
+                push(&line);
+                line.clear();
+            }
+        }
+    }
+    if !line.is_empty() {
+        push(&line);
     }
 }
 
@@ -701,6 +991,18 @@ impl InferenceBackend for MlxWorkerBackend {
         if self.loaded.as_ref() == Some(model) {
             return Ok(None);
         }
+        // Every (re)load re-hashes the store copy right before the worker
+        // reads it: a worker respawned after a crash or an idle unload never
+        // loads bytes changed since `model` was verified (about 1 s for a
+        // 2 GB model, once per load, never per step).
+        let fresh = ModelStore::new(self.cfg.models_root.clone())
+            .verify(&model.spec)
+            .map_err(|e| InferenceError::LoadFailed(e.to_string()))?;
+        if fresh.dir != model.dir {
+            return Err(InferenceError::LoadFailed(
+                "the model is not in the model store".into(),
+            ));
+        }
         let dir = model
             .dir
             .to_str()
@@ -721,7 +1023,7 @@ impl InferenceBackend for MlxWorkerBackend {
         Ok(Some(LoadReport {
             model_id: model.spec.id.clone(),
             load_ms: reply.get("load_ms").and_then(Value::as_f64).unwrap_or(0.0),
-            verify_ms: model.verify_ms,
+            verify_ms: fresh.verify_ms,
             memory: self.memory_from(&reply),
         }))
     }
@@ -846,14 +1148,7 @@ impl InferenceBackend for MlxWorkerBackend {
         if self.proc.is_some() {
             let _ = self.request(json!({"op": "shutdown"}), Duration::from_secs(3), &|| false);
             if let Some(mut p) = self.proc.take() {
-                let deadline = Instant::now() + Duration::from_secs(2);
-                while Instant::now() < deadline {
-                    if matches!(p.child.try_wait(), Ok(Some(_))) {
-                        break;
-                    }
-                    std::thread::sleep(POLL);
-                }
-                p.kill();
+                p.reap(Duration::from_secs(2));
             }
         }
         self.loaded = None;
@@ -995,6 +1290,413 @@ mod tests {
         assert_eq!(err, InferenceError::OutOfMemory("metal oom".into()));
     }
 
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks whether the pid exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// A worker that closes stdout but stays alive is killed and reaped
+    /// within a bounded time, never waited on forever.
+    #[test]
+    #[cfg(unix)]
+    fn closed_stdout_with_a_live_worker_is_killed_promptly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = sh_cfg(
+            tmp.path(),
+            &format!("{HELLO}\nread line\nexec 1>&-\nexec sleep 10\n"),
+        );
+        let mut w = MlxWorkerBackend::new(cfg);
+        w.spawn().unwrap();
+        let pid = w.pid().unwrap();
+        let t = Instant::now();
+        let err = w
+            .request(json!({"op": "stats"}), Duration::from_secs(30), &|| false)
+            .unwrap_err();
+        assert!(matches!(err, InferenceError::WorkerCrashed(_)), "{err:?}");
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(w.pid().is_none());
+        assert!(!alive(pid));
+    }
+
+    /// A worker that stops reading stdin cannot hold a request past its
+    /// timeout or a cancel (generate lines carry megabytes of images, far
+    /// more than a pipe buffer).
+    #[test]
+    #[cfg(unix)]
+    fn worker_that_stops_reading_cannot_block_a_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = sh_cfg(tmp.path(), &format!("{HELLO}\nexec sleep 10\n"));
+        let big = json!({"op": "stats", "pad": "x".repeat(4 << 20)});
+        let mut w = MlxWorkerBackend::new(cfg);
+        w.spawn().unwrap();
+        let t = Instant::now();
+        let err = w
+            .request(big.clone(), Duration::from_millis(300), &|| false)
+            .unwrap_err();
+        assert_eq!(err, InferenceError::Timeout(300));
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(w.pid().is_none());
+
+        w.spawn().unwrap();
+        let t = Instant::now();
+        let err = w
+            .request(big, Duration::from_secs(30), &|| true)
+            .unwrap_err();
+        assert_eq!(err, InferenceError::Cancelled);
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    }
+
+    /// Invalid UTF-8 and an over-long line on stderr neither stop the
+    /// drain nor reach the error message unbounded.
+    #[test]
+    #[cfg(unix)]
+    fn hostile_stderr_keeps_draining_and_stays_bounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = sh_cfg(
+            tmp.path(),
+            &format!(
+                "{HELLO}\nread line\nprintf 'bad \\377\\376 bytes\\n' >&2\n\
+                 head -c 3000000 /dev/zero | tr '\\0' x >&2\necho >&2\necho boom >&2\nexit 9\n"
+            ),
+        );
+        let mut w = MlxWorkerBackend::new(cfg);
+        w.spawn().unwrap();
+        let err = w
+            .request(json!({"op": "stats"}), Duration::from_secs(10), &|| false)
+            .unwrap_err();
+        let InferenceError::WorkerCrashed(m) = err else {
+            panic!("{err:?}")
+        };
+        assert!(m.contains("boom") && m.contains("bad \u{FFFD}"), "{m}");
+        assert!(
+            m.chars().count() < 6 * (MAX_STDERR_LINE_CHARS + 3) + 40,
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn stderr_drain_bounds_lines_and_survives_any_bytes() {
+        let mut input = vec![b'x'; 5 << 20];
+        input.extend_from_slice(b"\nbad \xff\xfe bytes\nafter\npartial at eof");
+        let sink = Mutex::new(VecDeque::new());
+        drain_stderr(input.as_slice(), &sink);
+        let q = sink.into_inner().unwrap();
+        assert_eq!(q.len(), 4);
+        assert_eq!(q[0], "x".repeat(MAX_STDERR_LINE_CHARS));
+        assert_eq!(q[1], "bad \u{FFFD}\u{FFFD} bytes");
+        assert_eq!(q[2], "after");
+        assert_eq!(q[3], "partial at eof");
+
+        let many: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let sink = Mutex::new(VecDeque::new());
+        drain_stderr(many.as_bytes(), &sink);
+        let q = sink.into_inner().unwrap();
+        assert_eq!(q.len(), MAX_STDERR_LINES);
+        assert_eq!(q.back().unwrap(), "line 99");
+    }
+
+    /// A temp dir tree next to an `outside` directory that must survive
+    /// any cleanup: files, nested dirs and symlinks to `outside` inside.
+    fn temp_tree(root: &Path) -> (PathBuf, PathBuf) {
+        let dir = root.join("pegoles-mlx");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(dir.join("nested/deeper")).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::fs::write(dir.join("a"), "x").unwrap();
+        std::fs::write(dir.join("nested/deeper/b"), "x").unwrap();
+        std::fs::write(outside.join("keep"), "x").unwrap();
+        std::fs::write(outside.join("sub/keep"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("nested/link")).unwrap();
+        (dir, outside)
+    }
+
+    fn outside_intact(outside: &Path) -> bool {
+        outside.join("keep").is_file() && outside.join("sub/keep").is_file()
+    }
+
+    #[test]
+    fn clearing_the_temp_dir_removes_everything_and_follows_no_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, outside) = temp_tree(tmp.path());
+        clear_dir(open_private_dir(&dir).unwrap(), 0, &mut ClearBudget::new());
+        assert!(dir.is_dir());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert!(outside_intact(&outside));
+    }
+
+    /// The temp dir is swapped for a symlink to an outside directory after
+    /// it was checked (by the worker, which may write to the directory
+    /// itself, or by something it forked that outlived it): cleanup goes
+    /// through the descriptor, empties the directory that was checked and
+    /// leaves the link's target alone; the next spawn refuses the link.
+    #[test]
+    fn a_temp_dir_swapped_for_a_symlink_is_never_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, outside) = temp_tree(tmp.path());
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fd = open_private_dir(&dir).unwrap();
+        let moved = tmp.path().join("moved");
+        std::fs::rename(&dir, &moved).unwrap();
+        std::os::unix::fs::symlink(&outside, &dir).unwrap();
+        clear_dir(fd, 0, &mut ClearBudget::new());
+        assert_eq!(std::fs::read_dir(&moved).unwrap().count(), 0);
+        assert!(outside_intact(&outside));
+        assert!(open_private_dir(&dir).is_err());
+        assert!(outside_intact(&outside));
+        let mode = std::fs::metadata(&outside).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755, "the link target was re-permissioned");
+    }
+
+    /// Entries swapped between a directory and a symlink to an outside
+    /// directory while cleanup runs never lead cleanup outside.
+    #[test]
+    fn entries_swapped_during_cleanup_are_never_followed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tmp = tempfile::tempdir().unwrap();
+        for _ in 0..20 {
+            let (dir, outside) = temp_tree(tmp.path());
+            for i in 0..200 {
+                std::fs::write(dir.join(format!("nested/f{i}")), "x").unwrap();
+            }
+            let stop = Arc::new(AtomicBool::new(false));
+            let swapper = {
+                let (dir, outside, stop) = (dir.clone(), outside.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    let (real, parked) = (dir.join("nested"), dir.join("parked"));
+                    while !stop.load(Ordering::Relaxed) {
+                        if std::fs::rename(&real, &parked).is_ok() {
+                            let _ = std::os::unix::fs::symlink(&outside, &real);
+                            let _ = std::fs::remove_file(&real);
+                            let _ = std::fs::rename(&parked, &real);
+                        }
+                    }
+                })
+            };
+            clear_dir(open_private_dir(&dir).unwrap(), 0, &mut ClearBudget::new());
+            stop.store(true, Ordering::Relaxed);
+            swapper.join().unwrap();
+            assert!(outside_intact(&outside));
+            std::fs::remove_dir_all(&dir).unwrap();
+            std::fs::remove_dir_all(&outside).unwrap();
+        }
+    }
+
+    /// Directories made unreadable are still removed; nesting past
+    /// `MAX_CLEAR_DEPTH` is left alone without stopping the rest.
+    #[test]
+    fn clearing_handles_locked_and_too_deep_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pegoles-mlx");
+        std::fs::create_dir_all(dir.join("locked/inner")).unwrap();
+        std::fs::write(dir.join("locked/inner/f"), "x").unwrap();
+        for p in ["locked/inner", "locked"] {
+            std::fs::set_permissions(dir.join(p), std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let mut deep = dir.join("deep");
+        for _ in 0..MAX_CLEAR_DEPTH + 4 {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(dir.join("z"), "x").unwrap();
+        clear_dir(open_private_dir(&dir).unwrap(), 0, &mut ClearBudget::new());
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["deep"]);
+    }
+
+    /// The sandbox's TMP parameter resolves the temp dir's parent only: a
+    /// temp dir swapped for a symlink never grants writes to its target.
+    #[test]
+    fn sandbox_tmp_param_never_resolves_the_temp_dir_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let dir = tmp.path().join("pegoles-mlx");
+        std::os::unix::fs::symlink(&outside, &dir).unwrap();
+        let cfg = MlxWorkerConfig::new(
+            PathBuf::from("/bin/sh"),
+            tmp.path().join("worker.py"),
+            tmp.path().to_path_buf(),
+        );
+        let args = cfg.sandbox_args(&dir).unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let want = format!("TMP={}", root.join("pegoles-mlx").display());
+        assert!(args.contains(&want), "{args:?}");
+    }
+
+    /// The guard behind a failed spawn (e.g. a reader thread that cannot
+    /// start): dropping a `Proc` kills its process group and reaps it.
+    #[test]
+    #[cfg(unix)]
+    fn dropping_a_proc_kills_and_reaps_the_worker() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30 & echo $!; exec sleep 30"])
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let forked: i32 = line.trim().parse().unwrap();
+        let (stdin, _) = mpsc::channel();
+        let (_, rx) = mpsc::channel();
+        let (_, stderr_done) = mpsc::channel();
+        let proc = Proc {
+            child,
+            stdin,
+            rx,
+            stderr: Arc::default(),
+            stderr_done,
+            pid,
+            reaped: false,
+        };
+        assert!(alive(pid) && alive(forked));
+        assert!(!proc.exited());
+        drop(proc);
+        assert!(!alive(pid));
+        assert!(gone_soon(forked), "a forked process outlived the worker");
+    }
+
+    /// Whether `pid` disappears within a few seconds (a killed orphan is
+    /// reaped by launchd/init, not by us).
+    fn gone_soon(pid: i32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(pid) {
+            if Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(POLL);
+        }
+        true
+    }
+
+    /// A process the worker forked keeps the worker's stdout open, so the
+    /// supervisor sees no EOF: the request still ends at its timeout, and
+    /// killing the worker's group ends the forked process too.
+    #[test]
+    #[cfg(unix)]
+    fn a_forked_process_does_not_outlive_the_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pidfile = tmp.path().join("forked.pid");
+        let cfg = sh_cfg(
+            tmp.path(),
+            &format!(
+                "{HELLO}\nsleep 30 &\necho $! > '{}'\nexec 1>&-\nexec sleep 30\n",
+                pidfile.display()
+            ),
+        );
+        let mut w = MlxWorkerBackend::new(cfg);
+        w.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let forked = loop {
+            let text = std::fs::read_to_string(&pidfile).unwrap_or_default();
+            if let Ok(pid) = text.trim().parse::<i32>() {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "no pid file");
+            std::thread::sleep(POLL);
+        };
+        assert!(alive(forked));
+        let t = Instant::now();
+        let err = w
+            .request(json!({"op": "stats"}), Duration::from_millis(300), &|| {
+                false
+            })
+            .unwrap_err();
+        assert_eq!(err, InferenceError::Timeout(300));
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(gone_soon(forked), "a forked process outlived the worker");
+    }
+
+    const ECHO_OK: &str =
+        r#"n=2; while read line; do echo "{\"v\":1,\"id\":$n,\"ok\":true}"; n=$((n+1)); done"#;
+
+    /// Every (re)load re-hashes the model first: bytes changed since the
+    /// caller verified them are never loaded by a respawned worker.
+    #[test]
+    #[cfg(unix)]
+    fn reload_after_a_restart_reverifies_the_model_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = br#"{"model_type":"qwen3_vl"}"#;
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("config.json"), config).unwrap();
+        std::fs::write(src.join("model.safetensors"), b"weights!").unwrap();
+        let spec = crate::store::tests::spec(&[
+            ("config.json", config),
+            ("model.safetensors", b"weights!"),
+        ]);
+        let models = tmp.path().join("models");
+        let model = crate::store::ModelStore::new(models.clone())
+            .import_local(&spec, &src)
+            .unwrap();
+        let mut cfg = sh_cfg(tmp.path(), &format!("{HELLO}\n{ECHO_OK}\n"));
+        cfg.models_root = models;
+        let mut w = MlxWorkerBackend::new(cfg);
+        assert!(w.ensure_loaded(&model, &|| false).unwrap().is_some());
+        assert!(w.ensure_loaded(&model, &|| false).unwrap().is_none());
+        // Same size, other bytes; then the worker goes away (a crash or
+        // an idle unload) and the model must be loaded again.
+        std::fs::write(model.dir.join("model.safetensors"), b"WEIGHTS!").unwrap();
+        w.kill();
+        let err = w.ensure_loaded(&model, &|| false).unwrap_err();
+        assert!(
+            matches!(err, InferenceError::LoadFailed(ref m) if m.contains("checksum")),
+            "{err:?}"
+        );
+        assert!(w.loaded_model().is_none());
+    }
+
+    /// Replies go to a private copy of fd 1: stray output from libraries
+    /// (a Python print, a native write to fd 1) lands on stderr and never
+    /// corrupts the protocol stream. Needs only the runtime's Python.
+    const STRAY_OUTPUT: &str = r#"
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("pegoles_mlx_worker", sys.argv[1])
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+print("stray print", flush=True)
+os.write(1, b"stray native write\n")
+worker.reply(7, x=1)
+"#;
+
+    #[test]
+    fn stray_stdout_output_cannot_corrupt_the_protocol() {
+        let python = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/pegoles-runtime/python/bin/python3.12");
+        if !python.is_file() {
+            eprintln!("skipped: build the runtime with scripts/local-model/build-runtime.sh");
+            return;
+        }
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workers/mlx/pegoles_mlx_worker.py");
+        // -B: importing the worker must not leave bytecode in the repo.
+        let out = Command::new(&python)
+            .args(["-I", "-B", "-c", STRAY_OUTPUT])
+            .arg(&script)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stderr}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "{\"v\":1,\"id\":7,\"ok\":true,\"x\":1}\n"
+        );
+        assert!(
+            stderr.contains("stray print") && stderr.contains("stray native write"),
+            "{stderr}"
+        );
+    }
+
     /// Escape attempts from inside the real sandbox profile, run with the
     /// real runtime built by `scripts/local-model/build-runtime.sh` (skipped
     /// when it has not been built, e.g. in CI). Every probe is first run
@@ -1031,6 +1733,12 @@ def metal():
     x = (mx.arange(4096, dtype=mx.float32) * 3 + 1).sum()
     mx.eval(x)
     assert mx.metal.is_available() and x.item() > 0
+def fork():
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    os.waitpid(pid, 0)
+probe("fork", fork)
 probe("exec", lambda: subprocess.run(["/usr/bin/true"], check=True))
 probe("tcp_loopback", lambda: socket.create_connection(("127.0.0.1", port), timeout=3).close())
 probe("dns_socket", lambda: socket.socket(socket.AF_UNIX).connect("/var/run/mDNSResponder"))
@@ -1052,7 +1760,8 @@ probe("write_private_tmp", lambda: write(os.path.join(private, "ok-%d" % os.getp
 print(json.dumps(res))
 "#;
 
-    const ESCAPES: [&str; 16] = [
+    const ESCAPES: [&str; 17] = [
+        "fork",
         "exec",
         "tcp_loopback",
         "dns_socket",
@@ -1089,7 +1798,7 @@ print(json.dumps(res))
         let script = models.path().join("worker.py");
         std::fs::write(&script, "").unwrap();
         let cfg = MlxWorkerConfig::new(python.clone(), script, models.path().to_path_buf());
-        let tmp = worker_tmp_dir().unwrap();
+        let (tmp, _) = worker_tmp_dir().unwrap();
         let outside = tmp.parent().unwrap().to_path_buf();
         let run = |sandboxed: bool| -> Value {
             let mut cmd = if sandboxed {
@@ -1122,7 +1831,10 @@ print(json.dumps(res))
         let boxed = run(true);
         for probe in ESCAPES {
             assert_eq!(control[probe], "allowed", "control {probe}: {control}");
-            assert_eq!(boxed[probe], "blocked", "{probe} escaped the sandbox: {boxed}");
+            assert_eq!(
+                boxed[probe], "blocked",
+                "{probe} escaped the sandbox: {boxed}"
+            );
         }
         assert_eq!(boxed["metal"], "allowed", "{boxed}");
         assert_eq!(boxed["write_private_tmp"], "allowed", "{boxed}");

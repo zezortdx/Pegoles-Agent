@@ -15,7 +15,9 @@ loaded and answers generation requests. It is an inference engine only:
   trusted.
 
 Protocol (version 1): one JSON object per line on stdin, one JSON reply
-per line on stdout. stderr carries diagnostics only.
+per line on stdout. stderr carries diagnostics only. Replies use a
+private copy of the original stdout; fd 1 and sys.stdout are pointed at
+stderr, so stray output from any library cannot corrupt the protocol.
 
   -> {"v":1,"id":7,"op":"generate", ...}
   <- {"v":1,"id":7,"ok":true, ...}   or   {"v":1,"id":7,"ok":false,"error":{...}}
@@ -63,6 +65,17 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+def _private_protocol_stream():
+    """Move the reply channel off fd 1 before any library is imported: a
+    print() or a native write to stdout then lands on stderr (diagnostics)
+    instead of the host reading it as a malformed reply."""
+    proto = os.fdopen(os.dup(1), "w", encoding="utf-8")
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+    return proto
+
+
+_proto = _private_protocol_stream()
 _out_lock = threading.Lock()
 
 
@@ -74,8 +87,8 @@ def log(msg):
 def send(obj):
     line = json.dumps(obj, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
     with _out_lock:
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
+        _proto.write(line + "\n")
+        _proto.flush()
 
 
 def reply(req_id, **fields):

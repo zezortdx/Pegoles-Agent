@@ -9,9 +9,11 @@
 //! ```
 //!
 //! Install is atomic from the store's point of view: files are fetched
-//! and hash-verified in staging, then the whole directory is renamed into
-//! place. A partial or corrupted download is never visible as installed.
-//! Loading re-verifies every byte against the compiled-in catalog.
+//! and hash-verified in staging, the staged tree is verified in full, then
+//! the whole directory is renamed into place. A partial or corrupted
+//! download is never visible as installed, and staged bytes are never
+//! trusted by size alone. Loading re-verifies every byte against the
+//! compiled-in catalog.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -199,11 +201,19 @@ impl ModelStore {
 
     /// Full verification (every byte hashed) before a model is loaded.
     pub fn verify(&self, spec: &ModelSpec) -> Result<VerifiedModel, StoreError> {
-        let started = std::time::Instant::now();
         let dir = self.model_dir(&spec.id);
         if !dir.exists() {
             return Err(StoreError::NotInstalled(spec.id.clone()));
         }
+        self.verify_dir(spec, &dir)
+    }
+
+    /// Layout, every byte hashed, and no model JSON asking for remote
+    /// code: the check an installed model passes before loading, and a
+    /// staged one before it is moved into place.
+    fn verify_dir(&self, spec: &ModelSpec, dir: &Path) -> Result<VerifiedModel, StoreError> {
+        let started = std::time::Instant::now();
+        let dir = dir.to_path_buf();
         self.check_layout(spec, &dir)
             .map_err(|reason| StoreError::Invalid {
                 id: spec.id.clone(),
@@ -271,10 +281,25 @@ impl ModelStore {
             if let Some(parent) = final_path.parent() {
                 fs::create_dir_all(parent).map_err(io)?;
             }
-            if file_len(&final_path) == Some(f.size) {
-                continue; // fetched and verified in an earlier attempt
-            }
             let part = part_path(&staging, &f.path);
+            if file_len(&final_path) == Some(f.size) {
+                // Fetched in an earlier attempt: kept only if its bytes
+                // still match, never on size alone.
+                if sha256_file(&final_path)
+                    .map_err(io)?
+                    .eq_ignore_ascii_case(&f.sha256)
+                {
+                    continue;
+                }
+                fs::remove_file(&final_path).map_err(io)?;
+                let _ = fs::remove_file(&part);
+                done -= f.size.min(done);
+            }
+            // A resumable part must be a regular file; anything else (a
+            // planted symlink) is removed, never followed.
+            if fs::symlink_metadata(&part).is_ok_and(|m| !m.file_type().is_file()) {
+                fs::remove_file(&part).map_err(io)?;
+            }
             let before = file_len(&part).unwrap_or(0);
             let before = if before > f.size {
                 let _ = fs::remove_file(&part);
@@ -320,8 +345,7 @@ impl ModelStore {
             total_bytes: total,
             file: String::new(),
         });
-        self.finalize(spec, &staging)?;
-        self.verify(spec)
+        self.finalize(spec, &staging)
     }
 
     /// Import a model produced locally (e.g. a conversion) from `src`,
@@ -366,11 +390,14 @@ impl ModelStore {
                 });
             }
         }
-        self.finalize(spec, &staging)?;
-        self.verify(spec)
+        self.finalize(spec, &staging)
     }
 
-    fn finalize(&self, spec: &ModelSpec, staging: &Path) -> Result<(), StoreError> {
+    /// Writes the manifest, verifies the staged tree in full, and only then
+    /// swaps it into place. A staged tree that fails is discarded; an
+    /// installed model is never replaced by one (and is put back if the
+    /// swap itself fails).
+    fn finalize(&self, spec: &ModelSpec, staging: &Path) -> Result<VerifiedModel, StoreError> {
         let manifest = InstalledManifest {
             manifest_version: 1,
             spec: spec.clone(),
@@ -385,15 +412,43 @@ impl ModelStore {
         let mut out = fs::File::create(&mpath).map_err(io)?;
         out.write_all(&raw).map_err(io)?;
         out.sync_all().map_err(io)?;
+        let verified = match self.verify_dir(spec, staging) {
+            Ok(v) => v,
+            Err(e) => {
+                // Bad bytes or layout are never kept; an I/O error may pass.
+                if matches!(e, StoreError::Invalid { .. }) {
+                    let _ = fs::remove_dir_all(staging);
+                }
+                return Err(e);
+            }
+        };
         let dest = self.model_dir(&spec.id);
-        if dest.exists() {
-            self.trash(&dest)?;
+        let previous = match fs::symlink_metadata(&dest) {
+            Ok(_) => Some(self.move_to_trash(&dest)?),
+            Err(_) => None,
+        };
+        if let Err(e) = fs::rename(staging, &dest) {
+            if let Some(prev) = &previous {
+                let _ = fs::rename(prev, &dest);
+            }
+            return Err(io(e));
         }
-        fs::rename(staging, &dest).map_err(io)?;
-        Ok(())
+        if let Some(prev) = previous {
+            let _ = fs::remove_dir_all(prev);
+        }
+        Ok(VerifiedModel {
+            dir: dest,
+            ..verified
+        })
     }
 
     fn trash(&self, dir: &Path) -> Result<(), StoreError> {
+        let to = self.move_to_trash(dir)?;
+        let _ = fs::remove_dir_all(&to);
+        Ok(())
+    }
+
+    fn move_to_trash(&self, dir: &Path) -> Result<PathBuf, StoreError> {
         let trash = self.root.join(".trash");
         fs::create_dir_all(&trash).map_err(io)?;
         let stamp = SystemTime::now()
@@ -406,8 +461,7 @@ impl ModelStore {
             .unwrap_or_default();
         let to = trash.join(format!("{name}-{stamp}"));
         fs::rename(dir, &to).map_err(io)?;
-        let _ = fs::remove_dir_all(&to);
-        Ok(())
+        Ok(to)
     }
 
     /// Remove an installed model and any staged download for it.
@@ -522,9 +576,12 @@ fn fetch_file(
     progress: &mut dyn FnMut(u64),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<String, StoreError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // Never through a symlink, for reading or appending.
+    let open = |opts: &mut fs::OpenOptions| opts.custom_flags(libc::O_NOFOLLOW).open(part);
     let mut hasher = Sha256::new();
     let mut have: u64 = 0;
-    if let Ok(mut existing) = fs::File::open(part) {
+    if let Ok(mut existing) = open(fs::OpenOptions::new().read(true)) {
         let mut buf = vec![0u8; 1024 * 1024];
         loop {
             let n = existing.read(&mut buf).map_err(io)?;
@@ -536,11 +593,7 @@ fn fetch_file(
         }
     }
     if have < f.size {
-        let mut out = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(part)
-            .map_err(io)?;
+        let mut out = open(fs::OpenOptions::new().create(true).append(true)).map_err(io)?;
         let mut write_err = None;
         let mut overflow = false;
         let mut stopped = false;
@@ -627,7 +680,7 @@ fn clone_file(_from: &Path, _to: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::catalog::{ModelFamily, ModelSource};
     use sha2::Digest;
@@ -638,7 +691,7 @@ mod tests {
         hex::encode(sha2::Sha256::digest(b))
     }
 
-    fn spec(files: &[(&str, &[u8])]) -> ModelSpec {
+    pub(crate) fn spec(files: &[(&str, &[u8])]) -> ModelSpec {
         ModelSpec {
             id: "test-model".into(),
             display_name: "Test".into(),
@@ -870,6 +923,82 @@ mod tests {
             store.install(&s, &fetcher, &mut |_| {}, &|| false),
             Err(StoreError::Invalid { .. })
         ));
+        // Refused in staging: nothing was ever moved into place.
+        assert!(!tmp.path().join("models/test-model").exists());
+        assert!(!tmp.path().join("models/.staging/test-model").exists());
+    }
+
+    fn fetcher_for(files: &[(&str, &[u8])]) -> FakeFetcher {
+        FakeFetcher {
+            files: files
+                .iter()
+                .map(|(p, b)| (p.to_string(), b.to_vec()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn staged_files_are_rehashed_never_trusted_by_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(tmp.path().join("models"));
+        let files: &[(&str, &[u8])] = &[("config.json", cfg()), ("model.safetensors", b"weights!")];
+        let s = spec(files);
+        // A same-size file with other bytes left in staging (another
+        // writer, disk corruption): fetched again, never installed.
+        let staging = tmp.path().join("models/.staging/test-model");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("model.safetensors"), b"WEIGHTS!").unwrap();
+        let v = store
+            .install(&s, &fetcher_for(files), &mut |_| {}, &|| false)
+            .unwrap();
+        assert_eq!(
+            fs::read(v.dir.join("model.safetensors")).unwrap(),
+            b"weights!"
+        );
+        assert!(store.verify(&s).is_ok());
+    }
+
+    #[test]
+    fn a_staged_tree_that_fails_verification_never_replaces_the_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(tmp.path().join("models"));
+        let files: &[(&str, &[u8])] = &[("config.json", cfg()), ("model.safetensors", b"weights!")];
+        let s = spec(files);
+        store
+            .install(&s, &fetcher_for(files), &mut |_| {}, &|| false)
+            .unwrap();
+        // Reinstall with junk in staging: the staged tree fails its check.
+        let staging = tmp.path().join("models/.staging/test-model");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("modeling_evil.py"), b"import os").unwrap();
+        let res = store.install(&s, &fetcher_for(files), &mut |_| {}, &|| false);
+        assert!(matches!(res, Err(StoreError::Invalid { .. })), "{res:?}");
+        // The previous install is untouched and the junk is gone.
+        assert!(store.verify(&s).is_ok());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_part_file_is_never_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(tmp.path().join("models"));
+        let files: &[(&str, &[u8])] = &[("config.json", cfg()), ("model.safetensors", b"weights!")];
+        let s = spec(files);
+        let outside = tmp.path().join("outside");
+        fs::write(&outside, b"wei").unwrap();
+        let staging = tmp.path().join("models/.staging/test-model");
+        fs::create_dir_all(&staging).unwrap();
+        std::os::unix::fs::symlink(&outside, staging.join("model.safetensors.part")).unwrap();
+        let v = store
+            .install(&s, &fetcher_for(files), &mut |_| {}, &|| false)
+            .unwrap();
+        assert_eq!(fs::read(&outside).unwrap(), b"wei");
+        assert_eq!(
+            fs::read(v.dir.join("model.safetensors")).unwrap(),
+            b"weights!"
+        );
     }
 
     #[test]

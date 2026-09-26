@@ -2,6 +2,7 @@
 name = "pegoles-inference"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Pegoles local inference: hardware profile, verified model store, replaceable inference backends (MLX worker)"
 license = "MIT"
 
