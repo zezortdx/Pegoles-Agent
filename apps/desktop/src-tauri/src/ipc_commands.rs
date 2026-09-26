@@ -42,6 +42,8 @@ ipc_commands! {
         remove_local_model,
         cancel_agent_input,
         capture_screen,
+        install_computer_image,
+        cancel_computer_image_install,
     ],
     debug: [
         prepare_image,

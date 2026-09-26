@@ -40,6 +40,8 @@ export interface StatusPayload {
    * `invalid`: present but not verified.
    */
   image_status: "missing" | "downloading" | "ready" | "invalid";
+  /** Setting that image up from its pinned download (in-app, one time). */
+  image_setup?: ImageSetup;
   spec_os: string;
   spec_arch: string;
   spec_vcpus: number;
@@ -48,6 +50,23 @@ export interface StatusPayload {
   guest_ready_ms: number | null;
   input_available: boolean;
   agent_busy: boolean;
+}
+
+/**
+ * The Pegoles computer image is downloaded once and checked against the
+ * digests built into the app. Real bytes only.
+ */
+export interface ImageSetup {
+  /** This build has a download location for the image. */
+  available: boolean;
+  installing: boolean;
+  stage: "downloading" | "verifying" | "unpacking" | "finalizing" | null;
+  done: number;
+  total: number;
+  /** Why the last attempt stopped (cancelled, network, verification). */
+  error: string | null;
+  download_bytes: number;
+  disk_bytes: number;
 }
 
 export interface ComputerInfo {
@@ -322,6 +341,9 @@ export const api = {
   resetComputer: () => invoke<ComputerPayload>("reset_computer"),
   /** Removes the computer and its disk. Refused while a task runs. */
   destroyComputer: () => invoke<ComputerPayload>("destroy_computer"),
+  /** Download, verify and install the computer image. Returns at once; resumes a partial download. */
+  installComputerImage: () => invoke<ImageSetup>("install_computer_image"),
+  cancelComputerImageInstall: () => invoke<ImageSetup>("cancel_computer_image_install"),
   listEvents: () => invoke<AgentEvent[]>("list_events"),
   readBootLog: () => invoke<BootLogPayload>("read_boot_log"),
   getHostCapabilities: () => invoke<HostCapabilities>("get_host_capabilities"),

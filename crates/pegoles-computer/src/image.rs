@@ -554,6 +554,20 @@ impl ComputerImageManager {
         let pin = crate::image_release::release_image(&id).ok_or_else(|| {
             ComputerError::ImageMissing(format!("{id} has no release download in this build"))
         })?;
+        if let Some(local) = crate::image_release::dev_archive_override() {
+            // Debug builds: a local copy of the archive stands in for the
+            // (possibly unpublished) URL; the digests are the same pins.
+            let mut local_pin = pin.clone();
+            local_pin.archive.urls =
+                vec![format!("https://local.archive/{}", pin.archive.file_name)];
+            return crate::image_release::install(
+                &self.images_dir,
+                &local_pin,
+                &crate::image_release::LocalArchiveSource(local),
+                progress,
+                cancel,
+            );
+        }
         crate::image_release::install(
             &self.images_dir,
             pin,

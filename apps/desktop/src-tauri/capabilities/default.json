@@ -41,6 +41,8 @@
     "allow-cancel-local-model-install",
     "allow-remove-local-model",
     "allow-cancel-agent-input",
-    "allow-capture-screen"
+    "allow-capture-screen",
+    "allow-install-computer-image",
+    "allow-cancel-computer-image-install"
   ]
 }

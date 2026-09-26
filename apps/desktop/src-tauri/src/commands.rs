@@ -132,6 +132,8 @@ pub struct StatusPayload {
     pub computer_state: Option<ComputerState>,
     pub computer_id: Option<String>,
     pub image_status: &'static str,
+    /// Setting up that image from its pinned download.
+    pub image_setup: ImageSetupPayload,
     pub spec_os: &'static str,
     pub spec_arch: &'static str,
     pub spec_vcpus: u8,
@@ -157,6 +159,44 @@ pub struct StatusPayload {
 #[serde(rename_all = "snake_case")]
 pub struct ComputerPayload {
     pub info: Option<ComputerInfo>,
+}
+
+/// The Pegoles computer image this build boots is downloaded once and
+/// checked against the digests built into the app
+/// (`pegoles_computer::image_release`). Real bytes only; no timers.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ImageSetupPayload {
+    /// This build has a download location for the image.
+    pub available: bool,
+    pub installing: bool,
+    /// `downloading` | `verifying` | `unpacking` | `finalizing`.
+    pub stage: Option<String>,
+    pub done: u64,
+    pub total: u64,
+    pub error: Option<String>,
+    /// Size of the download and of the installed disk (for the UI).
+    pub download_bytes: u64,
+    pub disk_bytes: u64,
+}
+
+fn image_setup_of(state: &AppState) -> ImageSetupPayload {
+    let pin = pegoles_computer::image_release::release_image(&pegoles_computer::active_image_id());
+    ImageSetupPayload {
+        available: pin.is_some_and(|p| p.is_published())
+            || pegoles_computer::image_release::dev_archive_override().is_some(),
+        installing: state.image_cancel.is_some(),
+        stage: state
+            .image_cancel
+            .is_some()
+            .then(|| state.image_stage.clone())
+            .flatten(),
+        done: state.image_downloaded,
+        total: state.image_total,
+        error: state.image_error.clone(),
+        download_bytes: pin.map_or(0, |p| p.archive.bytes),
+        disk_bytes: pin.map_or(0, |p| p.disk.bytes),
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -321,6 +361,7 @@ fn status_of(state: &AppState, agent: &AgentSupervisor) -> StatusPayload {
         computer_state,
         computer_id: info.map(|i| i.id.to_string()),
         image_status: image_status_str(state.registry.image_status()),
+        image_setup: image_setup_of(state),
         spec_os: "Debian 13",
         spec_arch: state.registry.guest_arch().as_str(),
         spec_vcpus: cfg.as_ref().map(|c| c.vcpus).unwrap_or(2),
@@ -605,6 +646,121 @@ pub async fn read_boot_log(state: tauri::State<'_, SharedState>) -> Result<BootL
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Download, verify and install the Pegoles computer image this build
+/// boots (the pinned release image). Returns at once; progress arrives on
+/// `pegoles://image-progress` and in `get_status().image_setup`.
+#[tauri::command]
+pub async fn install_computer_image(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedState>,
+) -> Result<ImageSetupPayload, String> {
+    use std::sync::atomic::AtomicBool;
+    let shared = state.inner().clone();
+    let claimed = with_state(shared.clone(), |s| {
+        if matches!(s.registry.image_status(), ImageStatus::Ready) {
+            return Ok(None);
+        }
+        if s.preparing_image {
+            return Err("the Pegoles computer image is already being set up".to_string());
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        s.preparing_image = true;
+        s.image_cancel = Some(cancel.clone());
+        s.image_error = None;
+        s.image_stage = Some("downloading".to_string());
+        s.image_downloaded = 0;
+        s.image_total = 0;
+        Ok(Some((s.registry.images_dir(), cancel)))
+    })
+    .await?;
+    if let Some((images_dir, cancel)) = claimed {
+        let worker = shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name("pegoles-image-install".into())
+            .spawn(move || run_image_install(app, worker, images_dir, cancel));
+        if let Err(e) = spawned {
+            let mut s = lock_state(&shared);
+            s.preparing_image = false;
+            s.image_cancel = None;
+            s.image_stage = None;
+            return Err(format!("could not start the setup: {e}"));
+        }
+    }
+    with_state(shared, |s| Ok(image_setup_of(s))).await
+}
+
+/// Stop a running image installation. What was downloaded is kept and
+/// resumed next time (it is re-verified before use).
+#[tauri::command]
+pub async fn cancel_computer_image_install(
+    state: tauri::State<'_, SharedState>,
+) -> Result<ImageSetupPayload, String> {
+    with_state(state.inner().clone(), |s| {
+        if let Some(cancel) = &s.image_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(image_setup_of(s))
+    })
+    .await
+}
+
+/// Background worker for `install_computer_image`: no app lock is held
+/// while downloading or hashing; progress updates re-lock briefly.
+fn run_image_install(
+    app: tauri::AppHandle,
+    shared: SharedState,
+    images_dir: std::path::PathBuf,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    use tauri::Emitter;
+    const EVERY: Duration = Duration::from_millis(250);
+    let manager = pegoles_computer::ComputerImageManager::new(images_dir);
+    let mut last: Option<(Instant, &'static str)> = None;
+    let result = manager.install_release_image(
+        &mut |stage, done, total| {
+            let name = stage.as_str();
+            let due =
+                last.is_none_or(|(at, st)| st != name || at.elapsed() >= EVERY || done >= total);
+            if !due {
+                return;
+            }
+            last = Some((Instant::now(), name));
+            {
+                let mut s = lock_state(&shared);
+                s.image_stage = Some(name.to_string());
+                s.image_downloaded = done;
+                s.image_total = total;
+            }
+            let _ = app.emit(
+                "pegoles://image-progress",
+                serde_json::json!({"stage": name, "done": done, "total": total}),
+            );
+        },
+        &|| cancel.load(Ordering::SeqCst),
+    );
+    let cancelled = cancel.load(Ordering::SeqCst);
+    let error = match result {
+        Ok(_) => None,
+        Err(_) if cancelled => {
+            Some("Setup was cancelled. It resumes where it stopped.".to_string())
+        }
+        Err(e) => Some(e.to_string()),
+    };
+    {
+        let mut s = lock_state(&shared);
+        s.preparing_image = false;
+        s.image_cancel = None;
+        s.image_stage = None;
+        s.image_error = error.clone();
+    }
+    let _ = app.emit(
+        "pegoles://image-progress",
+        serde_json::json!({"stage": if error.is_some() { "failed" } else { "ready" }, "error": error}),
+    );
 }
 
 pub fn shared_state(app: &tauri::AppHandle) -> SharedState {

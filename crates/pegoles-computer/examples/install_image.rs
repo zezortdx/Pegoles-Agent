@@ -11,28 +11,13 @@
 //! cargo run --release -p pegoles-computer --example install_image
 //! ```
 
-use std::io::Read;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use pegoles_computer::image_release::{
-    self, ArchiveSource, HttpsSource, InstallStage, ReleaseImage,
+    self, ArchiveSource, HttpsSource, InstallStage, LocalArchiveSource, ReleaseImage,
 };
-use pegoles_computer::{active_image_id, pegoles_data_dir, ComputerError};
-
-/// Serves one local file as if it were the archive URL (ranges honoured).
-struct FileSource(PathBuf);
-
-impl ArchiveSource for FileSource {
-    fn open(&self, _url: &str, offset: u64) -> Result<(Box<dyn Read + Send>, bool), ComputerError> {
-        use std::io::{Seek, SeekFrom};
-        let mut f =
-            std::fs::File::open(&self.0).map_err(|e| ComputerError::Backend(e.to_string()))?;
-        f.seek(SeekFrom::Start(offset))
-            .map_err(|e| ComputerError::Backend(e.to_string()))?;
-        Ok((Box::new(f), offset > 0))
-    }
-}
+use pegoles_computer::{active_image_id, pegoles_data_dir};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -51,7 +36,7 @@ fn main() {
             // The local copy stands in for the (possibly unpublished) URL;
             // the archive and disk pins are unchanged.
             image.archive.urls = vec!["https://local.file/archive".into()];
-            Box::new(FileSource(file))
+            Box::new(LocalArchiveSource(file))
         }
         None => Box::new(HttpsSource::default()),
     };

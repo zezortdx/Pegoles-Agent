@@ -52,6 +52,29 @@ describe("computerModel", () => {
     expect(computerModel(input({ computer_created: false, computer_state: null, image_status: "missing", backend: "mock" })).phase).toBe("off");
   });
 
+  it("offers to set up the image in the app when this build can download it", () => {
+    const setup = { available: true, installing: false, stage: null, done: 0, total: 0, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 };
+    const offer = computerModel(input({ computer_created: false, computer_state: null, image_status: "missing", image_setup: setup }));
+    expect(offer).toMatchObject({ phase: "needs-setup", chip: "Not installed", primary: { command: "install", label: "Set up computer" } });
+    expect(offer.body).toBe("It downloads once (562 MB), is checked before use and needs about 3.2 GB of disk space.");
+    expect(offer.devNote).toBeUndefined();
+    const repair = computerModel(input({ computer_created: false, computer_state: null, image_status: "invalid", image_setup: { ...setup, error: "Setup was cancelled. It resumes where it stopped." } }));
+    expect(repair).toMatchObject({ chip: "Image incomplete", primary: { command: "install", label: "Repair computer" } });
+    expect(repair.body).toMatch(/^Setup was cancelled\. It resumes where it stopped\. It downloads once/);
+  });
+
+  it("shows only real setup progress, and the way to stop it", () => {
+    const base = { available: true, installing: true, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 };
+    const at = (stage: "downloading" | "verifying" | "unpacking" | "finalizing", done: number, total: number) =>
+      computerModel(input({ computer_created: false, computer_state: null, image_status: "missing", image_setup: { ...base, stage, done, total } }));
+    const downloading = at("downloading", 280_923_130, 561_846_260);
+    expect(downloading).toMatchObject({ phase: "needs-setup", chip: "Setting up", transitioning: true, primary: { command: "cancel-install", label: "Cancel" } });
+    expect(downloading.body).toBe("Downloading… 50% of 562 MB");
+    expect(at("verifying", 1, 4).body).toBe("Checking the download… 25%");
+    expect(at("unpacking", 3, 3).body).toBe("Unpacking… 100%");
+    expect(at("finalizing", 0, 1).body).toBe("Finishing…");
+  });
+
   it("keeps developer build steps out of production: the product never points people at repository scripts", () => {
     vi.stubEnv("DEV", false);
     try {

@@ -32,6 +32,9 @@ pub struct AppState {
     pub image_downloaded: u64,
     pub image_total: u64,
     pub image_error: Option<String>,
+    /// Cancels the running guest image installation (if any). Tripped
+    /// without the app lock being needed by the installer thread.
+    pub image_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Why the platform display adapter could not be installed, if so.
     /// (The adapter itself lives in `registry`, installed at startup by
     /// `native_display::install` on macOS.)
@@ -68,6 +71,7 @@ impl AppState {
             image_downloaded: 0,
             image_total: 0,
             image_error: None,
+            image_cancel: None,
             display_error: None,
             model_configured: false,
             provider: "local",

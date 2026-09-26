@@ -21,7 +21,7 @@ type IntelligenceScenario =
 
 type Scenario =
   | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
-  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "paused" | IntelligenceScenario;
+  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "image-setup" | "paused" | IntelligenceScenario;
 
 const now = Date.now();
 const iso = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
@@ -142,7 +142,8 @@ function world(scenario: Scenario): World {
       status: { ...baseStatus, computer_created: true, computer_state: "starting", viewport_state: "guest_connecting", guest_state: "connecting" },
       tasks: history, events: [],
     };
-    case "offline-setup": return { status: { ...baseStatus, image_status: "missing" }, tasks: [], events: [] };
+    case "offline-setup": return { status: { ...baseStatus, image_status: "missing", image_setup: { available: true, installing: false, stage: null, done: 0, total: 0, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 } }, tasks: [], events: [] };
+    case "image-setup": return { status: { ...baseStatus, image_status: "missing", image_setup: { available: true, installing: true, stage: "downloading", done: 210_000_000, total: 561_846_260, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 } }, tasks: [], events: [] };
     case "paused": return {
       status: { ...baseStatus, ...running, computer_state: "paused", viewport_state: "paused" },
       tasks: [...history, current("running")],

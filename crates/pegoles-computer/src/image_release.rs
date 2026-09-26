@@ -444,6 +444,30 @@ impl ArchiveSource for HttpsSource {
     }
 }
 
+/// Serves a local copy of the published archive (release engineering and
+/// development). The pins are unchanged: every byte is still checked.
+pub struct LocalArchiveSource(pub PathBuf);
+
+impl ArchiveSource for LocalArchiveSource {
+    fn open(&self, _url: &str, offset: u64) -> Result<(Box<dyn Read + Send>, bool)> {
+        let mut f = fs::File::open(&self.0).map_err(io_err)?;
+        f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
+        Ok((Box::new(f), offset > 0))
+    }
+}
+
+/// Debug builds only: `PEGOLES_IMAGE_ARCHIVE=<local .raw.gz>` installs from
+/// a local copy of the published archive instead of HTTPS (to exercise the
+/// in-app setup before the archive is hosted). Release builds never read it.
+pub fn dev_archive_override() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var_os("PEGOLES_IMAGE_ARCHIVE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+}
+
 fn io_err(e: std::io::Error) -> ComputerError {
     ComputerError::Backend(e.to_string())
 }

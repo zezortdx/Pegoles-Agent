@@ -294,6 +294,8 @@ export default function App() {
       stop: api.stopComputer,
       take: api.takeControl,
       return: api.returnControl,
+      install: api.installComputerImage,
+      "cancel-install": api.cancelComputerImageInstall,
     };
     if (command === "reset" || command === "remove") { manageComputer(command); return; }
     void run("computer", actions[command]);

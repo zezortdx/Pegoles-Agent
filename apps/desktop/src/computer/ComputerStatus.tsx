@@ -48,7 +48,7 @@ export function ComputerStatus({ model, busy, error, onCommand, onDismissError }
       {(showPrimary || error) && (
         <div className="machine-state__actions">
           {showPrimary && (
-            <button type="button" className={primary.command === "start" ? "btn btn--primary" : "btn btn--line"} disabled={busy} onClick={() => onCommand(primary.command)}>
+            <button type="button" className={primary.command === "start" || primary.command === "install" ? "btn btn--primary" : "btn btn--line"} disabled={busy} onClick={() => onCommand(primary.command)}>
               {busy ? <><span className="spinner" aria-hidden="true" />Working…</> : primary.label}
             </button>
           )}

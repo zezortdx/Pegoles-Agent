@@ -1,4 +1,5 @@
-import type { AgentEvent, StatusPayload } from "../lib/tauri";
+import type { AgentEvent, ImageSetup, StatusPayload } from "../lib/tauri";
+import { formatBytes } from "../lib/format";
 
 /**
  * Pegoles Computer as people see it. Pure: derived only from Core's
@@ -9,7 +10,10 @@ export type ComputerPhase =
   | "ready" | "agent" | "user" | "paused" | "stopping" | "error";
 
 /** `reset` returns it to the sealed image; `remove` deletes it and its disk. */
-export type ComputerCommand = "start" | "pause" | "resume" | "stop" | "take" | "return" | "reset" | "remove";
+export type ComputerCommand =
+  | "start" | "pause" | "resume" | "stop" | "take" | "return" | "reset" | "remove"
+  /** Download, verify and install the computer image; or stop doing so. */
+  | "install" | "cancel-install";
 
 export interface ComputerAction {
   readonly command: ComputerCommand;
@@ -104,6 +108,18 @@ const PAUSE: ComputerAction = { command: "pause", label: "Pause" };
  */
 const IMAGE_HOW = "with scripts/build-guest-image (see docs/PROJECT_STATE.md).";
 
+/** One line of real progress for the image setup. */
+export function setupProgress(setup: ImageSetup): string {
+  const pct = setup.total > 0 ? Math.min(100, Math.floor((setup.done * 100) / setup.total)) : 0;
+  switch (setup.stage) {
+    case "downloading": return setup.total > 0 ? `Downloading… ${pct}% of ${formatBytes(setup.total)}` : "Downloading…";
+    case "verifying": return `Checking the download… ${pct}%`;
+    case "unpacking": return `Unpacking… ${pct}%`;
+    case "finalizing": return "Finishing…";
+    default: return "Starting…";
+  }
+}
+
 export function computerModel({ connected, native, status, events }: ComputerInputs): ComputerModel {
   const base = { secondary: [] as ComputerAction[], owner: "none" as const, running: false, transitioning: false, steps: [] as BootStep[], specs: [] as string[], facts: [] as ComputerFact[] };
   if (!connected || !status) {
@@ -119,12 +135,24 @@ export function computerModel({ connected, native, status, events }: ComputerInp
       body: "Its isolated computer ran into a problem. Details has what engineers need.",
       primary: { command: "start", label: "Try again" } };
   }
-  // Without the sealed Pegoles image nothing can run: say so plainly and
-  // offer nothing that can't fix it.
+  // Without the sealed Pegoles image nothing can run: say so plainly, and
+  // offer only what can fix it (setting it up, when this build can).
   if (status.backend === "real" && !status.computer_created && status.image_status !== "ready") {
+    const setup = status.image_setup;
+    if (setup?.installing) {
+      return { ...base, specs, facts, phase: "needs-setup", chip: "Setting up", transitioning: true,
+        headline: "Setting up Pegoles’ computer…", body: setupProgress(setup),
+        primary: { command: "cancel-install", label: "Cancel" } };
+    }
     const incomplete = status.image_status === "invalid";
-    return { ...base, specs, facts, phase: "needs-setup", chip: incomplete ? "Image incomplete" : "Not installed",
-      headline: incomplete ? "The Pegoles computer image on this Mac is incomplete." : "The Pegoles computer image isn’t installed on this Mac.",
+    const headline = incomplete ? "The Pegoles computer image on this Mac is incomplete." : "The Pegoles computer image isn’t installed on this Mac.";
+    if (setup?.available) {
+      const size = `It downloads once (${formatBytes(setup.download_bytes)}), is checked before use and needs about ${formatBytes(setup.disk_bytes)} of disk space.`;
+      return { ...base, specs, facts, phase: "needs-setup", chip: incomplete ? "Image incomplete" : "Not installed", headline,
+        body: setup.error ? `${setup.error} ${size}` : size,
+        primary: { command: "install", label: incomplete ? "Repair computer" : "Set up computer" } };
+    }
+    return { ...base, specs, facts, phase: "needs-setup", chip: incomplete ? "Image incomplete" : "Not installed", headline,
       body: "Without it, Pegoles can’t create its isolated computer or work on tasks.",
       devNote: import.meta.env.DEV ? `${incomplete ? "Rebuild" : "Build"} it ${IMAGE_HOW}` : undefined };
   }
