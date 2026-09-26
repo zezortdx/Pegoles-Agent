@@ -1104,3 +1104,84 @@ fn agent_control_only_from_executor() {
         .filter_map(control_change)
         .all(|(from, to)| from != ControlOwner::Agent && to != ControlOwner::Agent));
 }
+
+// --- cancellation under the app lock ---
+
+/// The real helper while the guest stays silent: `recv` blocks for its
+/// whole timeout instead of failing at once like the plain fake.
+struct QuietFake(SharedFakeTransport);
+
+impl pegoles_computer::native_backend::HostTransport for QuietFake {
+    fn send(&mut self, line: &str) -> pegoles_computer::Result<()> {
+        self.0.send(line)
+    }
+    fn recv(&mut self, timeout: std::time::Duration) -> pegoles_computer::Result<String> {
+        if let Some(line) = self.0.try_recv() {
+            return line;
+        }
+        std::thread::sleep(timeout);
+        Err(ComputerError::Timeout("quiet guest".to_string()))
+    }
+    fn try_recv(&mut self) -> Option<pegoles_computer::Result<String>> {
+        self.0.try_recv()
+    }
+    fn alive(&mut self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn run_cancel_cuts_a_withheld_observe_short() {
+    // Regression (G5): an agent observe holds the app lock; a guest that
+    // never answers GetFrame kept Stop/Take Control waiting ~30 s, since
+    // the run token tripped by Stop never reached the frame wait.
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().to_path_buf();
+    seed_sealed_image(&data.join("images"));
+    let mut registry =
+        ComputerRegistry::with_dirs(EventBus::new(), BackendKind::Mock, data.clone());
+    let fake = SharedFakeTransport::new();
+    let backend = MacOSVirtualizationBackend::with_transport(
+        data.join("images"),
+        data.join("computers"),
+        Box::new(QuietFake(fake.clone())),
+    );
+    let id = registry
+        .create_on(Box::new(backend), default_config())
+        .unwrap();
+    registry.start().unwrap();
+    {
+        let cid = id.to_string();
+        let mut f = fake.lock();
+        f.inject_guest_connected(&cid);
+        f.inject_guest_frame(
+            &cid,
+            r#"{"type":"guest_hello","protocol_version":1,"runtime_version":"0.2.0","os":"debian","os_version":"13","arch":"aarch64","capabilities":["input","frame"]}"#,
+        );
+        f.inject_guest_frame(&cid, r#"{"type":"ready"}"#);
+    }
+    registry.pump();
+    assert!(registry.input_status().frame_available);
+    let cancel = crate::input::CancellationToken::new();
+    let stop = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        stop.cancel(); // what Stop does, without the app lock
+    });
+    let started = std::time::Instant::now();
+    let (result, _) = registry.execute_action(
+        pegoles_protocol::TaskId::new(),
+        pegoles_protocol::ComputerAction::ObserveScreen,
+        false,
+        &pegoles_policy::PolicyContext::default(),
+        &cancel,
+        false,
+    );
+    assert!(!result.success);
+    assert_eq!(result.outcome, pegoles_protocol::ActionOutcome::Interrupted);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "observe held the caller for {:?}",
+        started.elapsed()
+    );
+}

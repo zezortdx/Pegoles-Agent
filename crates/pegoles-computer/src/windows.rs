@@ -677,12 +677,30 @@ impl ComputerBackend for WindowsHcsBackend {
     ) -> crate::input::InputOutcome {
         self.engine.input_execute(request_id, op)
     }
+    fn input_execute_cancellable(
+        &mut self,
+        request_id: &str,
+        op: &crate::input::InputOp,
+        cancelled: &dyn Fn() -> bool,
+    ) -> crate::input::InputOutcome {
+        self.engine
+            .input_execute_cancellable(request_id, op, cancelled)
+    }
     fn input_capture_frame(
         &mut self,
         request_id: &str,
         timeout: std::time::Duration,
     ) -> Result<crate::input::CapturedFrame> {
         self.engine.input_capture_frame(request_id, timeout)
+    }
+    fn input_capture_frame_cancellable(
+        &mut self,
+        request_id: &str,
+        timeout: std::time::Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<crate::input::CapturedFrame> {
+        self.engine
+            .input_capture_frame_cancellable(request_id, timeout, cancelled)
     }
 }
 

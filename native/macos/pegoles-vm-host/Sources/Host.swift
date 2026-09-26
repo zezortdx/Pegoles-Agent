@@ -85,6 +85,13 @@ struct PegolesVmHost {
 
     private static let shutdownLock = NSLock()
     private static var shuttingDown = false
+    /// Held while a command runs. `VmManager`'s tables belong to the
+    /// command thread; the parent-exit handler (a global queue) takes this
+    /// before touching them, so the two never race.
+    private static let commandLock = NSLock()
+    /// How long shutdown waits for an in-flight command before exiting
+    /// without the graceful stop (the VMs die with this process anyway).
+    private static let shutdownCommandWaitSeconds: TimeInterval = 20
 
     /// Stop every VM this helper owns, then exit. Idempotent.
     static func shutdownAndExit(_ manager: VmManager, reason: String) {
@@ -93,7 +100,12 @@ struct PegolesVmHost {
         shuttingDown = true
         shutdownLock.unlock()
         log("\(reason): stopping all VMs and exiting")
-        manager.shutdownAll()
+        // Never released: no command may start once shutdown owns the VMs.
+        if commandLock.lock(before: Date().addingTimeInterval(shutdownCommandWaitSeconds)) {
+            manager.shutdownAll()
+        } else {
+            log("a command is still running; exiting without graceful VM stop")
+        }
         exit(0)
     }
 
@@ -117,7 +129,9 @@ struct PegolesVmHost {
             }
             // Vz calls run on the main queue (via VmManager's routing);
             // this background thread simply waits for the response.
+            commandLock.lock()
             let response = handle(req, manager: manager)
+            commandLock.unlock()
             emit(response)
         }
     }

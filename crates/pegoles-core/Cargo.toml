@@ -2,6 +2,7 @@
 name = "pegoles-core"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Pegoles Core: tasks, computers, actions, policy orchestration, events"
 license = "MIT"
 

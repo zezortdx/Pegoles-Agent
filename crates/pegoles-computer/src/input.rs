@@ -282,8 +282,15 @@ pub fn action_to_input_ops(action: &ComputerAction, t: &DisplayTransform) -> Vec
                 .round()
                 .clamp(-limits::MAX_SCROLL_UNITS, limits::MAX_SCROLL_UNITS) as i32,
         }],
-        ComputerAction::KeyPress { key } => vec![InputOp::KeyPress { key: key.clone() }],
-        ComputerAction::KeyChord { keys } => vec![InputOp::KeyChord { keys: keys.clone() }],
+        // Dispatch exactly what policy judged: the canonical names from
+        // the same normalizer. A name policy would deny stays raw, and the
+        // guest's strict vocabulary rejects it (fail closed).
+        ComputerAction::KeyPress { key } => vec![InputOp::KeyPress {
+            key: pegoles_protocol::keys::normalize_key_name(key).unwrap_or_else(|| key.clone()),
+        }],
+        ComputerAction::KeyChord { keys } => vec![InputOp::KeyChord {
+            keys: pegoles_protocol::keys::validate_chord(keys).unwrap_or_else(|_| keys.clone()),
+        }],
         // Typed text goes out in short slices: the executor checks
         // cancellation between primitives, so Stop interrupts a long
         // paste within ~one slice instead of after the whole text.
@@ -841,6 +848,40 @@ mod tests {
         );
         // Wait is host-side timing only.
         assert!(action_to_input_ops(&ComputerAction::Wait { duration_ms: 100 }, &t).is_empty());
+    }
+
+    #[test]
+    fn keys_dispatch_the_canonical_names_policy_judged() {
+        // Regression (B7): policy normalized " return " to Enter and
+        // allowed it, but the raw string went to the guest.
+        let t = t1440();
+        let ops = action_to_input_ops(
+            &ComputerAction::KeyPress {
+                key: " return ".into(),
+            },
+            &t,
+        );
+        assert_eq!(
+            ops,
+            vec![InputOp::KeyPress {
+                key: "Enter".into()
+            }]
+        );
+        let ops = action_to_input_ops(
+            &ComputerAction::KeyChord {
+                keys: vec!["ctrl".into(), "c".into()],
+            },
+            &t,
+        );
+        assert_eq!(
+            ops,
+            vec![InputOp::KeyChord {
+                keys: vec!["Control".into(), "c".into()]
+            }]
+        );
+        // A name policy denies stays raw (the guest rejects it too).
+        let ops = action_to_input_ops(&ComputerAction::KeyPress { key: "Nope".into() }, &t);
+        assert_eq!(ops, vec![InputOp::KeyPress { key: "Nope".into() }]);
     }
 
     #[test]

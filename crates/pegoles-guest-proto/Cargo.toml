@@ -2,6 +2,7 @@
 name = "pegoles-guest-proto"
 version = "0.2.0"
 edition = "2021"
+publish = false
 description = "Pegoles Core <-> Guest Runtime protocol v0.1: versioned JSONL messages over AF_VSOCK"
 license = "MIT"
 

@@ -1,40 +1,46 @@
+# Pegoles guest runtime: the host<->guest control plane over vsock.
+# Runs unprivileged. Its ONLY capability is CAP_NET_BIND_SERVICE, used to
+# dial the host from a reserved vsock source port (<= 1023). The host
+# accepts no other peer, so no other guest process (including apps the
+# agent drives) can impersonate the runtime. See docs/GUEST_PROTOCOL.md.
 [Unit]
 Description=Pegoles Guest Runtime (host<->guest control plane over vsock)
-Documentation=https://github.com/pegoles/pegoles-agent
-# No network dependency: vsock works with zero functional interfaces.
-After=systemd-user-sessions.service
-Wants=systemd-user-sessions.service
+After=systemd-user-sessions.service pegoles-weston.service
+Wants=systemd-user-sessions.service pegoles-weston.service
+# A guest app killing the runtime in a loop must not leave the unit
+# permanently failed (default start limit: 5 starts / 10 s).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=pegoles
-# Phase 5.1: uinput access for the virtual input device. Narrowest
-# mechanism: group membership only (udev rule grants input:0660).
-# NoNewPrivileges and every other protection below stay in force.
 SupplementaryGroups=input
 Environment=XDG_RUNTIME_DIR=/run/pegoles
 Environment=WAYLAND_DISPLAY=wayland-0
 ExecStart=/usr/local/bin/pegoles-guest-runtime
-Restart=on-failure
-RestartSec=5s
-# AF_VSOCK needs no capabilities; drop everything.
-CapabilityBoundingSet=
-AmbientCapabilities=
+Restart=always
+RestartSec=2s
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ProtectKernelTunables=true
 ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
 LockPersonality=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
-# Read-only access to OS facts + /proc for uptime/meminfo.
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_VSOCK AF_UNIX
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+UMask=0077
 ReadOnlyPaths=/etc/os-release /etc/hostname
-# NOTE: RestrictAddressFamilies intentionally NOT set: AF_UNIX (default
-# systemd socket deps) plus AF_VSOCK must both work. If a future systemd
-# supports AF_VSOCK in RestrictAddressFamilies, scope it then and re-test.
 
 [Install]
 WantedBy=multi-user.target

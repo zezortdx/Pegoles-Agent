@@ -313,6 +313,10 @@ pub struct GuestSession {
     state: GuestRuntimeState,
     connected: bool,
     greeted: bool,
+    /// The current connection already sent its GuestHello, or was kicked.
+    /// The runtime greets exactly once per connection, so it may never
+    /// greet again: only a new connection resets this.
+    hello_seen: bool,
     guest_version: Option<u32>,
     /// Phase 5 capability advertisement from `GuestHello` (e.g. "input",
     /// "frame"). Empty for v0.1 guests. Reset on every VM start.
@@ -347,6 +351,7 @@ impl GuestSession {
             state: GuestRuntimeState::Unavailable,
             connected: false,
             greeted: false,
+            hello_seen: false,
             guest_version: None,
             guest_capabilities: Vec::new(),
             capability_diagnostics: Vec::new(),
@@ -498,19 +503,36 @@ impl GuestSession {
         out.push_back(SessionOutcome::StateChanged { from, to, detail });
     }
 
-    fn violation(&mut self, reason: String, out: &mut VecDeque<SessionOutcome>) {
+    /// Drop the current connection: kick it (when live) and ignore any
+    /// greeting it still sends before it is gone. Only a new connection
+    /// may handshake again.
+    fn retire_connection(&mut self, out: &mut VecDeque<SessionOutcome>) {
         if self.connected {
             out.push_back(SessionOutcome::KickConnection);
             self.connected = false;
         }
         self.greeted = false;
+        self.hello_seen = true;
+    }
+
+    fn violation(&mut self, reason: String, out: &mut VecDeque<SessionOutcome>) {
+        self.retire_connection(out);
         self.set_state(GuestRuntimeState::Error, Some(reason), out);
+    }
+
+    /// Host-detected protocol violation (e.g. the guest generates
+    /// outbound work faster than it can be sent): kick + Error.
+    pub fn protocol_violation(&mut self, reason: String) -> Vec<SessionOutcome> {
+        let mut out = VecDeque::new();
+        self.violation(reason, &mut out);
+        out.into()
     }
 
     pub fn on_vm_started(&mut self, now: Instant) -> Vec<SessionOutcome> {
         let mut out = VecDeque::new();
         self.connected = false;
         self.greeted = false;
+        self.hello_seen = false;
         self.guest_version = None;
         self.guest_capabilities = Vec::new();
         self.capability_diagnostics = Vec::new();
@@ -537,8 +559,16 @@ impl GuestSession {
 
     pub fn on_connected(&mut self, now: Instant) -> Vec<SessionOutcome> {
         let mut out = VecDeque::new();
+        // A connect while one is live means the helper replaced it. The
+        // new peer inherits nothing (greeting, Ready, pending ping): it
+        // must handshake from scratch like any new connection.
+        if self.connected || self.state == GuestRuntimeState::Ready {
+            out.extend(self.on_disconnected("superseded".to_string()));
+        }
         self.connected = true;
-        if self.state != GuestRuntimeState::Connecting && self.state != GuestRuntimeState::Ready {
+        self.greeted = false;
+        self.hello_seen = false;
+        if self.state != GuestRuntimeState::Connecting {
             self.handshake_started_at = Some(now);
             self.set_state(GuestRuntimeState::Connecting, None, &mut out);
             out.push_back(SessionOutcome::Connected);
@@ -550,6 +580,7 @@ impl GuestSession {
         let mut out = VecDeque::new();
         self.connected = false;
         self.greeted = false;
+        self.hello_seen = false;
         self.pending_ping = None;
         match self.state {
             GuestRuntimeState::Ready | GuestRuntimeState::Connecting => {
@@ -592,6 +623,17 @@ impl GuestSession {
                 capabilities,
                 unavailable,
             } => {
+                if self.hello_seen {
+                    // The runtime greets once per connection. A repeat on
+                    // a live connection is a violation (each hello would
+                    // otherwise cost a HostHello round-trip); whatever a
+                    // kicked connection still sends is ignored.
+                    if self.connected {
+                        self.violation("repeated hello".to_string(), &mut out);
+                    }
+                    return out.into();
+                }
+                self.hello_seen = true;
                 if ![
                     os.as_str(),
                     os_version.as_str(),
@@ -620,11 +662,7 @@ impl GuestSession {
                             message: format!("host speaks protocol {GUEST_PROTOCOL_VERSION}"),
                         },
                     )));
-                    if self.connected {
-                        out.push_back(SessionOutcome::KickConnection);
-                        self.connected = false;
-                    }
-                    self.greeted = false;
+                    self.retire_connection(&mut out);
                     self.set_state(
                         GuestRuntimeState::Incompatible,
                         Some(format!("guest protocol {protocol_version}")),
@@ -804,11 +842,7 @@ impl GuestSession {
             GuestRuntimeState::Waiting | GuestRuntimeState::Connecting => {
                 if let Some(started) = self.handshake_started_at {
                     if now.duration_since(started) >= GUEST_READY_TIMEOUT {
-                        if self.connected {
-                            out.push_back(SessionOutcome::KickConnection);
-                            self.connected = false;
-                        }
-                        self.greeted = false;
+                        self.retire_connection(&mut out);
                         self.set_state(
                             GuestRuntimeState::Error,
                             Some("guest ready timeout (60 s)".to_string()),
@@ -836,11 +870,7 @@ impl GuestSession {
                     .map(|t| now.duration_since(t) >= HEARTBEAT_INTERVAL * HEARTBEAT_MISS_LIMIT)
                     .unwrap_or(false);
                 if silent {
-                    if self.connected {
-                        out.push_back(SessionOutcome::KickConnection);
-                        self.connected = false;
-                    }
-                    self.greeted = false;
+                    self.retire_connection(&mut out);
                     self.pending_ping = None;
                     self.set_state(
                         GuestRuntimeState::Disconnected,
@@ -1119,6 +1149,84 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn repeated_hello_is_a_violation_and_costs_one_host_hello() {
+        // Regression (A0/G0): every well-formed hello, even on a greeted
+        // Ready session, used to queue another HostHello round-trip.
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        handshake(&mut s, now);
+        assert_eq!(s.state(), GuestRuntimeState::Ready);
+        let out = s.on_frame(&hello(1), now);
+        assert!(out.contains(&SessionOutcome::KickConnection));
+        assert!(!out
+            .iter()
+            .any(|o| matches!(o, SessionOutcome::SendFrame(_))));
+        assert_eq!(s.state(), GuestRuntimeState::Error);
+        // The kicked connection's later hellos cost nothing at all.
+        for _ in 0..1000 {
+            assert!(s.on_frame(&hello(1), now).is_empty());
+            assert!(s.on_frame(&hello(999), now).is_empty());
+        }
+        assert_eq!(s.state(), GuestRuntimeState::Error);
+        // A NEW connection may handshake again.
+        let out = s.on_connected(now);
+        assert!(out.contains(&SessionOutcome::Connected));
+        s.on_frame(&hello(1), now);
+        s.on_frame(&encode_guest(&GuestMessage::Ready), now);
+        assert_eq!(s.state(), GuestRuntimeState::Ready);
+    }
+
+    #[test]
+    fn incompatible_hello_flood_sends_one_error() {
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        s.on_connected(now);
+        let mut sends = 0;
+        for _ in 0..100 {
+            sends += s
+                .on_frame(&hello(999), now)
+                .iter()
+                .filter(|o| matches!(o, SessionOutcome::SendFrame(_)))
+                .count();
+        }
+        assert_eq!(sends, 1);
+        assert_eq!(s.state(), GuestRuntimeState::Incompatible);
+    }
+
+    #[test]
+    fn replacement_connection_inherits_no_ready_session() {
+        // Regression (A2): a second connection arriving while Ready kept
+        // `greeted` and Ready, so its frames were trusted without a hello.
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        handshake(&mut s, now);
+        assert_eq!(s.state(), GuestRuntimeState::Ready);
+        let out = s.on_connected(now);
+        assert!(out.iter().any(|o| matches!(
+            o,
+            SessionOutcome::StateChanged {
+                from: GuestRuntimeState::Ready,
+                to: GuestRuntimeState::Disconnected,
+                ..
+            }
+        )));
+        assert!(out.contains(&SessionOutcome::Connected));
+        assert_eq!(s.state(), GuestRuntimeState::Connecting);
+        // The new peer's acks are not trusted before its own hello.
+        let ack = encode_guest(&GuestMessage::InputAck {
+            request_id: "r1".into(),
+            ok: true,
+            error: None,
+        });
+        let out = s.on_frame(&ack, now);
+        assert!(out.contains(&SessionOutcome::KickConnection));
+        assert_eq!(s.state(), GuestRuntimeState::Error);
     }
 
     #[test]

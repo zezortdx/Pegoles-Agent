@@ -702,13 +702,22 @@ impl ComputerRegistry {
                 }
             }
         }
+        // Blocking guest waits below run under the app lock; `cancel` is
+        // tripped WITHOUT that lock (Stop, Take Control), so the backend
+        // polls it instead of sitting out a withheld ack or frame.
+        let agent_cancel = self.agent_cancel.clone();
+        let cancelled = move || cancel.is_cancelled() || agent_cancel.is_cancelled();
         // Observation travels the capture path (chunked frame assembly),
         // never the input primitive path: real engines reject it there.
         if matches!(req.action, ComputerAction::ObserveScreen) {
-            return match self.capture_frame(&format!("{}:observe", req.action_id), out) {
+            let request_id = format!("{}:observe", req.action_id);
+            return match self.capture_frame_cancellable(&request_id, &cancelled, out) {
                 Ok(meta) => {
                     let message = format!("observed {}x{}", meta.width_px, meta.height_px);
                     self.completed(req, started_wall, message, Some(meta.frame_id), out)
+                }
+                Err(_) if cancelled() => {
+                    self.interrupted_result(&req, started_wall, "observe cancelled", out)
                 }
                 Err(message) => self.failed_result(&req, started_wall, message, out),
             };
@@ -724,7 +733,7 @@ impl ComputerRegistry {
             return self.failed_result(&req, started_wall, "action has no guest primitives", out);
         }
         for (i, op) in ops.iter().enumerate() {
-            if cancel.is_cancelled() || self.agent_cancel.is_cancelled() {
+            if cancelled() {
                 return self.interrupted_result(&req, started_wall, "cancelled mid-action", out);
             }
             // Track pressed state for stuck-input recovery.
@@ -756,11 +765,16 @@ impl ComputerRegistry {
             }
             let request_id = format!("{}:{i}", req.action_id);
             let outcome = match self.backend.as_deref_mut() {
-                Some(backend) => backend.input_execute(&request_id, op),
+                Some(backend) => backend.input_execute_cancellable(&request_id, op, &cancelled),
                 None => {
                     return self.failed_result(&req, started_wall, "no computer available", out);
                 }
             };
+            if !outcome.ok && cancelled() {
+                // Stopped waiting for the ack: release whatever may be
+                // held (interrupted_result does) and report the cancel.
+                return self.interrupted_result(&req, started_wall, "cancelled mid-action", out);
+            }
             if !outcome.ok {
                 // A failed primitive may leave buttons down: recover now.
                 self.release_pressed_state("primitive failed");
@@ -777,8 +791,12 @@ impl ComputerRegistry {
         // Optional observation chained to the action (no extra policy hop).
         let mut frame_id = None;
         if req.observe_after {
-            match self.capture_frame(&format!("{}:observe", req.action_id), out) {
+            let request_id = format!("{}:observe", req.action_id);
+            match self.capture_frame_cancellable(&request_id, &cancelled, out) {
                 Ok(meta) => frame_id = Some(meta.frame_id),
+                Err(_) if cancelled() => {
+                    return self.interrupted_result(&req, started_wall, "observe cancelled", out);
+                }
                 Err(message) => {
                     return self.failed_result(
                         &req,
@@ -876,15 +894,27 @@ impl ComputerRegistry {
         request_id: &str,
         out: &mut Vec<AgentEvent>,
     ) -> std::result::Result<ObservedFrameMeta, String> {
+        self.capture_frame_cancellable(request_id, &|| false, out)
+    }
+
+    /// [`Self::capture_frame`] that gives up once `cancelled()` turns true
+    /// instead of holding the caller for the whole capture budget.
+    fn capture_frame_cancellable(
+        &mut self,
+        request_id: &str,
+        cancelled: &dyn Fn() -> bool,
+        out: &mut Vec<AgentEvent>,
+    ) -> std::result::Result<ObservedFrameMeta, String> {
         let computer_id = self.computer_id().map_err(|e| e.to_string())?;
         if self.state() != Some(ComputerState::Running) {
             return Err("computer is not running".to_string());
         }
         let frame: CapturedFrame = match self.backend.as_deref_mut() {
             Some(backend) => backend
-                .input_capture_frame(
+                .input_capture_frame_cancellable(
                     request_id,
                     std::time::Duration::from_millis(limits::FRAME_CAPTURE_TIMEOUT_MS),
+                    cancelled,
                 )
                 .map_err(|e| e.to_string())?,
             None => return Err("no computer available".to_string()),

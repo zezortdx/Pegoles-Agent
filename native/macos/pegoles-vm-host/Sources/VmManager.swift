@@ -102,9 +102,8 @@ final class VmManager {
                            message: message, payload: nil, reason: nil))
         }
         socketDelegate.onAccept = { [weak self] computerId, connection in
-            if let strong = self {
-                strong.guestLink(for: computerId).attach(connection)
-            }
+            guard let strong = self else { return false }
+            return strong.guestLink(for: computerId).attach(connection)
         }
     }
 
@@ -443,7 +442,8 @@ final class VmManager {
 
     /// Parent gone (stdin EOF or parent exit): stop every VM this helper
     /// owns so none outlives the app that could control it. Graceful for
-    /// a few seconds, then forced. Runs on the command thread.
+    /// a few seconds, then forced. Callers hold the command lock (see
+    /// `PegolesVmHost.shutdownAndExit`): never concurrent with a command.
     func shutdownAll() {
         for id in Array(machines.keys) {
             guard let vm = machines[id] else { continue }

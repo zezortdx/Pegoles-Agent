@@ -41,9 +41,16 @@ let guestWriteBacklogMax = 4 * 1024 * 1024
 /// wedged and dropped.
 let guestSendTimeoutSeconds = 5
 
-/// Inbound line budget per connection (token bucket).
+/// Inbound line budget per computer (token bucket). Kept by the link, not
+/// the connection: reconnecting never refills it.
 let guestLinesPerSecond = 10_000.0
 let guestLineBurst = 20_000.0
+
+/// Accepted connections per computer (token bucket). The runtime dials
+/// once per boot and redials with backoff; every accept costs a thread,
+/// a queue and a `guest_connected` event, so a guest cannot spin it.
+let guestAcceptsPerSecond = 0.5
+let guestAcceptBurst = 8.0
 
 /// Close a Vz connection object on the main queue (Vz asserts queue usage
 /// even for teardown).
@@ -75,44 +82,105 @@ final class GuestConnection {
     }
 }
 
+/// Refill-on-read token bucket (callers hold the owning link's lock).
+/// Monotonic time: a wall-clock step backwards must not drain the bucket.
+struct TokenBucket {
+    let rate: Double
+    let burst: Double
+    private var tokens: Double
+    private var stamp = DispatchTime.now().uptimeNanoseconds
+
+    init(rate: Double, burst: Double) {
+        self.rate = rate
+        self.burst = burst
+        self.tokens = burst
+    }
+
+    mutating func take() -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now >= stamp ? Double(now - stamp) / 1_000_000_000 : 0
+        tokens = min(burst, tokens + elapsed * rate)
+        stamp = now
+        if tokens < 1 { return false }
+        tokens -= 1
+        return true
+    }
+}
+
 /// Per-computer guest channel: at most one live connection.
+///
+/// Event order on stdout matches connection order: `eventLock` is held
+/// while a pump checks its connection is live and relays a frame, and
+/// while `attach`/`detach` swap connections and emit their events. So no
+/// frame of a superseded or detached connection can follow its
+/// `guest_disconnected` (or its successor's `guest_connected`). Lock
+/// order: `eventLock` before `lock`; never wait on the main queue while
+/// holding `eventLock` (`attach` runs there).
 final class GuestLink {
     let computerId: String
     private var current: GuestConnection?
     private let lock = NSLock()
+    private let eventLock = NSLock()
     private var generation = 0
+    /// Guarded by `lock`; shared by every connection of this computer.
+    private var lineBudget = TokenBucket(rate: guestLinesPerSecond, burst: guestLineBurst)
+    private var acceptBudget = TokenBucket(rate: guestAcceptsPerSecond, burst: guestAcceptBurst)
 
     init(computerId: String) {
         self.computerId = computerId
     }
 
     /// Adopt a new authenticated connection (guest runtime restart) and
-    /// start its pump. Called on the main queue (Vz delegate).
-    func attach(_ vz: VZVirtioSocketConnection) {
+    /// start its pump. Called on the main queue (Vz delegate). Returns
+    /// false (Vz then refuses the connection) past the accept budget.
+    func attach(_ vz: VZVirtioSocketConnection) -> Bool {
+        eventLock.lock()
         lock.lock()
+        guard acceptBudget.take() else {
+            lock.unlock()
+            eventLock.unlock()
+            log("guest \(computerId): reconnecting too fast; refusing connection")
+            return false
+        }
         generation += 1
-        let conn = GuestConnection(vz, label: "pegoles.guest.\(computerId).w\(generation)")
+        let gen = generation
+        let conn = GuestConnection(vz, label: "pegoles.guest.\(computerId).w\(gen)")
         let old = current
         current = conn
         old?.closed = true
         lock.unlock()
         if let old {
-            closeConnectionOnMainQueue(old.vz)
+            // Same order as detach(): wake the old reader and fail its
+            // pending writes before the fd number can be reused, then tell
+            // Rust the old connection is gone BEFORE the new one exists.
+            _ = Foundation.shutdown(old.fd, Int32(SHUT_RDWR))
+            emit(HostEvent(event: "guest_disconnected", computer_id: computerId,
+                           state: nil, message: nil, payload: nil, reason: "superseded"))
         }
         emit(HostEvent(event: "guest_connected", computer_id: computerId,
                        state: nil, message: nil, payload: nil, reason: nil))
+        eventLock.unlock()
+        if let old {
+            closeConnectionOnMainQueue(old.vz)
+        }
         let thread = Thread { [weak self] in self?.pump(conn) }
-        thread.name = "pegoles.guest.\(computerId).r\(generation)"
+        thread.name = "pegoles.guest.\(computerId).r\(gen)"
         thread.start()
+        return true
     }
 
     /// Drop `conn` (or whatever is current when nil). Emits exactly one
     /// `guest_disconnected` for the connection Rust knows about; a stale
     /// connection is closed silently.
     func detach(_ conn: GuestConnection? = nil, reason: String) {
+        eventLock.lock()
         lock.lock()
         let target = conn ?? current
-        guard let target, !target.closed else { lock.unlock(); return }
+        guard let target, !target.closed else {
+            lock.unlock()
+            eventLock.unlock()
+            return
+        }
         target.closed = true
         let wasCurrent = target === current
         if wasCurrent { current = nil }
@@ -121,11 +189,12 @@ final class GuestLink {
         // released: a closed fd can be reused (reconnect, log rotation)
         // while the old pump or a queued write still holds the number.
         _ = Foundation.shutdown(target.fd, Int32(SHUT_RDWR))
-        closeConnectionOnMainQueue(target.vz)
         if wasCurrent {
             emit(HostEvent(event: "guest_disconnected", computer_id: computerId,
                            state: nil, message: nil, payload: nil, reason: reason))
         }
+        eventLock.unlock()
+        closeConnectionOnMainQueue(target.vz)
     }
 
     var isConnected: Bool {
@@ -149,11 +218,7 @@ final class GuestLink {
         lock.unlock()
         conn.writeQueue.async { [weak self] in
             guard let self else { return }
-            self.lock.lock()
-            let closed = conn.closed
-            self.lock.unlock()
-            if closed { return }
-            let ok = GuestLink.writeAll(fd: conn.fd, data: data)
+            let ok = self.writeAll(conn, data: data)
             self.lock.lock()
             conn.backlog -= data.count
             self.lock.unlock()
@@ -162,11 +227,18 @@ final class GuestLink {
         return true
     }
 
-    private static func writeAll(fd: Int32, data: Data) -> Bool {
+    /// Write every byte unless the connection is closed meanwhile (then
+    /// its fd number may already belong to something else).
+    private func writeAll(_ conn: GuestConnection, data: Data) -> Bool {
         var written = 0
         while written < data.count {
+            lock.lock()
+            let closed = conn.closed
+            lock.unlock()
+            if closed { return false }
             let n = data.withUnsafeBytes { ptr -> Int in
-                Foundation.write(fd, ptr.baseAddress!.advanced(by: written), data.count - written)
+                Foundation.write(conn.fd, ptr.baseAddress!.advanced(by: written),
+                                 data.count - written)
             }
             if n < 0 && errno == EINTR { continue }
             if n <= 0 { return false } // EAGAIN after SO_SNDTIMEO, EPIPE, …
@@ -177,10 +249,12 @@ final class GuestLink {
 
     private func pump(_ conn: GuestConnection) {
         var pending = Data()
-        var tokens = guestLineBurst
-        var last = Date()
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
+            lock.lock()
+            let gone = conn.closed
+            lock.unlock()
+            if gone { return }
             let n = chunk.withUnsafeMutableBytes { ptr -> Int in
                 Foundation.read(conn.fd, ptr.baseAddress!, ptr.count)
             }
@@ -190,8 +264,13 @@ final class GuestLink {
                 return
             }
             pending.append(contentsOf: chunk[..<n])
-            while let nl = pending.firstIndex(of: UInt8(ascii: "\n")) {
-                var line = pending[pending.startIndex..<nl]
+            // Split at a moving index and drop the consumed prefix once
+            // per read: removing each line from the front was quadratic
+            // under a flood of tiny lines.
+            var consumed = pending.startIndex
+            while let nl = pending[consumed...].firstIndex(of: UInt8(ascii: "\n")) {
+                var line = pending[consumed..<nl]
+                consumed = nl + 1
                 if line.last == UInt8(ascii: "\r") { line = line.dropLast() }
                 let text = String(data: Data(line), encoding: .utf8)
                 let tooLarge = line.count > guestFrameMax
@@ -199,7 +278,6 @@ final class GuestLink {
                 // escapes them); refusing them also bounds how much the
                 // relayed JSON can grow when re-escaped for the host.
                 let hasControl = line.contains { $0 < 0x20 && $0 != 0x09 }
-                pending.removeSubrange(pending.startIndex...nl)
                 if tooLarge {
                     detach(conn, reason: "frame_too_large")
                     return
@@ -212,22 +290,25 @@ final class GuestLink {
                     detach(conn, reason: "invalid_utf8")
                     return
                 }
-                let now = Date()
-                tokens = min(guestLineBurst,
-                             tokens + now.timeIntervalSince(last) * guestLinesPerSecond)
-                last = now
-                if tokens < 1 {
+                lock.lock()
+                let withinBudget = lineBudget.take()
+                lock.unlock()
+                if !withinBudget {
                     detach(conn, reason: "flood")
                     return
                 }
-                tokens -= 1
+                eventLock.lock()
                 lock.lock()
                 let live = !conn.closed
                 lock.unlock()
+                if live {
+                    emit(HostEvent(event: "guest_frame", computer_id: computerId,
+                                   state: nil, message: nil, payload: text, reason: nil))
+                }
+                eventLock.unlock()
                 if !live { return }
-                emit(HostEvent(event: "guest_frame", computer_id: computerId,
-                               state: nil, message: nil, payload: text, reason: nil))
             }
+            pending.removeSubrange(pending.startIndex..<consumed)
             if pending.count > guestFrameMax {
                 detach(conn, reason: "frame_too_large")
                 return
@@ -238,7 +319,8 @@ final class GuestLink {
 
 /// Routes listener callbacks to per-computer links.
 final class GuestSocketDelegate: NSObject, VZVirtioSocketListenerDelegate {
-    var onAccept: ((String, VZVirtioSocketConnection) -> Void)?
+    /// Adopts the connection; false refuses it (accept budget spent).
+    var onAccept: ((String, VZVirtioSocketConnection) -> Bool)?
     private var devices: [ObjectIdentifier: String] = [:]
     private let lock = NSLock()
 
@@ -274,7 +356,6 @@ final class GuestSocketDelegate: NSObject, VZVirtioSocketListenerDelegate {
             log("vsock connection from unprivileged guest port \(connection.sourcePort); rejecting")
             return false
         }
-        onAccept?(computerId, connection)
-        return true
+        return onAccept?(computerId, connection) ?? false
     }
 }

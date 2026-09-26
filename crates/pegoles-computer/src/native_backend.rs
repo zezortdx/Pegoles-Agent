@@ -33,10 +33,24 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(150);
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(90);
 /// Observations produced while a blocking round-trip was in flight are
 /// kept (not dropped) until the next `poll_guest`. Bounded so a flooding
-/// guest cannot grow host memory while nobody polls; oldest drop first.
+/// guest cannot grow host memory while nobody polls; request answers
+/// (frame chunks first) drop before state facts, then oldest first.
 pub const MAX_DEFERRED_OBSERVATIONS: usize = 256;
 /// Helper lines processed per non-blocking pump.
 pub const MAX_LINES_PER_PUMP: usize = 2048;
+/// Helper bytes processed per non-blocking pump (with the line cap above:
+/// a flood of maximum-size lines cannot pin the app lock either).
+pub const MAX_BYTES_PER_PUMP: usize = 8 * 1024 * 1024;
+/// Session-requested transport actions waiting for a round-trip. A live
+/// session needs a handful (HostHello, GetGraphicalSession, heartbeat,
+/// Kick); more means the guest generates work faster than it can be
+/// sent, and the connection is kicked instead of the queue growing.
+pub const MAX_PENDING_OUTBOUND: usize = 64;
+/// Transport actions executed per flush; the rest wait for the next one.
+pub const MAX_OUTBOUND_PER_FLUSH: usize = 32;
+/// Blocking guest waits re-check their deadline and cancel signal at
+/// least this often.
+pub const GUEST_WAIT_SLICE: Duration = Duration::from_millis(200);
 /// Everything that differs between the macOS and Windows native backends.
 /// All other behavior is shared byte-for-byte.
 #[derive(Clone, Debug)]
@@ -212,8 +226,9 @@ struct ChildTransport {
 /// Lines buffered between the helper's stdout reader and the engine.
 /// Bounded: when the engine is slow the reader blocks, the helper's
 /// stdout pipe fills, and backpressure reaches the guest socket instead
-/// of host memory.
-pub const HELPER_LINE_QUEUE: usize = 1024;
+/// of host memory. Sized in bytes as well: at most
+/// `HELPER_LINE_QUEUE * MAX_HELPER_LINE_BYTES` (16 MiB) is ever queued.
+pub const HELPER_LINE_QUEUE: usize = 64;
 /// Longest line accepted from the helper. Guest frames are capped at
 /// 64 KiB before relay; JSON escaping can grow them, never 4x.
 pub const MAX_HELPER_LINE_BYTES: usize = 256 * 1024;
@@ -610,7 +625,10 @@ pub(crate) struct NativeInner {
     next_id: u64,
     guest: GuestSession,
     /// Session-requested vsock actions awaiting a free round-trip.
+    /// Bounded by `MAX_PENDING_OUTBOUND` (see `queue_outbound`).
     pending_outbound: VecDeque<Outbound>,
+    /// A `flush_outbound` is running (it never nests).
+    flushing: bool,
     /// Ephemeral execution handle; minted per start, cleared on stop.
     instance: Option<ComputerInstance>,
     /// Observations seen during blocking round-trips (`call`,
@@ -652,6 +670,7 @@ impl NativeHelperBackend {
             next_id: 1,
             guest: GuestSession::new(),
             pending_outbound: VecDeque::new(),
+            flushing: false,
             instance: None,
             deferred: VecDeque::new(),
             lock: None,
@@ -661,9 +680,51 @@ impl NativeHelperBackend {
     fn defer_observations(inner: &mut NativeInner, observations: Vec<GuestObservation>) {
         for o in observations {
             if inner.deferred.len() >= MAX_DEFERRED_OBSERVATIONS {
-                inner.deferred.pop_front();
+                // Request answers go first (bulk frame chunks before the
+                // rest): a capture must never push out a state transition
+                // Core has yet to publish.
+                let victim = inner
+                    .deferred
+                    .iter()
+                    .position(|d| matches!(d, GuestObservation::FrameChunkReceived { .. }))
+                    .or_else(|| inner.deferred.iter().position(is_request_answer));
+                match victim {
+                    Some(i) => {
+                        inner.deferred.remove(i);
+                    }
+                    None if is_request_answer(&o) => continue,
+                    None => {
+                        inner.deferred.pop_front();
+                    }
+                }
             }
             inner.deferred.push_back(o);
+        }
+    }
+
+    /// Queue one session-requested transport action. Bounded: past
+    /// `MAX_PENDING_OUTBOUND` the guest is generating work faster than it
+    /// can be sent, so the queue collapses to a single Kick and the
+    /// session moves to Error (its observations go to `observations`).
+    fn queue_outbound(
+        inner: &mut NativeInner,
+        action: Outbound,
+        observations: &mut Vec<GuestObservation>,
+    ) {
+        if inner.pending_outbound.len() < MAX_PENDING_OUTBOUND {
+            inner.pending_outbound.push_back(action);
+            return;
+        }
+        inner.pending_outbound.clear();
+        inner.pending_outbound.push_back(Outbound::Kick);
+        for o in inner
+            .guest
+            .protocol_violation("outbound queue overflow".to_string())
+        {
+            // The kick is already queued; keep only the observations.
+            if let (_, Some(o)) = o.split() {
+                observations.push(o);
+            }
         }
     }
 
@@ -683,7 +744,14 @@ impl NativeHelperBackend {
     /// must not turn every later lifecycle call (including stop) into a
     /// second panic; the state machine re-validates on the next call.
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, NativeInner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.lock().unwrap_or_else(|e| {
+            // A panic unwound out of a locked section: any flush it was
+            // running is gone, so the re-entrancy guard must not outlive it
+            // (a stuck flag would silence HostHello/Kick for good).
+            let mut inner = e.into_inner();
+            inner.flushing = false;
+            inner
+        })
     }
 
     /// Test injection: pre-opened transport instead of spawning a process.
@@ -726,6 +794,11 @@ impl NativeHelperBackend {
 
     /// Send a command and wait for the matching response id, applying any
     /// async events observed meanwhile. Disconnect forces cached Error.
+    /// `timeout` bounds the WHOLE exchange: interleaved guest frames never
+    /// re-arm it, so a stalled helper is abandoned even under a stream of
+    /// events. Never flushes queued outbound actions (a nested round-trip
+    /// here made the stack as deep as the queue); top-level entry points
+    /// do that (see `flush_outbound`).
     fn call(
         inner: &mut NativeInner,
         command: HostCommand,
@@ -748,10 +821,19 @@ impl NativeHelperBackend {
                 return Err(e);
             }
         }
+        let deadline = std::time::Instant::now() + timeout;
         loop {
             let raw = {
-                let transport = inner.transport.as_mut().expect("transport");
-                match transport.recv(timeout) {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                let received = if remaining.is_zero() {
+                    Err(ComputerError::Timeout(format!(
+                        "no answer after {}s",
+                        timeout.as_secs()
+                    )))
+                } else {
+                    inner.transport.as_mut().expect("transport").recv(remaining)
+                };
+                match received {
                     Ok(l) => l,
                     Err(e) => {
                         Self::abandon_transport(inner, &e);
@@ -768,7 +850,6 @@ impl NativeHelperBackend {
                                 code: crate::vmhost_proto::HostErrorCode::Internal,
                                 message: String::new(),
                             });
-                        Self::flush_outbound(inner, &computer_id_for(&command));
                         return match err.code {
                             crate::vmhost_proto::HostErrorCode::GuestUnavailable => {
                                 Err(ComputerError::GuestUnavailable(err.message))
@@ -776,9 +857,7 @@ impl NativeHelperBackend {
                             _ => Err(ComputerError::Backend(err.message)),
                         };
                     }
-                    let state = resp.state;
-                    Self::flush_outbound(inner, &computer_id_for(&command));
-                    return Ok(state);
+                    return Ok(resp.state);
                 }
                 Ok(HostLine::Response(_)) => continue, // not ours; keep waiting
                 Ok(HostLine::Event(ev)) => {
@@ -816,8 +895,9 @@ impl NativeHelperBackend {
     }
 
     /// Feed one helper event to the VM cache + guest session. Outbound
-    /// transport actions queue up; they flush after the current round-trip
-    /// so nested calls can never swallow a foreign response id.
+    /// transport actions queue up (bounded); the top-level entry point
+    /// flushes them once its own round-trips are done, so nested calls can
+    /// never swallow a foreign response id or deepen the stack.
     fn apply_event(
         inner: &mut NativeInner,
         _computer_id: &Option<String>,
@@ -835,29 +915,45 @@ impl NativeHelperBackend {
                 inner.cached = ComputerState::Error;
                 Vec::new()
             }
-            E::GuestConnected { .. } => inner.guest.on_connected(now),
+            // Queued actions belong to the connection that caused them: a
+            // Kick or HostHello must never reach its replacement.
+            E::GuestConnected { .. } => {
+                inner.pending_outbound.clear();
+                inner.guest.on_connected(now)
+            }
             E::GuestFrame { payload, .. } => inner.guest.on_frame(&payload, now),
-            E::GuestDisconnected { reason, .. } => inner.guest.on_disconnected(reason),
+            E::GuestDisconnected { reason, .. } => {
+                inner.pending_outbound.clear();
+                inner.guest.on_disconnected(reason)
+            }
         };
         for o in outcomes {
             let (action, observation) = o.split();
-            if let Some(action) = action {
-                inner.pending_outbound.push_back(action);
-            }
             if let Some(o) = observation {
                 observations.push(o);
+            }
+            if let Some(action) = action {
+                Self::queue_outbound(inner, action, observations);
             }
         }
     }
 
-    /// Execute queued outbound guest actions (each its own round-trip).
-    /// Bounded: a misbehaving peer cannot spin us forever.
+    /// Execute queued outbound guest actions, each its own round-trip.
+    /// Top level only (the pump and the end of public operations), never
+    /// from `call()` or a guest wait: a round-trip can queue more actions,
+    /// and flushing from inside one made the stack as deep as the queue.
+    /// Iterative, non-reentrant and bounded per call; the rest waits for
+    /// the next flush.
     fn flush_outbound(inner: &mut NativeInner, computer_id: &Option<String>) {
         let Some(cid) = computer_id.clone() else {
             inner.pending_outbound.clear();
             return;
         };
-        for _ in 0..32 {
+        if inner.flushing {
+            return;
+        }
+        inner.flushing = true;
+        for _ in 0..MAX_OUTBOUND_PER_FLUSH {
             let action = match inner.pending_outbound.pop_front() {
                 Some(a) => a,
                 None => break,
@@ -865,23 +961,34 @@ impl NativeHelperBackend {
             match action {
                 Outbound::Send(frame) => {
                     if Self::guest_send_frame(inner, &cid, &frame).is_err() {
+                        // The connection these actions were queued for is
+                        // gone: drop the rest, and let Core publish the
+                        // transition instead of losing it.
+                        inner.pending_outbound.clear();
+                        let mut observations = Vec::new();
                         for o in inner.guest.on_disconnected("send_failed".to_string()) {
-                            let (a, _) = o.split();
+                            let (a, obs) = o.split();
                             if let Some(a) = a {
-                                inner.pending_outbound.push_back(a);
+                                Self::queue_outbound(inner, a, &mut observations);
                             }
+                            observations.extend(obs);
                         }
+                        Self::defer_observations(inner, observations);
                     }
                 }
                 Outbound::Kick => Self::guest_kick(inner, &cid),
             }
         }
+        inner.flushing = false;
     }
 
     fn op(&self, command: HostCommand, timeout: Duration) -> Result<ComputerState> {
         let mut inner = self.lock_inner();
         Self::ensure_transport(&mut inner, None)?;
-        let state = Self::call(&mut inner, command, timeout)?.map(|s| s.as_protocol());
+        let cid = computer_id_for(&command);
+        let result = Self::call(&mut inner, command, timeout);
+        Self::flush_outbound(&mut inner, &cid);
+        let state = result?.map(|s| s.as_protocol());
         if let Some(s) = state {
             inner.cached = s;
         }
@@ -920,9 +1027,14 @@ impl NativeHelperBackend {
         if inner.transport.as_mut().map(|t| t.alive()) != Some(true) {
             return observations;
         }
-        // Bounded per pump: a flooding guest cannot pin the caller (and
-        // the app lock it holds); the rest drains on the next pump.
+        // Bounded per pump by lines AND bytes: a flooding guest cannot pin
+        // the caller (and the app lock it holds); the rest drains on the
+        // next pump.
+        let mut bytes = 0usize;
         for _ in 0..MAX_LINES_PER_PUMP {
+            if bytes >= MAX_BYTES_PER_PUMP {
+                break;
+            }
             let line = {
                 let transport = inner.transport.as_mut().expect("transport");
                 match transport.try_recv() {
@@ -937,6 +1049,7 @@ impl NativeHelperBackend {
                     Some(Ok(l)) => l,
                 }
             };
+            bytes += line.len();
             match parse_line(&line) {
                 Ok(HostLine::Response(_)) => {} // stray; calls consume their own
                 Ok(HostLine::Event(ev)) => {
@@ -948,11 +1061,11 @@ impl NativeHelperBackend {
         Self::flush_outbound(inner, &computer_id);
         for o in inner.guest.tick(std::time::Instant::now()) {
             let (action, observation) = o.split();
-            if let Some(action) = action {
-                inner.pending_outbound.push_back(action);
-            }
             if let Some(o) = observation {
                 observations.push(o);
+            }
+            if let Some(action) = action {
+                Self::queue_outbound(inner, action, &mut observations);
             }
         }
         Self::flush_outbound(inner, &computer_id);
@@ -960,22 +1073,45 @@ impl NativeHelperBackend {
     }
 
     /// Blocking wait for one guest observation satisfying `accept`,
-    /// feeding all other frames to the session. Used by ping/info
+    /// feeding all other frames to the session. Used by ping/info/input
     /// round-trips. Transport death forces cached Error like `call()`.
+    /// Gives up early when `cancelled()` turns true (checked at least
+    /// every `GUEST_WAIT_SLICE`): Stop must not sit out a withheld ack
+    /// while the caller holds the app lock.
     fn wait_guest_frame(
         inner: &mut NativeInner,
         computer_id: &str,
         timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
         mut accept: impl FnMut(&GuestObservation) -> bool,
     ) -> Result<()> {
+        use pegoles_protocol::GuestRuntimeState as G;
         let deadline = std::time::Instant::now() + timeout;
         let cid = Some(computer_id.to_string());
+        // `call()` defers every event it reads while the request is in
+        // flight, so the answer may already be here. It is consumed, not
+        // handed to Core (which has no use for request answers).
+        if let Some(i) = inner.deferred.iter().position(&mut accept) {
+            inner.deferred.remove(i);
+            return Ok(());
+        }
+        if inner.guest.state() != G::Ready {
+            // Lost (or replaced) while the request was being sent.
+            return Err(ComputerError::GuestUnavailable(
+                "guest runtime disconnected".to_string(),
+            ));
+        }
         loop {
             let now = std::time::Instant::now();
             if now >= deadline {
                 return Err(ComputerError::Backend("guest response timeout".to_string()));
             }
-            let remaining = (deadline - now).min(Duration::from_secs(5));
+            if cancelled() {
+                return Err(ComputerError::Backend(
+                    "cancelled while waiting for the guest".to_string(),
+                ));
+            }
+            let remaining = (deadline - now).min(GUEST_WAIT_SLICE);
             let line = {
                 let transport = inner.transport.as_mut().ok_or(ComputerError::NotCreated)?;
                 match transport.recv(remaining) {
@@ -993,7 +1129,6 @@ impl NativeHelperBackend {
                 Ok(HostLine::Event(ev)) => {
                     let mut obs = Vec::new();
                     Self::apply_event(inner, &cid, ev, &mut obs);
-                    let accepted = obs.iter().any(&mut accept);
                     // The guest channel went away mid-request: nothing we
                     // wait for can arrive on it. Fail now instead of
                     // sitting out the whole timeout.
@@ -1001,17 +1136,24 @@ impl NativeHelperBackend {
                         matches!(
                             o,
                             GuestObservation::StateChanged {
-                                to: pegoles_protocol::GuestRuntimeState::Disconnected
-                                    | pegoles_protocol::GuestRuntimeState::Error
-                                    | pegoles_protocol::GuestRuntimeState::Incompatible,
+                                to: G::Disconnected | G::Error | G::Incompatible,
                                 ..
                             }
                         )
                     });
-                    // Every observation (accepted or not) still reaches
-                    // Core on the next poll: nothing is swallowed.
+                    // The awaited answer is consumed here; every other
+                    // observation still reaches Core on the next poll.
+                    // Queued outbound actions wait for the caller's
+                    // top-level flush (never a nested round-trip here).
+                    let mut accepted = false;
+                    obs.retain(|o| {
+                        if !accepted && accept(o) {
+                            accepted = true;
+                            return false;
+                        }
+                        true
+                    });
                     Self::defer_observations(inner, obs);
-                    Self::flush_outbound(inner, &cid);
                     if accepted {
                         return Ok(());
                     }
@@ -1479,51 +1621,65 @@ impl NativeHelperBackend {
         self.lock_inner().guest.is_connected()
     }
 
-    pub fn guest_ping(&self, timeout: Duration) -> Result<u64> {
-        use pegoles_protocol::GuestRuntimeState as G;
+    /// Run one blocking guest exchange under the engine lock, then (and
+    /// only then) execute the transport actions the session queued
+    /// meanwhile: top level, never nested (see `flush_outbound`).
+    fn guest_exchange<T>(
+        &self,
+        exchange: impl FnOnce(&mut NativeInner, &str) -> Result<T>,
+    ) -> Result<T> {
         let mut inner = self.lock_inner();
         let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
-        if inner.guest.state() != G::Ready {
-            return Err(ComputerError::GuestUnavailable(
-                "guest runtime is not ready".to_string(),
-            ));
-        }
-        let now = std::time::Instant::now();
-        let (nonce, frame) = inner.guest.manual_ping(now).expect("ready checked");
-        Self::guest_send_frame(&mut inner, &id, &frame)?;
-        let mut latency = None;
-        Self::wait_guest_frame(&mut inner, &id, timeout, |o| match o {
-            GuestObservation::PongReceived {
-                nonce: n,
-                latency_ms,
-            } if *n == nonce => {
-                latency = Some(*latency_ms);
-                true
+        let result = exchange(&mut inner, &id);
+        Self::flush_outbound(&mut inner, &Some(id));
+        result
+    }
+
+    pub fn guest_ping(&self, timeout: Duration) -> Result<u64> {
+        use pegoles_protocol::GuestRuntimeState as G;
+        self.guest_exchange(|inner, id| {
+            if inner.guest.state() != G::Ready {
+                return Err(ComputerError::GuestUnavailable(
+                    "guest runtime is not ready".to_string(),
+                ));
             }
-            _ => false,
-        })?;
-        latency.ok_or_else(|| ComputerError::Backend("pong lost".to_string()))
+            let now = std::time::Instant::now();
+            let (nonce, frame) = inner.guest.manual_ping(now).expect("ready checked");
+            Self::guest_send_frame(inner, id, &frame)?;
+            let mut latency = None;
+            Self::wait_guest_frame(inner, id, timeout, &|| false, |o| match o {
+                GuestObservation::PongReceived {
+                    nonce: n,
+                    latency_ms,
+                } if *n == nonce => {
+                    latency = Some(*latency_ms);
+                    true
+                }
+                _ => false,
+            })?;
+            latency.ok_or_else(|| ComputerError::Backend("pong lost".to_string()))
+        })
     }
 
     pub fn guest_info_request(&self, timeout: Duration) -> Result<pegoles_guest_proto::SystemInfo> {
         use pegoles_protocol::GuestRuntimeState as G;
-        let mut inner = self.lock_inner();
-        let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
-        if inner.guest.state() != G::Ready {
-            return Err(ComputerError::GuestUnavailable(
-                "guest runtime is not ready".to_string(),
-            ));
-        }
-        let frame =
-            pegoles_guest_proto::encode_host(&pegoles_guest_proto::HostMessage::GetSystemInfo);
-        Self::guest_send_frame(&mut inner, &id, &frame)?;
-        Self::wait_guest_frame(&mut inner, &id, timeout, |o| {
-            matches!(o, GuestObservation::InfoReceived(_))
-        })?;
-        inner
-            .guest
-            .guest_info()
-            .ok_or_else(|| ComputerError::Backend("system info lost".to_string()))
+        self.guest_exchange(|inner, id| {
+            if inner.guest.state() != G::Ready {
+                return Err(ComputerError::GuestUnavailable(
+                    "guest runtime is not ready".to_string(),
+                ));
+            }
+            let frame =
+                pegoles_guest_proto::encode_host(&pegoles_guest_proto::HostMessage::GetSystemInfo);
+            Self::guest_send_frame(inner, id, &frame)?;
+            Self::wait_guest_frame(inner, id, timeout, &|| false, |o| {
+                matches!(o, GuestObservation::InfoReceived(_))
+            })?;
+            inner
+                .guest
+                .guest_info()
+                .ok_or_else(|| ComputerError::Backend("system info lost".to_string()))
+        })
     }
 
     // --- agent input plane (Phase 5): guest channel only. No host input
@@ -1601,8 +1757,19 @@ impl NativeHelperBackend {
         request_id: &str,
         op: &crate::input::InputOp,
     ) -> crate::input::InputOutcome {
+        self.input_execute_cancellable(request_id, op, &|| false)
+    }
+
+    /// `input_execute` that stops waiting for the guest's ack once
+    /// `cancelled()` turns true (the op may still land in the guest).
+    pub fn input_execute_cancellable(
+        &self,
+        request_id: &str,
+        op: &crate::input::InputOp,
+        cancelled: &dyn Fn() -> bool,
+    ) -> crate::input::InputOutcome {
         let start = std::time::Instant::now();
-        match self.input_execute_inner(request_id, op) {
+        match self.input_execute_inner(request_id, op, cancelled) {
             Ok(()) => crate::input::InputOutcome::ok(
                 start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             ),
@@ -1610,7 +1777,12 @@ impl NativeHelperBackend {
         }
     }
 
-    fn input_execute_inner(&self, request_id: &str, op: &crate::input::InputOp) -> Result<()> {
+    fn input_execute_inner(
+        &self,
+        request_id: &str,
+        op: &crate::input::InputOp,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<()> {
         use crate::input::InputOp as Op;
         if request_id.len() > pegoles_guest_proto::MAX_REQUEST_ID_BYTES {
             return Err(ComputerError::Backend(
@@ -1631,38 +1803,39 @@ impl NativeHelperBackend {
                 "input op exceeds guest bounds".to_string(),
             ));
         }
-        let mut inner = self.lock_inner();
-        let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
-        Self::require_input_ready(&inner.guest, pegoles_guest_proto::GUEST_CAP_INPUT)?;
-        let budget = std::time::Duration::from_millis(
-            pegoles_protocol::limits::INPUT_ROUNDTRIP_MS + guest_op.execution_budget_ms(),
-        );
-        let frame = pegoles_guest_proto::encode_host(&pegoles_guest_proto::HostMessage::Input {
-            request_id: request_id.to_string(),
-            op: guest_op,
-            display: Self::input_display_size(&inner),
-        });
-        Self::guest_send_frame(&mut inner, &id, &frame)?;
-        let mut ack: Option<(bool, Option<String>)> = None;
-        let wanted = request_id.to_string();
-        Self::wait_guest_frame(&mut inner, &id, budget, |o| match o {
-            GuestObservation::InputAckReceived {
-                request_id,
-                ok,
-                error,
-            } if *request_id == wanted => {
-                ack = Some((*ok, error.clone()));
-                true
+        self.guest_exchange(|inner, id| {
+            Self::require_input_ready(&inner.guest, pegoles_guest_proto::GUEST_CAP_INPUT)?;
+            let budget = std::time::Duration::from_millis(
+                pegoles_protocol::limits::INPUT_ROUNDTRIP_MS + guest_op.execution_budget_ms(),
+            );
+            let frame =
+                pegoles_guest_proto::encode_host(&pegoles_guest_proto::HostMessage::Input {
+                    request_id: request_id.to_string(),
+                    op: guest_op,
+                    display: Self::input_display_size(inner),
+                });
+            Self::guest_send_frame(inner, id, &frame)?;
+            let mut ack: Option<(bool, Option<String>)> = None;
+            let wanted = request_id.to_string();
+            Self::wait_guest_frame(inner, id, budget, cancelled, |o| match o {
+                GuestObservation::InputAckReceived {
+                    request_id,
+                    ok,
+                    error,
+                } if *request_id == wanted => {
+                    ack = Some((*ok, error.clone()));
+                    true
+                }
+                _ => false,
+            })?;
+            match ack {
+                Some((true, _)) => Ok(()),
+                Some((false, error)) => Err(ComputerError::Backend(
+                    error.unwrap_or_else(|| "guest rejected input".to_string()),
+                )),
+                None => Err(ComputerError::Backend("input ack lost".to_string())),
             }
-            _ => false,
-        })?;
-        match ack {
-            Some((true, _)) => Ok(()),
-            Some((false, error)) => Err(ComputerError::Backend(
-                error.unwrap_or_else(|| "guest rejected input".to_string()),
-            )),
-            None => Err(ComputerError::Backend("input ack lost".to_string())),
-        }
+        })
     }
 
     pub fn input_capture_frame(
@@ -1670,8 +1843,20 @@ impl NativeHelperBackend {
         request_id: &str,
         timeout: Duration,
     ) -> Result<crate::input::CapturedFrame> {
+        self.input_capture_frame_cancellable(request_id, timeout, &|| false)
+    }
+
+    /// `input_capture_frame` that gives up once `cancelled()` turns true
+    /// (a guest that withholds chunks must not hold Stop for 30 s).
+    pub fn input_capture_frame_cancellable(
+        &self,
+        request_id: &str,
+        timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<crate::input::CapturedFrame> {
         let start = std::time::Instant::now();
-        let (width_px, height_px, bytes) = self.input_capture_bytes(request_id, timeout)?;
+        let (width_px, height_px, bytes) =
+            self.input_capture_bytes(request_id, timeout, cancelled)?;
         let byte_len = bytes.len() as u64;
         let computer_id = self.lock_inner().id.ok_or(ComputerError::NotCreated)?;
         Ok(crate::input::CapturedFrame {
@@ -1693,19 +1878,30 @@ impl NativeHelperBackend {
         &self,
         request_id: &str,
         timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<(u32, u32, Vec<u8>)> {
         if request_id.len() > pegoles_guest_proto::MAX_REQUEST_ID_BYTES {
             return Err(ComputerError::Backend(
                 "request id exceeds bound".to_string(),
             ));
         }
-        let mut inner = self.lock_inner();
-        let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
+        self.guest_exchange(|inner, id| {
+            Self::capture_locked(inner, id, request_id, timeout, cancelled)
+        })
+    }
+
+    fn capture_locked(
+        inner: &mut NativeInner,
+        id: &str,
+        request_id: &str,
+        timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(u32, u32, Vec<u8>)> {
         Self::require_input_ready(&inner.guest, pegoles_guest_proto::GUEST_CAP_FRAME)?;
         let frame = pegoles_guest_proto::encode_host(&pegoles_guest_proto::HostMessage::GetFrame {
             request_id: request_id.to_string(),
         });
-        Self::guest_send_frame(&mut inner, &id, &frame)?;
+        Self::guest_send_frame(inner, id, &frame)?;
         let deadline = std::time::Instant::now() + timeout;
         let wanted = request_id.to_string();
         // 1. FrameBegin carries dimensions + chunk count. An explicit
@@ -1713,7 +1909,7 @@ impl NativeHelperBackend {
         // capture (fail fast instead of timing out a 30 s transfer).
         let mut begin: Option<(u32, u32, u32)> = None;
         let mut refused: Option<String> = None;
-        Self::wait_guest_frame(&mut inner, &id, timeout, |o| match o {
+        Self::wait_guest_frame(inner, id, timeout, cancelled, |o| match o {
             GuestObservation::FrameBeginReceived {
                 request_id,
                 width_px,
@@ -1760,7 +1956,7 @@ impl NativeHelperBackend {
             }
             let remaining = deadline - now;
             let wanted = request_id.to_string();
-            Self::wait_guest_frame(&mut inner, &id, remaining, |o| match o {
+            Self::wait_guest_frame(inner, id, remaining, cancelled, |o| match o {
                 GuestObservation::FrameChunkReceived {
                     request_id,
                     seq,
@@ -1789,6 +1985,19 @@ impl NativeHelperBackend {
         }
         Ok((width_px, height_px, bytes))
     }
+}
+
+/// Answers that belong to one blocking request (Core publishes nothing
+/// for them), as opposed to state facts Core must see.
+fn is_request_answer(o: &GuestObservation) -> bool {
+    matches!(
+        o,
+        GuestObservation::InputAckReceived { .. }
+            | GuestObservation::FrameBeginReceived { .. }
+            | GuestObservation::FrameChunkReceived { .. }
+            | GuestObservation::PongReceived { .. }
+            | GuestObservation::InfoReceived(_)
+    )
 }
 
 /// Computer id carried by a helper command, if any (for event routing).
@@ -1853,5 +2062,171 @@ mod bounded_line_tests {
     fn eof_mid_line_and_invalid_utf8_fail_closed() {
         assert!(lines(b"partial", 64)[0].is_err());
         assert!(lines(b"\xff\xfe\n", 64)[0].is_err());
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+    use pegoles_protocol::GuestRuntimeState as G;
+
+    fn profile() -> BackendProfile {
+        BackendProfile {
+            helper_display_name: "test-helper",
+            helper_env_var: "PEGOLES_TEST_HELPER",
+            dev_helper_relpaths: &[],
+            resource_helper_name: "test-helper",
+            official_spec: crate::image::PEGOLES_DEBIAN_13_ARM64,
+            allow_official_fallback: false,
+            disk_file_name: "disk.img",
+            disk_format: crate::platform::DiskFormat::Raw,
+            want_serial_log: false,
+            capabilities: BackendCapabilities {
+                pause: false,
+                resume: false,
+                snapshot: false,
+                graphical_display: false,
+                vsock: true,
+                dynamic_memory: false,
+                guest_arch: crate::platform::GuestArchitecture::Arm64,
+                disk_formats: vec![crate::platform::DiskFormat::Raw],
+            },
+            check_platform: || Ok(()),
+        }
+    }
+
+    const HELLO: &str = r#"{"type":"guest_hello","protocol_version":1,"runtime_version":"0.1.0","os":"debian","os_version":"13","arch":"aarch64"}"#;
+
+    /// Engine state with a connected, greeted guest over `transport`.
+    fn greeted_inner(transport: Box<dyn HostTransport>) -> (NativeInner, String) {
+        let mut inner = NativeHelperBackend::fresh_inner(profile());
+        let id = ComputerId::new();
+        inner.id = Some(id);
+        inner.transport = Some(transport);
+        let now = std::time::Instant::now();
+        inner.guest.on_vm_started(now);
+        inner.guest.on_connected(now);
+        inner.guest.on_frame(HELLO, now);
+        (inner, id.to_string())
+    }
+
+    #[test]
+    fn outbound_queue_is_capped_and_kicks_the_flooder() {
+        let (mut inner, _) = greeted_inner(Box::new(FakeTransport::new()));
+        let mut obs = Vec::new();
+        for i in 0..MAX_PENDING_OUTBOUND * 4 {
+            NativeHelperBackend::queue_outbound(
+                &mut inner,
+                Outbound::Send(i.to_string()),
+                &mut obs,
+            );
+            assert!(inner.pending_outbound.len() <= MAX_PENDING_OUTBOUND);
+        }
+        assert!(inner.pending_outbound.contains(&Outbound::Kick));
+        assert_eq!(inner.guest.state(), G::Error);
+        assert!(obs
+            .iter()
+            .any(|o| matches!(o, GuestObservation::StateChanged { to: G::Error, .. })));
+    }
+
+    #[test]
+    fn flush_never_nests_and_is_bounded_per_call() {
+        // Regression (A0/G0): `call()` flushed the queue on every
+        // response, so one flush sent everything through nested calls.
+        let fake = SharedFakeTransport::new();
+        let (mut inner, cid) = greeted_inner(Box::new(fake.clone()));
+        fake.lock().guest_links.insert(cid.clone());
+        for i in 0..MAX_PENDING_OUTBOUND {
+            inner
+                .pending_outbound
+                .push_back(Outbound::Send(format!(r#"{{"type":"noop","n":{i}}}"#)));
+        }
+        NativeHelperBackend::flush_outbound(&mut inner, &Some(cid));
+        let sends = fake
+            .lock()
+            .sent
+            .iter()
+            .filter(|l| l.contains("guest_send"))
+            .count();
+        assert_eq!(sends, MAX_OUTBOUND_PER_FLUSH);
+        assert_eq!(
+            inner.pending_outbound.len(),
+            MAX_PENDING_OUTBOUND - MAX_OUTBOUND_PER_FLUSH
+        );
+        assert!(!inner.flushing);
+    }
+
+    /// A helper that never answers but relays a guest frame every few ms.
+    struct EventStream;
+
+    impl HostTransport for EventStream {
+        fn send(&mut self, _line: &str) -> Result<()> {
+            Ok(())
+        }
+        fn recv(&mut self, _timeout: Duration) -> Result<String> {
+            std::thread::sleep(Duration::from_millis(5));
+            Ok(serde_json::json!({"event":"guest_frame","computer_id":"x",
+                "payload":r#"{"type":"noise"}"#})
+            .to_string())
+        }
+        fn try_recv(&mut self) -> Option<Result<String>> {
+            None
+        }
+        fn alive(&mut self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn call_deadline_is_not_rearmed_by_guest_frames() {
+        // Regression (A5): each relayed frame restarted the timeout, so a
+        // chatty guest kept a stalled helper call (and the app lock) alive.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut inner, cid) = greeted_inner(Box::new(EventStream));
+            let started = std::time::Instant::now();
+            let result = NativeHelperBackend::call(
+                &mut inner,
+                HostCommand::State { computer_id: cid },
+                Duration::from_millis(300),
+            );
+            let _ = tx.send((result, started.elapsed(), inner.transport.is_none()));
+        });
+        let (result, elapsed, abandoned) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("call() must return while guest frames keep arriving");
+        assert!(
+            matches!(result, Err(ComputerError::Timeout(_))),
+            "{result:?}"
+        );
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert!(abandoned, "a stalled helper is terminated");
+    }
+
+    #[test]
+    fn bulk_frame_chunks_never_evict_state_transitions() {
+        // Regression (A4): a 1024-chunk capture pushed Disconnected/Error
+        // out of the 256-entry ring before Core could publish it.
+        let (mut inner, _) = greeted_inner(Box::new(FakeTransport::new()));
+        let fact = GuestObservation::StateChanged {
+            from: G::Ready,
+            to: G::Disconnected,
+            detail: None,
+        };
+        NativeHelperBackend::defer_observations(&mut inner, vec![fact.clone()]);
+        let chunks = (0..4 * MAX_DEFERRED_OBSERVATIONS as u32)
+            .map(|seq| GuestObservation::FrameChunkReceived {
+                request_id: "f".into(),
+                seq,
+                bytes: "AAAA".into(),
+            })
+            .collect();
+        NativeHelperBackend::defer_observations(&mut inner, chunks);
+        assert!(inner.deferred.len() <= MAX_DEFERRED_OBSERVATIONS);
+        assert_eq!(inner.deferred.front(), Some(&fact));
+        // Facts alone stay bounded too (oldest first).
+        let facts = vec![fact; 2 * MAX_DEFERRED_OBSERVATIONS];
+        NativeHelperBackend::defer_observations(&mut inner, facts);
+        assert_eq!(inner.deferred.len(), MAX_DEFERRED_OBSERVATIONS);
     }
 }

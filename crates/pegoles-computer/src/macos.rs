@@ -189,12 +189,30 @@ impl ComputerBackend for MacOSVirtualizationBackend {
     ) -> crate::input::InputOutcome {
         self.engine.input_execute(request_id, op)
     }
+    fn input_execute_cancellable(
+        &mut self,
+        request_id: &str,
+        op: &crate::input::InputOp,
+        cancelled: &dyn Fn() -> bool,
+    ) -> crate::input::InputOutcome {
+        self.engine
+            .input_execute_cancellable(request_id, op, cancelled)
+    }
     fn input_capture_frame(
         &mut self,
         request_id: &str,
         timeout: Duration,
     ) -> Result<crate::input::CapturedFrame> {
         self.engine.input_capture_frame(request_id, timeout)
+    }
+    fn input_capture_frame_cancellable(
+        &mut self,
+        request_id: &str,
+        timeout: Duration,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<crate::input::CapturedFrame> {
+        self.engine
+            .input_capture_frame_cancellable(request_id, timeout, cancelled)
     }
 }
 
@@ -622,6 +640,217 @@ mod tests {
         b.guest_ping(Duration::from_secs(5)).expect("ping");
         let changes = gfx_changes(&b.poll_guest());
         assert_eq!(changes.len(), 1, "report swallowed by the ping wait");
+    }
+
+    #[test]
+    fn guest_hello_flood_cannot_overflow_the_pump_stack() {
+        // Regression (A0/G0): every hello queued a HostHello, and each
+        // send round-trip flushed the queue from inside itself, so stack
+        // depth grew with the flood and aborted the whole app. Polled on
+        // a thread with the pump thread's default 2 MiB stack.
+        const HELLOS: usize = 20_000;
+        let (_tmp, b, id, fake) = ready_backend();
+        let cid = id.to_string();
+        {
+            let mut f = fake.lock();
+            f.inject_guest_connected(&cid);
+            for _ in 0..HELLOS {
+                f.inject_guest_frame(&cid, &guest_hello_frame());
+            }
+        }
+        let pump = std::thread::Builder::new()
+            .name("pegoles-pump-test".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                let mut b = b;
+                for _ in 0..(HELLOS / crate::native_backend::MAX_LINES_PER_PUMP + 2) {
+                    let _ = b.poll_guest();
+                }
+                b
+            })
+            .unwrap();
+        let b = pump.join().expect("the pump survives a hello flood");
+        // The repeated hello is a protocol violation: one HostHello, then
+        // a kick, never one outbound frame per inbound hello.
+        assert_eq!(b.guest_state(), pegoles_protocol::GuestRuntimeState::Error);
+        let f = fake.lock();
+        let hellos_sent = f.sent.iter().filter(|l| l.contains("host_hello")).count();
+        assert_eq!(hellos_sent, 1, "one HostHello per connection");
+        assert!(f.sent.iter().any(|l| l.contains("guest_disconnect")));
+        assert!(
+            f.sent.len() < 16,
+            "bounded helper traffic: {}",
+            f.sent.len()
+        );
+    }
+
+    #[test]
+    fn guest_reconnect_flood_keeps_outbound_work_bounded() {
+        // Each new connection may greet once; a flood of connect+hello
+        // pairs must still cost a bounded number of helper round-trips.
+        const PAIRS: usize = 5_000;
+        let (_tmp, b, id, fake) = ready_backend();
+        let cid = id.to_string();
+        {
+            let mut f = fake.lock();
+            for _ in 0..PAIRS {
+                f.inject_guest_connected(&cid);
+                f.inject_guest_frame(&cid, &guest_hello_frame());
+            }
+        }
+        let pump = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                let mut b = b;
+                for _ in 0..(2 * PAIRS / crate::native_backend::MAX_LINES_PER_PUMP + 2) {
+                    let _ = b.poll_guest();
+                }
+                b
+            })
+            .unwrap();
+        let _b = pump.join().expect("the pump survives a reconnect flood");
+        let sends = fake
+            .lock()
+            .sent
+            .iter()
+            .filter(|l| l.contains("guest_send"))
+            .count();
+        assert!(sends < 16, "outbound work grew with the flood: {sends}");
+    }
+
+    const INPUT_HELLO: &str = r#"{"type":"guest_hello","protocol_version":1,"runtime_version":"0.2.0","os":"debian","os_version":"13","arch":"aarch64","capabilities":["input","frame"]}"#;
+
+    fn connect_input_handshake(fake: &SharedFake, cid: &str) {
+        let mut f = fake.lock();
+        f.inject_guest_connected(cid);
+        f.inject_guest_frame(cid, INPUT_HELLO);
+        f.inject_guest_frame(cid, r#"{"type":"ready"}"#);
+    }
+
+    #[test]
+    fn input_ack_that_beats_the_send_response_is_not_lost() {
+        // Regression (A4): an answer read while the request itself was in
+        // flight was deferred, and the waiter never looked there.
+        let (_tmp, mut b, id, fake) = ready_backend();
+        let cid = id.to_string();
+        connect_input_handshake(&fake, &cid);
+        let _ = b.poll_guest();
+        assert!(b.input_available());
+        fake.lock()
+            .inject_guest_frame(&cid, r#"{"type":"input_ack","request_id":"a:0","ok":true}"#);
+        let op = crate::input::InputOp::Move {
+            point: crate::coords::GuestPoint { x: 10, y: 10 },
+        };
+        let out = b.input_execute("a:0", &op);
+        assert!(out.ok, "{:?}", out.error);
+    }
+
+    #[test]
+    fn replacement_connection_is_not_ready_until_it_handshakes() {
+        // Regression (A2): a second connection inherited Ready.
+        let (_tmp, mut b, id, fake) = ready_backend();
+        let cid = id.to_string();
+        connect_input_handshake(&fake, &cid);
+        let _ = b.poll_guest();
+        assert_eq!(b.guest_state(), pegoles_protocol::GuestRuntimeState::Ready);
+        fake.lock().inject_guest_connected(&cid);
+        let obs = b.poll_guest();
+        assert_eq!(
+            b.guest_state(),
+            pegoles_protocol::GuestRuntimeState::Connecting
+        );
+        assert!(!b.input_available());
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            GuestObservation::StateChanged {
+                to: pegoles_protocol::GuestRuntimeState::Disconnected,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn actions_queued_for_a_dead_connection_never_hit_its_replacement() {
+        let (_tmp, mut b, id, fake) = ready_backend();
+        let cid = id.to_string();
+        {
+            let mut f = fake.lock();
+            f.inject_guest_connected(&cid);
+            // Incompatible: queues an Error frame and a Kick...
+            f.inject_guest_frame(
+                &cid,
+                r#"{"type":"guest_hello","protocol_version":999,"runtime_version":"9","os":"debian","os_version":"13","arch":"aarch64"}"#,
+            );
+            // ...but that connection is gone before the next flush.
+            f.inject_guest_disconnected(&cid, "eof");
+            f.inject_guest_connected(&cid);
+            f.inject_guest_frame(&cid, &guest_hello_frame());
+            f.inject_guest_frame(&cid, r#"{"type":"ready"}"#);
+        }
+        let _ = b.poll_guest();
+        assert_eq!(b.guest_state(), pegoles_protocol::GuestRuntimeState::Ready);
+        let sent = fake.lock().sent.join("\n");
+        assert!(!sent.contains("guest_disconnect"), "replacement was kicked");
+        assert!(!sent.contains("incompatible"));
+    }
+
+    /// The real helper when the guest is silent: `recv` blocks for its
+    /// whole timeout instead of failing at once like the plain fake.
+    struct QuietFake(SharedFake);
+
+    impl HostTransport for QuietFake {
+        fn send(&mut self, line: &str) -> Result<()> {
+            self.0.send(line)
+        }
+        fn recv(&mut self, timeout: Duration) -> Result<String> {
+            if let Some(line) = self.0.try_recv() {
+                return line;
+            }
+            std::thread::sleep(timeout);
+            Err(ComputerError::Timeout("quiet guest".to_string()))
+        }
+        fn try_recv(&mut self) -> Option<Result<String>> {
+            self.0.try_recv()
+        }
+        fn alive(&mut self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn cancel_cuts_a_withheld_frame_capture_short() {
+        // Regression (G5): a guest that never answers GetFrame held the
+        // caller (and the app lock) for the whole 30 s capture budget.
+        let (_tmp, images, computers) = test_dirs();
+        seed_ready_image(&images);
+        let fake = SharedFake::default();
+        let mut b = MacOSVirtualizationBackend::with_transport(
+            images,
+            computers,
+            Box::new(QuietFake(fake.clone())),
+        );
+        let id = b.create(default_config_for_test()).unwrap();
+        b.start().unwrap();
+        connect_input_handshake(&fake, &id.to_string());
+        let _ = b.poll_guest();
+        assert!(b.input_capabilities().screenshot);
+        let started = std::time::Instant::now();
+        let cancel_after = Duration::from_millis(300);
+        let err = b
+            .input_capture_frame_cancellable("f1", Duration::from_secs(30), &|| {
+                started.elapsed() >= cancel_after
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("cancelled"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        // Same for an input op whose ack is withheld.
+        let started = std::time::Instant::now();
+        let op = crate::input::InputOp::Move {
+            point: crate::coords::GuestPoint { x: 1, y: 1 },
+        };
+        let out = b.input_execute_cancellable("m:0", &op, &|| started.elapsed() >= cancel_after);
+        assert!(!out.ok);
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]

@@ -176,16 +176,42 @@ impl ComputerRegistry {
     /// Last lines of the guest serial console (real backend only).
     pub fn read_boot_log(&self, max_lines: usize) -> Result<BootLog> {
         let path = self.serial_log_path().ok_or(CoreError::NoBootLog)?;
-        let content = std::fs::read_to_string(&path).map_err(|e| {
+        Self::read_boot_log_file(&path, max_lines)
+    }
+
+    /// [`Self::read_boot_log`] for a path copied out beforehand, so a
+    /// caller can read without holding the app lock. The file is written
+    /// by the guest (hostile): only its last `BOOT_LOG_TAIL_BYTES` are
+    /// read, decoded lossily (one bad byte cannot hide the log), and each
+    /// line is clipped and stripped of control, bidi and zero-width
+    /// characters before it can reach the UI.
+    pub fn read_boot_log_file(path: &std::path::Path, max_lines: usize) -> Result<BootLog> {
+        use std::io::{Read, Seek, SeekFrom};
+        let fail = |e: std::io::Error| {
             CoreError::Computer(ComputerError::Backend(format!("cannot read boot log: {e}")))
-        })?;
-        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        };
+        let mut file = std::fs::File::open(path).map_err(fail)?;
+        let len = file.metadata().map_err(fail)?.len();
+        let start = len.saturating_sub(BOOT_LOG_TAIL_BYTES);
+        file.seek(SeekFrom::Start(start)).map_err(fail)?;
+        let mut bytes = Vec::new();
+        file.take(BOOT_LOG_TAIL_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(fail)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let mut lines: Vec<&str> = text.lines().collect();
+        if start > 0 && lines.len() > 1 {
+            lines.remove(0); // cut mid-line by the tail window
+        }
         let total = lines.len();
-        let start = total.saturating_sub(max_lines.max(1));
+        let first = total.saturating_sub(max_lines.max(1));
         Ok(BootLog {
             available: true,
             total_lines: total,
-            tail: lines[start..].to_vec(),
+            tail: lines[first..]
+                .iter()
+                .map(|l| sanitize_log_line(l))
+                .collect(),
         })
     }
 
@@ -596,8 +622,65 @@ fn graphical_event(
 #[derive(Clone, Debug)]
 pub struct BootLog {
     pub available: bool,
+    /// Lines in the bounded tail window that was read (not the file).
     pub total_lines: usize,
     pub tail: Vec<String>,
+}
+
+/// Bytes read from the end of the guest serial log per request.
+pub const BOOT_LOG_TAIL_BYTES: u64 = 64 * 1024;
+/// Longest boot-log line handed to the UI, in characters.
+pub const BOOT_LOG_LINE_CHARS: usize = 512;
+
+/// Make one guest-written console line safe to display: drop ANSI escape
+/// sequences, C0/C1 controls, bidi overrides/isolates and zero-width
+/// characters (they can make a diagnostic line read differently than it
+/// is), expand tabs, and clip to `BOOT_LOG_LINE_CHARS` characters.
+fn sanitize_log_line(line: &str) -> String {
+    let mut out = String::new();
+    let mut kept = 0;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI `ESC [ params final` (colors, cursor moves); any other
+            // escape drops just the introducer and its next character.
+            if chars.next() == Some('[') {
+                for p in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&p) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        let c = if c == '\t' { ' ' } else { c };
+        if c.is_control() || is_invisible_format_char(c) {
+            continue;
+        }
+        if kept == BOOT_LOG_LINE_CHARS {
+            out.push('…');
+            break;
+        }
+        out.push(c);
+        kept += 1;
+    }
+    out
+}
+
+/// Bidi controls, zero-width and other invisible format characters.
+fn is_invisible_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
 }
 
 #[cfg(test)]
@@ -629,6 +712,46 @@ mod tests {
     fn mock_is_default_kind_for_tests() {
         let r = ComputerRegistry::new(EventBus::new());
         assert_eq!(r.backend_kind(), BackendKind::Mock);
+    }
+
+    #[test]
+    fn boot_log_reads_a_bounded_sanitized_tail_of_a_hostile_log() {
+        // Regression (C5/G9): the whole guest-written file was read with
+        // read_to_string (one bad byte hid it), and lines reached the UI
+        // unclipped, with escapes and bidi overrides intact.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        let mut log = Vec::new();
+        log.extend_from_slice(&vec![b'x'; 3 * BOOT_LOG_TAIL_BYTES as usize]); // no newline
+        log.extend_from_slice(b"\nboot \xff ok\n");
+        log.extend_from_slice("\u{1b}[31mred\u{1b}[0m \u{202e}evil\u{200b}\tx\u{85}\n".as_bytes());
+        log.extend_from_slice(&vec![b'y'; 10_000]);
+        log.push(b'\n');
+        std::fs::write(&path, &log).unwrap();
+        let out = ComputerRegistry::read_boot_log_file(&path, 50).unwrap();
+        assert!(out.available);
+        assert!(out.tail.len() <= 50);
+        let joined = out.tail.join("\n");
+        assert!(joined.len() <= 50 * (BOOT_LOG_LINE_CHARS * 4 + 3));
+        // Lossy decode keeps the log readable around the bad byte.
+        assert!(out.tail.iter().any(|l| l == "boot \u{fffd} ok"));
+        // Escapes, bidi, zero-width and C1 controls are gone; tab -> space.
+        assert!(out.tail.iter().any(|l| l == "red evil x"));
+        // Long lines are clipped; the cut-off head of the window dropped.
+        let long = out.tail.last().unwrap();
+        assert_eq!(long.chars().count(), BOOT_LOG_LINE_CHARS + 1);
+        assert!(long.ends_with('…'));
+        assert!(out.tail.iter().all(|l| !l.starts_with('x')));
+    }
+
+    #[test]
+    fn one_giant_line_without_newline_is_still_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(&path, vec![b'z'; 4 * BOOT_LOG_TAIL_BYTES as usize]).unwrap();
+        let out = ComputerRegistry::read_boot_log_file(&path, 50).unwrap();
+        assert_eq!(out.tail.len(), 1);
+        assert_eq!(out.tail[0].chars().count(), BOOT_LOG_LINE_CHARS + 1);
     }
 
     #[test]

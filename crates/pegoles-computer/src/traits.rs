@@ -139,6 +139,18 @@ pub trait ComputerBackend: Send + Sync {
     ) -> crate::input::InputOutcome {
         crate::input::InputOutcome::failed("agent input not supported by this backend")
     }
+    /// `input_execute` that stops waiting for the guest's ack once
+    /// `cancelled()` turns true. Callers holding the app lock use it so
+    /// Stop/Take Control never sit out a withheld ack. Default: the plain
+    /// (bounded) call.
+    fn input_execute_cancellable(
+        &mut self,
+        request_id: &str,
+        op: &crate::input::InputOp,
+        _cancelled: &dyn Fn() -> bool,
+    ) -> crate::input::InputOutcome {
+        self.input_execute(request_id, op)
+    }
     /// Release everything the host believes is held (idempotent).
     fn input_release_all(&mut self) {}
     /// Guest pixels currently believed pressed (stuck-input audits).
@@ -155,5 +167,16 @@ pub trait ComputerBackend: Send + Sync {
         Err(crate::error::ComputerError::UnsupportedOperation(
             "frame capture not supported by this backend".to_string(),
         ))
+    }
+    /// `input_capture_frame` that gives up once `cancelled()` turns true
+    /// (a guest withholding chunks must not hold the app lock for the
+    /// whole capture budget). Default: the plain (bounded) call.
+    fn input_capture_frame_cancellable(
+        &mut self,
+        request_id: &str,
+        timeout: Duration,
+        _cancelled: &dyn Fn() -> bool,
+    ) -> Result<crate::input::CapturedFrame> {
+        self.input_capture_frame(request_id, timeout)
     }
 }
