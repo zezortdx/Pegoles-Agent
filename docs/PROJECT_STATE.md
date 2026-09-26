@@ -91,7 +91,7 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
   in-app "Set up computer" with resumable verified download, release
   builds boot only the pinned image. The published image is sanitized
   (no SSH host keys). The archive is not hosted yet (catalog URL says
-  UNPUBLISHED until the GitHub repository exists).
+  UNPUBLISHED until it is uploaded to the public repository).
 - Security review and red team across host/VM, AI/policy, Tauri/web,
   supply chain; every verified finding fixed or recorded as residual
   (`docs/THREAT_MODEL.md`).
@@ -154,10 +154,12 @@ bash scripts/release/verify-artifact.sh target/release-artifacts/Pegoles_<v>_arm
 ## Remaining, prioritized
 
 1. Release blockers (external): Developer ID certificate and notary
-   credentials; the GitHub repository (owner/name, then host the guest
-   image archive and replace UNPUBLISHED in the image catalog); run the
-   release workflow; Gatekeeper and a clean-machine test on the exact
-   notarized DMG (`docs/GITHUB_RELEASE_CHECKLIST.md`).
+   credentials; `zezortdx/Pegoles-Agent` is private on GitHub Free, so
+   rulesets, environment reviewers, secret scanning and attestations wait
+   for the switch to public; then host the guest image archive and
+   replace UNPUBLISHED in the image catalog; run the release workflow;
+   Gatekeeper and a clean-machine test on the exact notarized DMG
+   (`docs/GITHUB_RELEASE_CHECKLIST.md`).
 2. Measure on 8 GB and 16 GB Macs and set a minimum RAM; only a 24 GB
    M4 Pro was available.
 3. Visual QA of the packaged app with a live VM (computer image setup,
