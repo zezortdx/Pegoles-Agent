@@ -2252,11 +2252,13 @@ dependencies = [
 name = "pegoles-desktop"
 version = "0.1.0-rc.1"
 dependencies = [
+ "block2",
  "chrono",
  "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "objc2-web-kit",
  "pegoles-agent",
  "pegoles-computer",
  "pegoles-core",

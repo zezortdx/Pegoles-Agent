@@ -2,11 +2,14 @@
 //! XHR and image beacons, but not top-level navigation: without this
 //! guard a script could send data out in a URL (`location.href =
 //! "https://…?d=…"`) or load a remote page, chrome-less, in the app
-//! window. New windows (`window.open`, `target=_blank`) are refused.
+//! window. New windows (`window.open`, `target=_blank`) are refused. The
+//! requests neither covers (preconnect, WebRTC) are contained by
+//! `webview_egress`, whose rule list also blocks network navigations
+//! independently of this guard.
 
 #[cfg(not(target_os = "macos"))]
 use tauri::webview::NewWindowResponse;
-use tauri::{Url, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Url, WebviewWindowBuilder};
 
 /// Label of the only window (tauri.conf.json, `create: false`).
 pub const MAIN_WINDOW: &str = "main";
@@ -30,9 +33,12 @@ pub fn is_app_url(url: &Url, dev_url: Option<&Url>) -> bool {
 }
 
 /// Build the main window from its tauri.conf.json entry with the
-/// navigation guard and new-window refusal attached (a window created from
-/// config directly can't take either handler).
-pub fn build_main_window(app: &tauri::App) -> tauri::Result<WebviewWindow> {
+/// navigation guard, new-window refusal, WebRTC removed in every frame and
+/// (on macOS outside `tauri dev`) the network rule list of
+/// `webview_egress` attached before the webview exists. On that path the
+/// window appears once WebKit has compiled the list (a moment after
+/// setup); the app exits instead of showing an uncontained window.
+pub fn build_main_window(app: &tauri::App) -> tauri::Result<()> {
     let config = app
         .config()
         .app
@@ -49,15 +55,31 @@ pub fn build_main_window(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     let dev_url = tauri::is_dev()
         .then(|| app.config().build.dev_url.clone())
         .flatten();
-    let builder = WebviewWindowBuilder::from_config(app.handle(), &config)?
-        .on_navigation(move |url| is_app_url(url, dev_url.as_ref()));
-    // WKWebView with no new-window handler already refuses window.open().
-    // Installing one on macOS adds nothing and routes window.open() through
-    // wry code that unwraps the window's screen (nil while the window is off
-    // every display), so it is only installed on the other platforms.
-    #[cfg(not(target_os = "macos"))]
-    let builder = builder.on_new_window(|_, _| NewWindowResponse::Deny);
-    builder.build()
+    let handle = app.handle().clone();
+    let make = move |builder: WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle>| {
+        let builder = builder
+            .on_navigation(move |url| is_app_url(url, dev_url.as_ref()))
+            .initialization_script_for_all_frames(crate::webview_egress::DISABLE_WEBRTC);
+        // WKWebView with no new-window handler already refuses window.open().
+        // Installing one on macOS adds nothing and routes window.open() through
+        // wry code that unwraps the window's screen (nil while the window is
+        // off every display), so it is only installed on the other platforms.
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.on_new_window(|_, _| NewWindowResponse::Deny);
+        builder.build().map(|_| ())
+    };
+    #[cfg(target_os = "macos")]
+    if crate::webview_egress::contained() {
+        let app_handle = handle.clone();
+        return crate::webview_egress::with_network_blocked(app_handle, move |webview_config| {
+            make(
+                WebviewWindowBuilder::from_config(&handle, &config)?
+                    .with_webview_configuration(webview_config),
+            )
+        })
+        .map_err(|e| tauri::Error::Io(std::io::Error::other(e)));
+    }
+    make(WebviewWindowBuilder::from_config(&handle, &config)?)
 }
 
 #[cfg(test)]

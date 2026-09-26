@@ -11,6 +11,7 @@ pub mod local;
 mod native_display;
 pub mod nav_guard;
 pub mod state;
+pub mod webview_egress;
 
 #[cfg(test)]
 mod ipc_acl;

@@ -50,7 +50,18 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSWindow",
 ] }
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSError"] }
+# WebKit content rule list for the main webview's network containment
+# (src/webview_egress.rs); the same objc2-web-kit Tauri/wry already use.
+objc2-web-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "WKContentRuleList",
+    "WKContentRuleListStore",
+    "WKUserContentController",
+    "WKWebViewConfiguration",
+] }
+block2 = "0.6"
 # Keychain storage for the model API key (never a file, never the webview).
 security-framework = "3"
 
