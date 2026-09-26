@@ -137,9 +137,9 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 | | |
 |---|---|
 | Surface | Any script running in the webview (assume XSS) |
-| Mitigation | Release CSP (`tauri.conf.json`): `script-src 'self'`, IPC-only `connect-src`, no remote content; navigation away from the app and new windows are refused; an app ACL grants only the commands the release UI invokes (debug/lab commands are compiled out); no command takes a path, URL, process argument or endpoint; model ids must be catalog ids; switching to a cloud planner and storing an API key need a native confirmation the webview cannot answer; the key is never returned to the webview. React renders model, guest and error text as text nodes only. |
-| Verification | Rust capability/ACL tests, frontend XSS regression tests, production-bundle lab-exclusion test on the real build |
-| Residual | `style-src 'unsafe-inline'` (motion library inline styles). A script in the webview can still drive the UI's own commands (start/stop/reset the VM, start tasks). |
+| Mitigation | Release CSP (`tauri.conf.json`): `script-src 'self'`, IPC-only `connect-src`, no frames, workers, manifests or media, no remote content; DNS prefetch off. Network containment (`src-tauri/src/webview_egress.rs`): the webview is created with a WebKit content rule list that blocks every http(s)/ws(s)/ftp(s)/file load (subresources, preconnects, navigations), compiled before the window exists (no list, no window); WebRTC constructors removed in every frame. Navigation away from the app and new windows are refused; an app ACL grants only the commands the release UI invokes (debug/lab commands are compiled out); no command takes a path, URL, process argument or endpoint; model ids must be catalog ids; switching to a cloud planner and storing an API key need a native confirmation the webview cannot answer (Cancel is the keyboard default; declines back off 30 s → 10 min → until restart); the key is typed into a native secure field and never returned to the webview. React renders model, guest and error text as text nodes only. |
+| Verification | Rust capability/ACL tests; `examples/webview_egress_probe.rs` (the real page tries fetch, beacons, preconnect, dns-prefetch, prefetch, WebRTC incl. from an iframe, and navigation: uncontained control reaches the listeners over TCP and UDP, contained reaches nothing while IPC still works); frontend XSS regression tests; production-bundle lab-exclusion test on the real build |
+| Residual | `style-src 'unsafe-inline'` (motion library inline styles). A script in the webview can still drive the UI's own commands (start/stop/reset the VM, start tasks, read task text and VM screenshots over IPC), but has no network to send them anywhere. It could open the native file picker (WKWebView implements it) and read a file the person picks, again with no way out. After a person has consented to the cloud planner, a compromised page could keep it selected while showing "Pegoles Local"; there is no native indicator of the active planner yet. |
 
 ### Cloud provider (optional)
 
@@ -169,3 +169,9 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 7. The image keeps `openssh-server` and `cloud-init` installed but masked/disabled; the VM has no network device.
 8. Same-user host malware is out of scope as an attacker.
 9. Windows/Linux host backends are not part of this release and unverified.
+10. The release `sign` job trusts the unsigned bundle built by the `build` job of the same commit: a dependency compromised at its locked version could alter what gets signed (it cannot use the identity; the sign job checks the worker, lock and manifest against the checkout, and notarization scans the result).
+11. Swift helper: a closed-then-reused descriptor race around superseded guest connections remains possible in a nanosecond window (same VM only today).
+12. After Stop, releasing a held mouse button waits up to about 5 s on a guest that withholds acknowledgements.
+13. The published image keeps cloud-init's provisioning logs and state and one `machine-id` shared by every copy (no secrets; the VM has no network).
+14. Same-user host software can change an installed image between the once-per-session hash and a clone, or modify a resumed computer's disk (it already owns the account).
+15. The 2B local model is imperfect: it can fail or stop tasks (budgets and brakes bound what it can do).
