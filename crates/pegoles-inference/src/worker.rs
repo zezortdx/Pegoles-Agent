@@ -1671,7 +1671,8 @@ worker.reply(7, x=1)
     fn stray_stdout_output_cannot_corrupt_the_protocol() {
         let python = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/pegoles-runtime/python/bin/python3.12");
-        if !python.is_file() {
+        // The runtime is a macOS (Apple silicon) build.
+        if !cfg!(target_os = "macos") || !python.is_file() {
             eprintln!("skipped: build the runtime with scripts/local-model/build-runtime.sh");
             return;
         }
