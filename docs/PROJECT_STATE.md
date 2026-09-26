@@ -96,8 +96,8 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
   supply chain; every verified finding fixed or recorded as residual
   (`docs/THREAT_MODEL.md`).
 - Hardware, after all fixes: `agent_e2e` green; keyless `local_e2e` green
-  2 of 3 runs (one run: the 2B model produced 3 invalid replies in a row
-  and the task stopped, as designed); release soak: 12 VM lifecycles,
+  3 of 5 runs, including the last on the final code (the other two: the
+  2B model's own mistakes, stopped by the brakes as designed); release soak: 12 VM lifecycles,
   1200 observations, 60 inferences with forced worker kills, nothing
   left behind, no growth; 2212-capture soak with flat guest memory (one
   transient 5 s compositor timeout).

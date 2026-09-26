@@ -66,8 +66,9 @@ a deterministic, exhaustive policy and Core's executor, and lands in a VM
 with no network device. The local model runs in its own sandboxed process
 (no network, no other processes, nothing in your home folder beyond its model and runtime)
 and its output is parsed strictly. The desktop webview can call only the
-commands the UI needs, cannot navigate away, and cannot switch you to a
-cloud planner or store a key without a native macOS confirmation.
+commands the UI needs, has no network access at all, cannot navigate
+away, and cannot switch you to a cloud planner or store a key without a
+native macOS confirmation.
 
 - Design and enforcement: [docs/SECURITY.md](docs/SECURITY.md)
 - Threats, controls and residual risks: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
