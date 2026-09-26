@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionSteps, globalPresence, modelConnected, taskActivity } from "./agentState";
+import { actionSteps, globalPresence, modelConnected, modelNeed, NEEDS_MODEL_DETAIL, taskActivity } from "./agentState";
 import type { ActionRequestWire, AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
 
 const at = "2026-09-24T10:00:00Z";
@@ -21,10 +21,34 @@ describe("taskActivity: real state in, presence out", () => {
     expect(activity({ events: [start], connected: false }).mode).toBe("offline");
   });
 
-  it("is honest about pending tasks when no model is connected", () => {
+  it("is honest about pending tasks when no model is connected, local first", () => {
     const pending = activity({ task: { ...task, status: "pending" }, status: idle });
-    expect(pending).toMatchObject({ mode: "blocked", headline: "Can’t start yet", offerComputer: true, live: true, start: "needs-model" });
-    expect(pending.detail).toMatch(/Anthropic API key in Settings/);
+    expect(pending).toMatchObject({ mode: "blocked", headline: "Can’t start yet", offerComputer: true, live: true, start: "needs-model", waitingFor: "local-model" });
+    expect(pending.detail).toBe(NEEDS_MODEL_DETAIL["local-model"]);
+    expect(pending.detail).toMatch(/^Pegoles needs its local model to work on tasks\. Set up Pegoles Local \(free, runs on this Mac\), or connect a cloud model/);
+    expect(pending.detail).not.toMatch(/API key/);
+  });
+
+  it("asks for a key only when the cloud was chosen", () => {
+    const cloud = activity({ task: { ...task, status: "pending" }, status: { ...idle, provider: "anthropic" } });
+    expect(cloud).toMatchObject({ start: "needs-model", waitingFor: "cloud-key" });
+    expect(cloud.detail).toMatch(/^Cloud mode needs an Anthropic API key\. Add one in Settings, or switch back to Pegoles Local/);
+    expect(modelNeed({ ...idle, provider: "local" })).toBe("local-model");
+    expect(modelNeed(null)).toBe("local-model");
+  });
+
+  it("names why a run stopped calmly when the local model gave up, keeping other notes as written", () => {
+    const failed = { ...task, status: "failed" as const };
+    const note = (text: string): AgentEvent => ({ type: "agent_message", task_id: "t1", kind: "error", text, at } as AgentEvent);
+    expect(activity({ task: failed, events: [note("The model could not continue: model unavailable: not enough memory to run the local model: 3.1 GB needed")] }).reason)
+      .toBe("Not enough free memory for Pegoles Local.");
+    expect(activity({ task: failed, events: [note("The model could not continue: model unavailable: local model runtime stopped unexpectedly: exit 137")] }).reason)
+      .toBe("Pegoles Local stopped unexpectedly.");
+    expect(activity({ task: failed, events: [note("Stopped: the local model kept repeating the same action without any visible change.")] }).reason)
+      .toBe("Stopped: it kept repeating the same action.");
+    expect(activity({ task: failed, events: [note("Stopped: the local model did not produce a valid action after 3 attempts.")] }).reason)
+      .toBe("Stopped: Pegoles Local couldn’t decide on a next step.");
+    expect(activity({ task: failed, events: [note("Could not find the Save button.")] }).reason).toBe("Could not find the Save button.");
   });
 
   it("says a pending task hasn't started once a model is connected, and why it can't start yet", () => {

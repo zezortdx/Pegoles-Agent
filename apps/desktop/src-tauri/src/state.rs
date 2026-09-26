@@ -36,9 +36,12 @@ pub struct AppState {
     /// (The adapter itself lives in `registry`, installed at startup by
     /// `native_display::install` on macOS.)
     pub display_error: Option<String>,
-    /// Whether a model API key is available (refreshed by the settings
-    /// commands; the key itself is never held here).
+    /// Whether the chosen planner can run a task now (local model and
+    /// runtime installed, or a cloud key present). Refreshed by the
+    /// settings commands; no secret is held here.
     pub model_configured: bool,
+    /// The chosen planner: `local` or `anthropic`.
+    pub provider: &'static str,
 }
 
 impl AppState {
@@ -67,6 +70,7 @@ impl AppState {
             image_error: None,
             display_error: None,
             model_configured: false,
+            provider: "local",
         }
     }
 

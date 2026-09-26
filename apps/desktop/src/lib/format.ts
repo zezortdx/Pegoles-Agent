@@ -40,6 +40,30 @@ export function modelLabel(id: string): string {
   return `Claude ${family} ${match[2].replaceAll("-", ".")}`;
 }
 
+/**
+ * Download and disk sizes the way Finder counts them (1 GB = 10⁹ bytes):
+ * "940 MB", "2.2 GB". Only ever for sizes Core reported.
+ */
+export function formatBytes(bytes: number): string {
+  const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (value >= 999.5e6) return `${(value / 1e9).toFixed(1)} GB`;
+  if (value >= 1e6) return `${Math.round(value / 1e6)} MB`;
+  return `${Math.round(value / 1e3)} KB`;
+}
+
+/** Memory the way macOS counts it (binary): a 16 GB Mac reads "16 GB", a worker "2.3 GB". */
+export function formatMemory(bytes: number): string {
+  const gib = (Number.isFinite(bytes) ? Math.max(0, bytes) : 0) / 2 ** 30;
+  if (gib < 1) return `${Math.round(gib * 1024)} MB`;
+  return Number.isInteger(gib) || gib >= 10 ? `${Math.round(gib)} GB` : `${gib.toFixed(1)} GB`;
+}
+
+/** "6bit" → "6-bit"; anything else stays as Core wrote it. */
+export function quantizationLabel(wire: string): string {
+  const bits = /^(\d+)\s*-?bits?$/i.exec(wire.trim());
+  return bits ? `${bits[1]}-bit` : wire;
+}
+
 const EFFORT_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
 /** Reasoning effort for people ("xhigh" → "Extra high"). */

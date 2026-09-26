@@ -26,6 +26,61 @@ VM (cached status + a background pump that uses `try_lock`); waits never
 hold Core; guest heartbeats no longer depend on the UI polling; bounded
 helper→Core queue (1024 lines) replaces an unbounded channel.
 
+## Pegoles Local, measured (M4 Pro 24 GB, 2026-09-26)
+
+Model MAI-UI-2B 6-bit on MLX (worker process, sandboxed), real VM,
+product runner. Details and all candidates:
+`benchmarks/local-models/README.md`, `results.json`.
+
+| Segment of one agent step | Time |
+|---|---|
+| Screen capture + PNG (guest → host) | 130–135 ms p50 |
+| Image resize + decode in worker | ~15 ms |
+| Prefill (first token), 1440×896 input, ~1 900 prompt tokens | 2.5 s p50 |
+| Decode (~40–60 tokens incl. `<thinking>`, ~65 tok/s) | ~0.7 s |
+| Parse + policy + executor + input | < 20 ms (typing: 8 ms/keystroke) |
+| Settle wait before the next observation | 400 ms (fixed) |
+| **Whole step** | **3.2 s p50 / 3.9 s p95** |
+| Time to first action (task start) | 3.5 s p50 |
+| Median task (22 benchmark tasks) | 11 s |
+
+Prefill dominates, and it scales with visual tokens: 1024×640 input
+gives first token 1.7 s / step 2.7 s at a small, noise-level accuracy
+cost; 768×480 gives ~0.6 s / 1.0 s on a short prompt (not benchmarked
+end to end). Native resolution stays the default for grounding
+precision on small targets.
+
+| Memory (phys_footprint) | Value |
+|---|---|
+| MLX worker, model loaded | 2.6 GB |
+| MLX worker, steady during tasks | ~3.0 GB |
+| MLX worker, peak (MLX cache capped at 256 MiB, default) | ~4.0 GB (3.9 GB in the keyless E2E) |
+| MLX worker, peak without the cap | 5.0–5.5 GB |
+| MLX worker after `unload` / after exit | 0.15 GB / 0 |
+| VM process (1.5 GB guest), idle → during tasks | 0.49 → 0.55 GB |
+| Pegoles runtime process without webview (harness) | 0.04–0.2 GB |
+| **Pegoles total at peak (runtime + VM + model)** | **≈ 4.5–5 GB**, plus the desktop webview (not measured here) |
+
+Model files: verify (full SHA-256, `ring`, HW-accelerated) 1.2 s per
+2.2 GB, once per app session and in the background at startup; load
+0.6–1.1 s warm. The worker stops after 10 minutes unused
+(`IDLE_UNLOAD`) and gives back all of its memory.
+
+Fixed on the way (measured regressions, not tuning):
+- Guest runtime leaked a 5 MB memfd per screenshot: guest memory fell
+  until the kernel OOM-killed the compositor after ~260 captures. Fixed
+  (`guest/runtime/src/capture.rs`, `Drop` closes the pool); 400-capture
+  soak now flat (`crates/pegoles-agent/examples/capture_soak.rs`), and
+  the VM footprint stays ~0.55 GB instead of growing to 1.4 GB.
+- Model verification used the portable SHA-256 (3.3 s per 1.8 GB);
+  `ring` halves it.
+- MLX kept freed Metal buffers: cache cap 256 MiB cuts ~0.9 GB of peak.
+
+Not done (measured, deferred): prompt-prefix KV reuse (system prompt +
+task are identical every step, ~500 tokens ≈ 0.8 s of prefill);
+mlx-vlm's prefix cache is server-oriented and wants an on-disk tier the
+worker sandbox forbids.
+
 ## Budgets (measured baseline, MacBook Pro Apple Silicon, 2026-09-21)
 
 `scripts/bench.sh` reproduces these (`PEGOLES_REAL_GUEST_TEST=1` + RSS
@@ -189,13 +244,13 @@ depends on effects. Global CSS already honors `prefers-reduced-motion`
 (see `globals.css`); ambient animations must sleep when unfocused /
 minimized / invisible. No full-screen 60 fps idle loops, ever.
 
-## Model-runtime contract (Phase 6 preparation, no implementation)
+## Model runtime
 
-The future Local Model Router must support lazy loading, idle eviction,
-unloading, quantized models, and small/large routing (simple→small,
-visual→vision, hard→large), then release resources. Nothing in 3.6
-assumes a permanently resident model; the governor's ¼-RAM ceiling
-already reserves headroom for it.
+Implemented (see "Pegoles Local, measured" above and
+`docs/MODEL_ARCHITECTURE.md`): lazy load on first task, model kept
+resident between tasks, idle unload after 10 minutes, explicit unload,
+quantized models, MLX cache cap. Small/large routing and hybrid cloud
+routing are designed (a planner composed of planners) but not built.
 
 ## Memory pressure architecture (future sequence)
 

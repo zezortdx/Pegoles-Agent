@@ -15,6 +15,8 @@
 
 pub mod anthropic;
 pub mod core_computer;
+pub mod keys;
+pub mod local;
 pub mod planner;
 pub mod runner;
 pub mod scripted;

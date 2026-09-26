@@ -34,6 +34,8 @@ import { useComputerLevel } from "./computer/useComputerLevel";
 import { useScreenSnapshot } from "./computer/useScreenSnapshot";
 import type { ManageCommand } from "./computer/ComputerManage";
 import { useModelSettings } from "./state/useModelSettings";
+import { intelligenceProblem, useIntelligence } from "./state/useIntelligence";
+import { localView } from "./state/localModel";
 import { ActivityView } from "./pages/ActivityView";
 import { SettingsView, type QualityChoice, type SettingsAnchor } from "./pages/SettingsView";
 
@@ -100,12 +102,15 @@ export default function App() {
   /** The task the last start was for: its failure is shown on that task only. */
   const [startedFor, setStartedFor] = useState<string | null>(null);
   const modelSettings = useModelSettings(core.native && connected, core.refresh);
+  const intelligence = useIntelligence(core.native && connected, core.refresh);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const openWidth = useRef(0);
 
   // ── Derived state ────────────────────────────────────────────────
   const modelReady = modelConnected(status);
+  const provider = status?.provider ?? intelligence.intelligence?.provider ?? "local";
+  const local = useMemo(() => localView(intelligence.intelligence), [intelligence.intelligence]);
   const selected = view.kind === "task"
     ? tasks.find((task) => task.id === view.id) ?? (created?.id === view.id ? created : undefined)
     : undefined;
@@ -294,6 +299,14 @@ export default function App() {
     void run("computer", actions[command]);
   }, [run, status?.computer_created, manageComputer]);
   const interrupt = useCallback(() => { stopTask(status?.active_task ?? null); }, [stopTask, status?.active_task]);
+
+  // ── Pegoles Local ──────────────────────────────────────────────
+  const { install: installLocal, repair: repairLocal, cancelInstall: cancelLocal } = intelligence;
+  const setUpLocal = useCallback(() => {
+    if (!local.model) return;
+    void (local.stage === "damaged" ? repairLocal(local.model.id) : installLocal(local.model.id));
+  }, [local.model, local.stage, installLocal, repairLocal]);
+  const cancelLocalSetup = useCallback(() => { void cancelLocal(); }, [cancelLocal]);
   const reportSlot = useCallback((error: unknown) => report("computer", error), [report]);
 
   // ── Keyboard ───────────────────────────────────────────────────
@@ -325,6 +338,9 @@ export default function App() {
   };
 
   const modifier = shortcutModifier();
+  // The composer names what will think: Pegoles Local, or the cloud model when that was chosen.
+  const modelName = provider === "anthropic" ? (modelSettings.settings ? modelLabel(modelSettings.settings.model) : undefined) : "Pegoles Local";
+  const setupLabel = provider === "anthropic" ? undefined : local.stage === "preparing" ? "Setting up Pegoles Local…" : "Set up Pegoles Local";
 
   // ── The work column's views ─────────────────────────────────────
   let content: ReactNode;
@@ -342,10 +358,14 @@ export default function App() {
         headingRef={headingRef}
         onHeadingVisible={setHeadingVisible}
         onOpenComputer={() => openComputer()}
-        onModelSettings={() => openPlace("settings", "model")}
+        onModelSettings={() => openPlace("settings", "intelligence")}
         onStart={() => startTask(selected.id)}
         starting={starting}
         startError={startedFor === selected.id ? core.errors.run : null}
+        local={activity.waitingFor === "local-model" ? {
+          view: local, busy: intelligence.pending !== null, problem: intelligenceProblem(intelligence.error, ["install", "cancel"]),
+          onSetUp: setUpLocal, onCancel: cancelLocalSetup,
+        } : undefined}
       />
     );
   } else if (view.kind === "place" && view.place === "activity") {
@@ -354,7 +374,7 @@ export default function App() {
     content = (
       <SettingsView
         headingRef={headingRef} connected={connected} native={core.native} status={status} host={core.host} computer={computer}
-        model={modelSettings} quality={quality} resolvedQuality={tier === "full" ? "full" : "reduced"} onQuality={chooseQuality}
+        intelligence={intelligence} model={modelSettings} quality={quality} resolvedQuality={tier === "full" ? "full" : "reduced"} onQuality={chooseQuality}
         systemReducedMotion={systemReducedMotion} eventCount={events.length} anchor={anchor}
       />
     );
@@ -389,8 +409,8 @@ export default function App() {
       problem={core.errors.task ? `${core.errors.task.title} ${core.errors.task.hint ?? ""}`.trim() : null}
       strip={connected && <ComposerStrip computer={computer} computerOpen={level !== null} onComputer={toggleComputer} />}
       controls={connected && (
-        <ComposerControls modelReady={modelReady} modelName={modelReady && modelSettings.settings ? modelLabel(modelSettings.settings.model) : undefined}
-          onSafety={() => openPlace("settings", "security")} onModel={() => openPlace("settings", "model")} />
+        <ComposerControls modelReady={modelReady} modelName={modelName} setupLabel={setupLabel}
+          onSafety={() => openPlace("settings", "security")} onModel={() => openPlace("settings", "intelligence")} />
       )}
     />
   );
@@ -493,6 +513,7 @@ export default function App() {
                         onInterrupt={() => stopTask(selectedRunning ? selected.id : null)}
                         onWatch={() => openComputer()}
                         onNewTask={newTask}
+                        settingUp={local.stage === "preparing"}
                       />
                     </m.div>
                   )}

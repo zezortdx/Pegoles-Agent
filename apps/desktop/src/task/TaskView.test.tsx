@@ -1,8 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TaskView } from "./TaskView";
+import { TaskView, type LocalSetup } from "./TaskView";
 import { StatusDock } from "./StatusDock";
-import type { TaskActivity } from "../state/agentState";
+import { NEEDS_MODEL_DETAIL, type TaskActivity } from "../state/agentState";
+import { localView, type LocalView } from "../state/localModel";
+import { installOf, intelligenceOf } from "../state/intelligenceFixture";
 import type { TranscriptItem, TranscriptStep } from "../state/transcript";
 import { activityPill } from "../lib/taskState";
 import type { AgentTask } from "../lib/tauri";
@@ -13,6 +15,9 @@ const at = "2026-09-24T10:00:00Z";
 const task: AgentTask = { id: "t", title: "Research competitors", status: "pending", created_at: at, updated_at: at };
 const request: TranscriptItem = { kind: "request", id: "r", text: task.title, at };
 const quiet: TaskActivity = { mode: "blocked", headline: "Can’t start yet", detail: "Pegoles needs a model to work on tasks.", recent: [], pulse: 0, live: true, offerComputer: true, start: "needs-model" };
+const waitingLocal: TaskActivity = { ...quiet, waitingFor: "local-model", detail: NEEDS_MODEL_DETAIL["local-model"] };
+const setup = (localState: LocalView, patch: Partial<LocalSetup> = {}): LocalSetup =>
+  ({ view: localState, busy: false, onSetUp: () => undefined, onCancel: () => undefined, ...patch });
 const ready: TaskActivity = { mode: "idle", headline: "Not started", recent: [], pulse: 0, live: false, start: "ready" };
 const working: TaskActivity = { mode: "working", headline: "Working with files", recent: [], pulse: 1, live: true };
 
@@ -22,6 +27,8 @@ interface Extra {
   onStart?: () => void;
   starting?: boolean;
   startError?: HumanError | null;
+  onModelSettings?: () => void;
+  local?: LocalSetup;
 }
 
 const view = (activity: TaskActivity, items: readonly TranscriptItem[] = [request], patch: Partial<AgentTask> = {}, handlers: Extra = {}) => {
@@ -36,10 +43,11 @@ const view = (activity: TaskActivity, items: readonly TranscriptItem[] = [reques
       arriving={false}
       onHeadingVisible={handlers.onHeadingVisible ?? (() => undefined)}
       onOpenComputer={handlers.onOpenComputer ?? (() => undefined)}
-      onModelSettings={() => undefined}
+      onModelSettings={handlers.onModelSettings ?? (() => undefined)}
       onStart={handlers.onStart ?? (() => undefined)}
       starting={handlers.starting}
       startError={handlers.startError}
+      local={handlers.local}
     />,
   );
 };
@@ -91,9 +99,62 @@ describe("TaskView", () => {
   });
 
   it("never offers Start without a model", () => {
-    view(quiet);
+    const settings = vi.fn();
+    view(quiet, [request], {}, { onModelSettings: settings });
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Model settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+    expect(settings).toHaveBeenCalledOnce();
+  });
+
+  it("sets up Pegoles Local right where the task waits for it", () => {
+    const onSetUp = vi.fn();
+    const local = setup(localView(intelligenceOf()), { onSetUp });
+    view(waitingLocal, [request], {}, { local });
+    expect(screen.getByText("Waiting for a model")).toBeTruthy();
+    expect(screen.getByText(/^Pegoles needs its local model to work on tasks/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Set up Pegoles Local" }));
+    expect(onSetUp).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Open Settings" })).toBeTruthy();
+  });
+
+  it("shows the setup's progress on the task, and lets it be cancelled", () => {
+    const onCancel = vi.fn();
+    const preparing = localView(intelligenceOf({ local: { install: installOf("downloading", 935_000_000) } }));
+    view(waitingLocal, [request], {}, { local: setup(preparing, { onCancel }) });
+    expect(screen.getByText("Setting up Pegoles Local")).toBeTruthy();
+    expect(screen.getByText("Downloading model…")).toBeTruthy();
+    expect(screen.getByText("935 MB of 2.2 GB")).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Setting up Pegoles Local" }).getAttribute("aria-valuenow")).toBe("41");
+    expect(screen.queryByRole("button", { name: "Set up Pegoles Local" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel setup" }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("says why a setup failed and offers to try again, from the task", () => {
+    const failed = localView(intelligenceOf({ local: { install: installOf("failed", 0, { error: "Not enough disk space: Pegoles Local needs 2.4 GB free and 1.1 GB is available.", error_kind: "disk_space" }) } }));
+    const onSetUp = vi.fn();
+    view(waitingLocal, [request], {}, { local: setup(failed, { onSetUp, problem: null }) });
+    expect(screen.getByRole("alert").textContent).toBe("Not enough disk space: Pegoles Local needs 2.4 GB free and 1.1 GB is available.");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onSetUp).toHaveBeenCalledOnce();
+  });
+
+  it("offers no local setup while the cloud is chosen", () => {
+    const cloud: TaskActivity = { ...waitingLocal, waitingFor: "cloud-key", detail: "Cloud mode needs an Anthropic API key." };
+    view(cloud, [request], {}, { local: setup(localView(intelligenceOf())) });
+    expect(screen.queryByRole("button", { name: "Set up Pegoles Local" })).toBeNull();
+    expect(screen.getByText("Cloud mode needs an Anthropic API key.")).toBeTruthy();
+  });
+
+  it("says in the status bar what a waiting task needs", () => {
+    dock(waitingLocal);
+    expect(screen.getByRole("region", { name: "Now" }).textContent).toContain("Pegoles Local isn’t set up yet");
+    cleanup();
+    dock(waitingLocal, { settingUp: true });
+    expect(screen.getByRole("region", { name: "Now" }).textContent).toContain("Setting up Pegoles Local…");
+    cleanup();
+    dock({ ...waitingLocal, waitingFor: "cloud-key" });
+    expect(screen.getByRole("region", { name: "Now" }).textContent).toContain("No Anthropic key is connected");
   });
 
   it("tells Pegoles' own words as plain text, never markup", () => {

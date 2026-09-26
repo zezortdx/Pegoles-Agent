@@ -11,6 +11,7 @@
 //! sync (`get_host_capabilities`).
 
 use crate::agent::AgentSupervisor;
+use crate::local::LocalModels;
 use crate::state::AppState;
 use pegoles_computer::{DisplayGeometry, EffectsRecommendation, ImageStatus, PerformanceProfile};
 use pegoles_core::{ComputerView, CoreError, DisplayBounds, GeometryOutcome};
@@ -118,8 +119,11 @@ fn err(e: CoreError) -> String {
 #[serde(rename_all = "snake_case")]
 pub struct StatusPayload {
     pub core: &'static str,
-    /// `configured` when an API key is available, else `not_configured`.
+    /// `configured` when the chosen planner can run tasks now (Pegoles
+    /// Local installed, or a cloud key present), else `not_configured`.
     pub model: &'static str,
+    /// The chosen planner: `local` (default) or `anthropic`.
+    pub provider: &'static str,
     /// The task an agent run is working on right now, if any.
     pub active_task: Option<String>,
     pub backend: &'static str,
@@ -307,6 +311,7 @@ fn status_of(state: &AppState, agent: &AgentSupervisor) -> StatusPayload {
         } else {
             "not_configured"
         },
+        provider: state.provider,
         active_task: agent.active().map(|t| t.to_string()),
         backend: state.registry.backend_kind().as_str(),
         computer_created: info.is_some(),
@@ -982,8 +987,8 @@ fn model_settings_payload() -> ModelSettingsPayload {
     ModelSettingsPayload {
         configured: key_source.is_some(),
         key_source,
-        model: settings.model,
-        effort: settings.effort,
+        model: settings.anthropic.model,
+        effort: settings.anthropic.effort,
         models: pegoles_agent::anthropic::SUPPORTED_MODELS.to_vec(),
         efforts: pegoles_agent::anthropic::EFFORTS.to_vec(),
     }
@@ -998,11 +1003,130 @@ async fn settings_op(
     tauri::async_runtime::spawn_blocking(move || {
         op()?;
         let payload = model_settings_payload();
-        lock_state(&shared).model_configured = payload.configured;
+        refresh_readiness(&shared, &LocalModels::default());
         Ok(payload)
     })
     .await
     .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Recompute whether the chosen planner can run (status payload).
+pub fn refresh_readiness(shared: &SharedState, local: &LocalModels) {
+    let settings = crate::agent::load_settings();
+    let (ready, provider) = match settings.provider {
+        crate::agent::Provider::Local => (local.ready(&settings.local_model), "local"),
+        crate::agent::Provider::Anthropic => (crate::agent::load_api_key().is_some(), "anthropic"),
+    };
+    let mut state = lock_state(shared);
+    state.model_configured = ready;
+    state.provider = provider;
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct IntelligencePayload {
+    /// `local` (default) or `anthropic`.
+    pub provider: crate::agent::Provider,
+    pub local_model: String,
+    pub local: crate::local::LocalRuntimePayload,
+    pub anthropic: ModelSettingsPayload,
+}
+
+fn intelligence_payload(local: &LocalModels) -> IntelligencePayload {
+    let settings = crate::agent::load_settings();
+    IntelligencePayload {
+        provider: settings.provider,
+        local_model: settings.local_model,
+        local: local.payload(),
+        anthropic: model_settings_payload(),
+    }
+}
+
+async fn intelligence_op(
+    shared: SharedState,
+    local: LocalModels,
+    op: impl FnOnce(&LocalModels) -> Result<(), String> + Send + 'static,
+) -> Result<IntelligencePayload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        op(&local)?;
+        refresh_readiness(&shared, &local);
+        Ok(intelligence_payload(&local))
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Who plans (Pegoles Local or a cloud provider), the local model's
+/// install state, and the cloud settings. Never contains a secret.
+#[tauri::command]
+pub async fn get_intelligence(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<IntelligencePayload, String> {
+    intelligence_op(state.inner().clone(), local.inner().clone(), |_| Ok(())).await
+}
+
+#[tauri::command]
+pub async fn set_provider(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+    provider: crate::agent::Provider,
+    local_model: Option<String>,
+) -> Result<IntelligencePayload, String> {
+    intelligence_op(state.inner().clone(), local.inner().clone(), move |_| {
+        let mut settings = crate::agent::load_settings();
+        settings.provider = provider;
+        if let Some(m) = local_model {
+            settings.local_model = m;
+        }
+        crate::agent::save_settings(&settings)
+    })
+    .await
+}
+
+/// Download, verify and install a local model (default: the chosen
+/// one). Progress arrives on `pegoles://model-install`.
+#[tauri::command]
+pub async fn install_local_model(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+    model: Option<String>,
+) -> Result<IntelligencePayload, String> {
+    let shared = state.inner().clone();
+    intelligence_op(state.inner().clone(), local.inner().clone(), move |l| {
+        let model = model.unwrap_or_else(|| crate::agent::load_settings().local_model);
+        l.start_install(app, shared, model)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_local_model_install(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<IntelligencePayload, String> {
+    intelligence_op(state.inner().clone(), local.inner().clone(), |l| {
+        l.cancel_install();
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_local_model(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+    agent: tauri::State<'_, AgentSupervisor>,
+    model: String,
+) -> Result<IntelligencePayload, String> {
+    if agent.active().is_some() {
+        return Err("Stop the running task first.".into());
+    }
+    intelligence_op(state.inner().clone(), local.inner().clone(), move |l| {
+        l.remove(&model)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1039,7 +1163,9 @@ pub async fn set_model_settings(
     effort: String,
 ) -> Result<ModelSettingsPayload, String> {
     settings_op(state.inner().clone(), move || {
-        crate::agent::save_settings(&crate::agent::ModelSettings { model, effort })
+        let mut settings = crate::agent::load_settings();
+        settings.anthropic = crate::agent::ModelSettings { model, effort };
+        crate::agent::save_settings(&settings)
     })
     .await
 }
@@ -1051,14 +1177,16 @@ pub async fn set_model_settings(
 pub async fn run_task(
     state: tauri::State<'_, SharedState>,
     agent: tauri::State<'_, AgentSupervisor>,
+    local: tauri::State<'_, LocalModels>,
     task_id: String,
 ) -> Result<(), String> {
     let task: pegoles_protocol::TaskId = task_id.parse().map_err(|_| "invalid task id")?;
     let shared = state.inner().clone();
     let agent = agent.inner().clone();
+    let local = local.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let bus = lock_state(&shared).bus.clone();
-        crate::agent::start_run(shared, bus, agent, task)
+        crate::agent::start_run(shared, bus, agent, local, task)
     })
     .await
     .map_err(|e| format!("background task failed: {e}"))?

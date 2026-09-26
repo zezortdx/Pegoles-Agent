@@ -6,19 +6,28 @@
  * product state for visual QA: `#/dev/shell/<scenario>`. Nothing here is
  * reachable from production code paths.
  */
-import type { AgentEvent, AgentMessageKind, AgentTask, ModelSettings, StatusPayload } from "../lib/tauri";
+import {
+  MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type AgentTask, type Intelligence, type LocalModelInfo, type ModelInstallStatus,
+  type ModelSettings, type Provider, type StatusPayload,
+} from "../lib/tauri";
+import { installActive } from "../state/localModel";
 
 export const SHELL_LAB_MARKER = "__PEGOLES_SHELL_LAB__";
 
+/** Pegoles Local's states (append `/settings` to land on Settings, e.g. `#/dev/shell/local-downloading/settings`). */
+type IntelligenceScenario =
+  | "local-setup" | "local-downloading" | "local-verifying" | "local-ready" | "local-running" | "local-failed"
+  | "local-paused" | "local-damaged" | "local-unsupported" | "cloud";
+
 type Scenario =
   | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
-  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "paused";
+  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "paused" | IntelligenceScenario;
 
 const now = Date.now();
 const iso = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
 
 const baseStatus: StatusPayload = {
-  core: "running", model: "not_configured", backend: "real", computer_created: false, computer_state: null, computer_id: null,
+  core: "running", model: "not_configured", provider: "local", backend: "real", computer_created: false, computer_state: null, computer_id: null,
   image_status: "ready", spec_os: "Debian 13", spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "unavailable",
   guest_ready_ms: null, viewport_state: "off", viewport_issue: null, display_available: false, display_attached: false,
   display_config: { width_px: 1440, height_px: 900 }, display_error: null, display_setup_error: null, control_owner: "none",
@@ -139,6 +148,68 @@ function world(scenario: Scenario): World {
       tasks: [...history, current("running")],
       events: [...action("t1", "screenshot", {}, 50), ...action("t1", "click", { x: 0.2, y: 0.4 }, 40)],
     };
+    case "local-ready": case "local-running":
+      return { status: { ...baseStatus, ...running }, tasks: history, events: [] };
+    case "cloud":
+      return { status: { ...baseStatus, provider: "anthropic" }, tasks: [...history, current("pending")], events: [{ type: "task_created", task_id: "t1", title: "Find duplicate files in Downloads and clean them up", at: iso(95) }] };
+    default:
+      // Pegoles Local not ready yet: a task waits for it.
+      return { status: baseStatus, tasks: [...history, current("pending")], events: [{ type: "task_created", task_id: "t1", title: "Find duplicate files in Downloads and clean them up", at: iso(95) }] };
+  }
+}
+
+// ── Pegoles Local (simulated model store and setup job) ────────────────
+/** Mirrors the compiled catalog (crates/pegoles-inference/catalog/models.json) for previews only. */
+const CATALOG: readonly LocalModelInfo[] = [
+  { id: "mai-ui-2b-6bit", display_name: "MAI-UI 2B", family: "MaiUi", parameters: "2B", quantization: "6bit", size_bytes: 2_226_454_187, license: "apache-2.0",
+    source: "huggingface.co/mlx-community/MAI-UI-2B-6bit-v2 @ cb57cf2fc99f", state: "not_installed", partial_bytes: null, invalid_reason: null, downloadable: true, recommended_min_ram_gb: null },
+  { id: "qwen3-vl-2b-6bit", display_name: "Qwen3-VL 2B Instruct", family: "Qwen3Vl", parameters: "2B", quantization: "6bit", size_bytes: 2_228_134_653, license: "apache-2.0",
+    source: "huggingface.co/mlx-community/Qwen3-VL-2B-Instruct-6bit @ 0b20c3743b11", state: "not_installed", partial_bytes: null, invalid_reason: null, downloadable: true, recommended_min_ram_gb: null },
+  { id: "qwen3-vl-2b-4bit", display_name: "Qwen3-VL 2B Instruct", family: "Qwen3Vl", parameters: "2B", quantization: "4bit", size_bytes: 1_798_021_605, license: "apache-2.0",
+    source: "huggingface.co/mlx-community/Qwen3-VL-2B-Instruct-4bit @ 9c4f5209e57b", state: "not_installed", partial_bytes: null, invalid_reason: null, downloadable: true, recommended_min_ram_gb: null },
+];
+const DEFAULT_MODEL = CATALOG[0].id;
+const TICK_MS = 250;
+/** A new setup downloads in this many ticks (12 s). */
+const DOWNLOAD_TICKS = 48;
+
+interface LocalWorld {
+  provider: Provider;
+  localModel: string;
+  models: LocalModelInfo[];
+  install: ModelInstallStatus | null;
+  appleSilicon: boolean;
+  runtimeReady: boolean;
+  loaded: string | null;
+  footprint: number | null;
+  /** Bytes per tick of the scenario's own download (a new setup runs at DOWNLOAD_TICKS). */
+  rate: number;
+}
+
+function localWorld(scenario: Scenario, ready: boolean): LocalWorld {
+  const size = CATALOG[0].size_bytes;
+  const job = (phase: ModelInstallStatus["phase"], done: number, extra: Partial<ModelInstallStatus> = {}): ModelInstallStatus =>
+    ({ model: DEFAULT_MODEL, phase, done_bytes: done, total_bytes: size, error: null, error_kind: null, ...extra });
+  const models = (patch: Partial<LocalModelInfo> = {}) => CATALOG.map((model, i) => (i === 0 ? { ...model, ...patch } : { ...model }));
+  const lw: LocalWorld = {
+    provider: "local", localModel: DEFAULT_MODEL, models: models(ready ? { state: "installed" } : {}), install: null,
+    appleSilicon: true, runtimeReady: true, loaded: null, footprint: null, rate: size / DOWNLOAD_TICKS,
+  };
+  switch (scenario) {
+    case "local-downloading":
+      return { ...lw, models: models({ state: "partial", partial_bytes: Math.round(size * 0.42) }), install: job("downloading", Math.round(size * 0.42)), rate: size / 400 };
+    case "local-verifying": return { ...lw, models: models({ state: "partial", partial_bytes: size }), install: job("verifying", size) };
+    case "local-ready": return { ...lw, models: models({ state: "installed" }) };
+    case "local-running": return { ...lw, models: models({ state: "installed" }), loaded: DEFAULT_MODEL, footprint: 2_463_000_000 };
+    case "local-failed": return {
+      ...lw, models: models({ state: "partial", partial_bytes: 0 }),
+      install: job("failed", 0, { error: "Not enough disk space: Pegoles Local needs 2.4 GB free and 1.1 GB is available.", error_kind: "disk_space" }),
+    };
+    case "local-paused": return { ...lw, models: models({ state: "partial", partial_bytes: Math.round(size * 0.37) }), install: job("cancelled", 0) };
+    case "local-damaged": return { ...lw, models: models({ state: "invalid", invalid_reason: "model.safetensors has the wrong size" }) };
+    case "local-unsupported": return { ...lw, appleSilicon: false, runtimeReady: false };
+    case "cloud": return { ...lw, provider: "anthropic" };
+    default: return lw;
   }
 }
 
@@ -196,20 +267,94 @@ function fakeScreen(): string {
 }
 
 export function installShellLab(hash: string): void {
-  const name = (hash.split("/")[3] ?? "home") as Scenario;
+  const [, , , scenario, place] = hash.split("/");
+  const name = (scenario || "home") as Scenario;
   const state = world(name);
   // As in Core: a running task is the one agent run.
   const live = state.tasks.find((candidate) => candidate.status === "running");
   if (live && !state.status.active_task) state.status = { ...state.status, active_task: live.id };
   const callbacks = new Map<number, Handler>();
+  const listeners = new Map<number, { event: string; handler: number }>();
   let nextId = 1;
   let model: ModelSettings = {
-    configured: state.status.model === "configured", key_source: state.status.model === "configured" ? "keychain" : null,
+    configured: false, key_source: null,
     model: "claude-opus-5", effort: "high", models: ["claude-opus-5", "claude-sonnet-5", "claude-opus-5-5"], efforts: ["low", "medium", "high", "xhigh", "max"],
   };
+  const lw = localWorld(name, state.status.model === "configured");
+  if (state.tasks.some((candidate) => candidate.status === "running") && lw.models[0].state === "installed") {
+    lw.loaded = lw.localModel;
+    lw.footprint = 2_463_000_000;
+  }
+
+  const chosen = () => lw.models.find((candidate) => candidate.id === lw.localModel) ?? lw.models[0];
+  /** As Core's refresh_readiness: the chosen provider can run a task now. */
+  const readiness = () => {
+    const ready = lw.provider === "local" ? lw.runtimeReady && chosen().state === "installed" : model.configured;
+    state.status = { ...state.status, provider: lw.provider, model: ready ? "configured" : "not_configured" };
+  };
+  readiness();
+  const intelligence = (): Intelligence => ({
+    provider: lw.provider, local_model: lw.localModel, anthropic: model,
+    local: {
+      runtime_ready: lw.runtimeReady && lw.appleSilicon,
+      runtime_problem: lw.appleSilicon ? (lw.runtimeReady ? null : "local model runtime is not installed: the Pegoles Local runtime is not set up on this Mac") : "Pegoles Local needs a Mac with Apple silicon.",
+      loaded_model: lw.loaded, worker_footprint_bytes: lw.footprint, default_model: DEFAULT_MODEL,
+      models: lw.models.map((candidate) => ({ ...candidate })), install: lw.install,
+      chip: lw.appleSilicon ? "Apple M3 Pro" : "Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz", memory_bytes: 18 * 2 ** 30, apple_silicon: lw.appleSilicon,
+    },
+  });
+  const emit = (payload: ModelInstallStatus) => {
+    lw.install = payload;
+    for (const [id, listener] of listeners) {
+      if (listener.event === MODEL_INSTALL_EVENT) callbacks.get(listener.handler)?.({ event: MODEL_INSTALL_EVENT, id, payload });
+    }
+  };
+  const patchModel = (id: string, patch: Partial<LocalModelInfo>) => {
+    lw.models = lw.models.map((candidate) => (candidate.id === id ? { ...candidate, ...patch } : candidate));
+  };
+
+  // One simulated setup job at a time, like LocalModels::start_install.
+  let job: { model: string; timer: number | null; done: number } | null = null;
+  const settle = (payload: ModelInstallStatus) => {
+    if (job?.timer) window.clearInterval(job.timer);
+    job = null;
+    emit(payload);
+    readiness();
+  };
+  const run = (id: string, rate: number) => {
+    const spec = lw.models.find((candidate) => candidate.id === id) ?? chosen();
+    const total = spec.size_bytes;
+    const status = (phase: ModelInstallStatus["phase"], done: number): ModelInstallStatus =>
+      ({ model: spec.id, phase, done_bytes: done, total_bytes: total, error: null, error_kind: null });
+    const current = { model: spec.id, timer: null as number | null, done: spec.state === "partial" ? spec.partial_bytes ?? 0 : 0 };
+    job = current;
+    patchModel(spec.id, { state: "partial", partial_bytes: current.done });
+    lw.install = status(current.done >= total ? "verifying" : "downloading", current.done);
+    const finish = () => {
+      window.setTimeout(() => { if (job === current) emit(status("finalizing", total)); }, 1800);
+      window.setTimeout(() => {
+        if (job !== current) return;
+        patchModel(spec.id, { state: "installed", partial_bytes: null });
+        settle(status("ready", total));
+      }, 4200);
+    };
+    if (current.done >= total) { finish(); return; }
+    current.timer = window.setInterval(() => {
+      current.done = Math.min(total, current.done + rate);
+      patchModel(spec.id, { partial_bytes: Math.round(current.done) });
+      if (current.done < total) { emit(status("downloading", Math.round(current.done))); return; }
+      if (current.timer) window.clearInterval(current.timer);
+      current.timer = null;
+      emit(status("verifying", total));
+      finish();
+    }, TICK_MS);
+  };
+  // A scenario that opens mid-setup keeps going, at its own pace.
+  if (lw.install && installActive(lw.install)) run(lw.install.model, lw.rate);
+
   const setModel = (next: ModelSettings) => {
     model = next;
-    state.status = { ...state.status, model: next.configured ? "configured" : "not_configured" };
+    readiness();
     return model;
   };
   const setTask = (id: string, status: AgentTask["status"]) => {
@@ -230,12 +375,51 @@ export function installShellLab(hash: string): void {
     },
     clear_api_key: () => setModel({ ...model, configured: false, key_source: null }),
     set_model_settings: (args) => setModel({ ...model, model: String(args.model), effort: String(args.effort) }),
+    get_intelligence: () => { readiness(); return intelligence(); },
+    set_provider: (args) => {
+      lw.provider = args.provider === "anthropic" ? "anthropic" : "local";
+      if (typeof args.localModel === "string") lw.localModel = args.localModel;
+      readiness();
+      return intelligence();
+    },
+    install_local_model: (args) => {
+      const id = typeof args.model === "string" ? args.model : lw.localModel;
+      if (job) throw `${job.model} is already being set up`;
+      const spec = lw.models.find((candidate) => candidate.id === id);
+      if (!spec) throw `unknown model "${id}"`;
+      run(id, spec.size_bytes / DOWNLOAD_TICKS);
+      return intelligence();
+    },
+    cancel_local_model_install: () => {
+      const current = job;
+      if (current?.timer) window.clearInterval(current.timer);
+      if (current) {
+        // As in Core: the flag is set now, the job says "cancelled" a moment later.
+        const spec = lw.models.find((candidate) => candidate.id === current.model) ?? chosen();
+        window.setTimeout(() => settle({ model: spec.id, phase: "cancelled", done_bytes: 0, total_bytes: spec.size_bytes, error: null, error_kind: null }), 300);
+      }
+      return intelligence();
+    },
+    remove_local_model: (args) => {
+      const id = String(args.model);
+      if (state.status.active_task) throw "Stop the running task first.";
+      if (job?.model === id) throw "cancel the download first";
+      patchModel(id, { state: "not_installed", partial_bytes: null, invalid_reason: null });
+      lw.install = null;
+      if (lw.loaded === id) { lw.loaded = null; lw.footprint = null; }
+      readiness();
+      return intelligence();
+    },
     run_task: (args) => {
       const id = String(args.taskId);
-      if (state.status.model !== "configured") throw "Connect a model in Settings first.";
+      readiness();
+      if (state.status.model !== "configured") {
+        throw lw.provider === "anthropic" ? "Connect a model in Settings first: add an Anthropic key or switch to Pegoles Local." : "Set up Pegoles Local in Settings first.";
+      }
       if (state.status.active_task) throw `task ${state.status.active_task} is already running`;
       const target = state.tasks.find((candidate) => candidate.id === id);
       if (target?.status !== "pending") throw `task is ${target?.status ?? "missing"}, not pending`;
+      if (lw.provider === "local") { lw.loaded = lw.localModel; lw.footprint = 2_463_000_000; }
       state.status = { ...state.status, ...running, model: "configured", active_task: id };
       setTask(id, "running");
       say(id, "progress", "Looking at the screen first to see where things are.");
@@ -280,8 +464,12 @@ export function installShellLab(hash: string): void {
     },
     cancel_agent_input: () => null,
     read_boot_log: () => ({ available: true, total_lines: 3, tail: ["[    0.000000] Booting Linux on physical CPU 0x0", "[    1.204118] systemd[1]: Reached target graphical.target", "pegoles-guest: runtime ready (protocol 2)"] }),
-    "plugin:event|listen": () => nextId++,
-    "plugin:event|unlisten": () => null,
+    "plugin:event|listen": (args) => {
+      const id = nextId++;
+      listeners.set(id, { event: String(args.event), handler: Number(args.handler) });
+      return id;
+    },
+    "plugin:event|unlisten": (args) => { listeners.delete(Number(args.eventId)); return null; },
   };
 
   const target = window as unknown as Record<string, unknown>;
@@ -297,4 +485,12 @@ export function installShellLab(hash: string): void {
     unregisterCallback: (id: number) => { callbacks.delete(id); },
     convertFileSrc: (path: string) => path,
   };
+  if (place === "settings") openIntelligenceSettings();
+}
+
+/** `/settings`: arrive at Settings → Intelligence the way a person would, through the composer's model chip. */
+function openIntelligenceSettings(attempt = 0): void {
+  const chip = [...document.querySelectorAll<HTMLButtonElement>(".composer-chip")].find((button) => /Open settings$|^Model:/.test(button.getAttribute("aria-label") ?? ""));
+  if (chip) { chip.click(); return; }
+  if (attempt < 50) window.setTimeout(() => openIntelligenceSettings(attempt + 1), 100);
 }

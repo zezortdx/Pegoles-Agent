@@ -1,14 +1,23 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { listen } from "@tauri-apps/api/event";
 import App from "./App";
-import { api, type AgentEvent, type AgentTask, type ModelSettings, type StatusPayload } from "./lib/tauri";
+import { api, MODEL_INSTALL_EVENT, type AgentEvent, type AgentTask, type ModelSettings, type StatusPayload } from "./lib/tauri";
+import { installOf, intelligenceOf, MAI } from "./state/intelligenceFixture";
 
 const bridge = vi.hoisted(() => ({ native: true }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => bridge.native, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => undefined) }));
 
+/** Deliver a setup event to whoever listens for it (useIntelligence). */
+const emitInstall = (payload: unknown) => act(() => {
+  for (const [name, handler] of vi.mocked(listen).mock.calls) {
+    if (name === MODEL_INSTALL_EVENT) (handler as (event: { payload: unknown }) => void)({ payload });
+  }
+});
+
 const status: StatusPayload = {
-  core: "running", model: "not_configured", backend: "real", computer_created: false,
+  core: "running", model: "not_configured", provider: "local", backend: "real", computer_created: false,
   computer_state: null, computer_id: null, image_status: "ready", spec_os: "Debian 13",
   spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "unavailable",
   guest_ready_ms: null, viewport_state: "off", viewport_issue: null, display_available: false,
@@ -34,6 +43,7 @@ beforeEach(() => {
   vi.spyOn(api, "listEvents").mockResolvedValue([]);
   vi.spyOn(api, "listTasks").mockResolvedValue([]);
   vi.spyOn(api, "getModelSettings").mockResolvedValue(noModel);
+  vi.spyOn(api, "getIntelligence").mockResolvedValue(intelligenceOf());
   vi.spyOn(api, "runTask").mockResolvedValue(null);
   vi.spyOn(api, "cancelTask").mockResolvedValue(null);
   vi.spyOn(api, "getHostCapabilities").mockResolvedValue({ platform: "macos", architecture: "arm64", backend: "real", backend_available: true, backend_detail: "", guest_transport: "virtio_socket", guest_transport_available: true, required_setup: [], supported: true });
@@ -42,7 +52,7 @@ beforeEach(() => {
   vi.spyOn(api, "captureScreen").mockRejectedValue(new Error("no screen in tests"));
 });
 afterEach(() => {
-  cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+  cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.mocked(listen).mockClear();
   document.documentElement.removeAttribute("data-reduce-transparency");
   document.documentElement.removeAttribute("data-increase-contrast");
 });
@@ -70,7 +80,8 @@ describe("desktop shell", () => {
     await ready();
     expect(screen.getByRole("heading", { level: 1, name: "What should Pegoles do?" })).toBeTruthy();
     expect(within(screen.getByRole("list", { name: "A few places to start" })).getAllByRole("button")).toHaveLength(3);
-    expect(screen.getByRole("button", { name: "No model connected. Open settings" })).toBeTruthy();
+    // Local first: the way forward is setting up Pegoles Local, not a key.
+    expect(screen.getByRole("button", { name: "Set up Pegoles Local. Open settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Runs on Pegoles Computer: Off/ })).toBeTruthy();
     // The computer is a status until asked for.
     expect(screen.queryByRole("complementary", { name: "Computer" })).toBeNull();
@@ -113,10 +124,49 @@ describe("desktop shell", () => {
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Computer" })).toBeNull());
   });
 
+  it("sets up Pegoles Local from a waiting task, shows its progress there, and offers Start once it's ready", async () => {
+    vi.mocked(api.listTasks).mockResolvedValue([task]);
+    const install = vi.spyOn(api, "installLocalModel").mockResolvedValue(intelligenceOf({ local: { install: installOf("downloading", 0) } }));
+    render(<App />);
+    await ready();
+    fireEvent.click(await within(sidebar()).findByRole("button", { name: /Organize my notes/ }));
+    expect(await screen.findByText("Waiting for a model")).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("region", { name: "Now" }).textContent).toContain("Pegoles Local isn’t set up yet"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Set up Pegoles Local" }));
+    await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(MAI.id));
+    expect(await screen.findByText("Setting up Pegoles Local")).toBeTruthy();
+    emitInstall(installOf("downloading", 935_000_000));
+    expect(screen.getByText("935 MB of 2.2 GB")).toBeTruthy();
+    // Nothing starts on its own while it sets up.
+    expect(api.runTask).not.toHaveBeenCalled();
+
+    // Ready: Core says the chosen provider can run, and the task offers Start.
+    vi.mocked(api.getIntelligence).mockResolvedValue(intelligenceOf({ model: { state: "installed" }, local: { install: installOf("ready", MAI.size_bytes) } }));
+    vi.mocked(api.getStatus).mockResolvedValue({ ...status, model: "configured" });
+    emitInstall(installOf("ready", MAI.size_bytes));
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(api.runTask).toHaveBeenCalledExactlyOnceWith(task.id));
+  });
+
+  it("names Pegoles Local in the composer once it's ready", async () => {
+    vi.mocked(api.getStatus).mockResolvedValue({ ...status, model: "configured" });
+    vi.mocked(api.getIntelligence).mockResolvedValue(intelligenceOf({ model: { state: "installed" } }));
+    // A stored cloud key doesn't matter while Pegoles Local is chosen.
+    vi.mocked(api.getModelSettings).mockResolvedValue(withKey);
+    render(<App />);
+    await ready();
+    expect(await screen.findByRole("button", { name: "Model: Pegoles Local" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Model: Pegoles Local" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Intelligence" })).toBeTruthy();
+    expect((screen.getByRole("radio", { name: "Pegoles Local" }) as HTMLInputElement).checked).toBe(true);
+  });
+
   it("starts the job at once when a model is connected, and stops it with the task's own Stop", async () => {
-    const connected = { ...status, model: "configured" as const };
+    const connected = { ...status, model: "configured" as const, provider: "anthropic" as const };
     vi.mocked(api.getStatus).mockResolvedValue(connected);
     vi.mocked(api.getModelSettings).mockResolvedValue(withKey);
+    vi.mocked(api.getIntelligence).mockResolvedValue(intelligenceOf({ provider: "anthropic", anthropic: withKey }));
     vi.spyOn(api, "createTask").mockImplementation(async () => {
       vi.mocked(api.listTasks).mockResolvedValue([task]);
       return task;
@@ -131,7 +181,7 @@ describe("desktop shell", () => {
     });
     render(<App />);
     await ready();
-    // The composer names the model Core will use.
+    // The composer names the model Core will use: the cloud one, since it was chosen.
     expect(await screen.findByRole("button", { name: "Model: Claude Opus 5" })).toBeTruthy();
     fireEvent.change(composer(), { target: { value: task.title } });
     fireEvent.submit(screen.getByRole("form", { name: "New task" }));

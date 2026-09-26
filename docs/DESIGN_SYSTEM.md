@@ -84,8 +84,11 @@ objective rises in. Nothing animates `layout` inside a column that is
 itself moving. Reduced motion removes movement and keeps fades.
 
 **Honest-state constraints (2026-09-26).** Tasks run through the agent
-orchestrator once a model key is connected (Settings → Model); without
-one they stay *Waiting for a model*, said once, with the way forward.
+orchestrator once the chosen planner is ready (Settings → Intelligence):
+Pegoles Local (default, set up in place with a one-time download) or,
+optionally, Anthropic with a key. Until then they stay *Waiting for a
+model*, said once, with the way forward ("Set up Pegoles Local" right in
+the task).
 The agent's own notes appear in the task as plain text. There is no
 approval or follow-up command (the policy fails closed instead), no
 native live view (snapshots instead; taking over says why it isn't

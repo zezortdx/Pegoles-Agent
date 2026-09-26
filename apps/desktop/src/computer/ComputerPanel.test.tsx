@@ -12,7 +12,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const status: StatusPayload = {
-  core: "running", model: "not_configured", backend: "real", computer_created: true, computer_state: "running", computer_id: "vm",
+  core: "running", model: "not_configured", provider: "local", backend: "real", computer_created: true, computer_state: "running", computer_id: "vm",
   image_status: "ready", spec_os: "Debian 13", spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "ready",
   guest_ready_ms: 4000, viewport_state: "agent_active", viewport_issue: null, display_available: false, display_attached: true,
   display_config: { width_px: 1440, height_px: 900 }, display_error: null, display_setup_error: null, control_owner: "agent",

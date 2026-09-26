@@ -5,8 +5,10 @@ import type { TaskActivity } from "../state/agentState";
 import type { HumanError } from "../state/errors";
 import type { TranscriptItem } from "../state/transcript";
 import type { ActivityPill } from "../lib/taskState";
+import { canSetUp, progressText, sentence, setupAction, type LocalView } from "../state/localModel";
 import { duration, ease } from "../lib/motion";
 import { plural, timeOf } from "../artifacts/format";
+import { LocalProgress } from "../intelligence/LocalProgress";
 import { Narrative } from "./Narrative";
 
 export interface TaskViewProps {
@@ -29,34 +31,82 @@ export interface TaskViewProps {
   readonly starting?: boolean;
   /** Why the last start of this task didn't happen. */
   readonly startError?: HumanError | null;
+  /** Pegoles Local, while the task waits for it: its state and a way to set it up right here. */
+  readonly local?: LocalSetup;
+}
+
+/** Pegoles Local as a task waiting for it sees it. */
+export interface LocalSetup {
+  readonly view: LocalView;
+  /** A set-up or cancel is on its way to Core. */
+  readonly busy: boolean;
+  /** Why the last set-up or cancel didn't happen, in Core's words. */
+  readonly problem?: string | null;
+  readonly onSetUp: () => void;
+  readonly onCancel: () => void;
 }
 
 function actionCount(items: readonly TranscriptItem[]): number {
   return items.reduce((sum, item) => sum + (item.kind === "actions" ? item.steps.length : item.kind === "file" ? 1 : 0), 0);
 }
 
-type NotStartedProps = Pick<TaskViewProps, "activity" | "onOpenComputer" | "onModelSettings" | "onStart" | "starting" | "startError">;
+type NotStartedProps = Pick<TaskViewProps, "activity" | "onOpenComputer" | "onModelSettings" | "onStart" | "starting" | "startError" | "local">;
 
 const NOT_STARTED_TITLE = { "needs-model": "Waiting for a model", ready: "Not started yet", busy: "Pegoles is busy" } as const;
 const NOT_STARTED_BODY = {
   ready: "Pegoles will do this on its own computer once you start it.",
   busy: "Pegoles is working on another task. It works on one at a time, so start this one when that one ends.",
 } as const;
+const PREPARING_BODY = "Pegoles is getting its local model ready on this Mac. Start this task once it’s ready; it’s kept while the app is open.";
+
+/** The set-up button's words on a task: the product's name first, since the task doesn't say where it is. */
+function setupLabel(view: LocalView): string {
+  if (view.stage === "not-set-up") return "Set up Pegoles Local";
+  if (view.stage === "paused") return "Resume setup";
+  return setupAction(view);
+}
+
+/** What stands between this task and Pegoles Local, in one line under the notice. */
+function LocalLine({ setup }: { setup: LocalSetup }) {
+  const { view } = setup;
+  switch (view.stage) {
+    case "preparing": return <div className="notice__progress"><LocalProgress view={view} /></div>;
+    case "failed": return <p className="notice__problem" role="alert">{sentence(view.error ?? "The setup didn’t finish.")}</p>;
+    case "paused": return <p className="notice__meta">Paused at {progressText(view.doneBytes ?? 0, view.totalBytes ?? 0)}. It picks up where it stopped.</p>;
+    case "damaged": return <p className="notice__meta">Its files didn’t pass the check. Setting it up again replaces them.</p>;
+    case "unsupported":
+    case "downloaded": return <p className="notice__meta">{view.problem ?? "Pegoles Local needs a Mac with Apple silicon."}</p>;
+    default: return view.problem ? <p className="notice__meta">{view.problem}</p> : null;
+  }
+}
 
 /** The task hasn't started: said once, where the work would be, with the real ways forward. */
-function NotStarted({ activity, onOpenComputer, onModelSettings, onStart, starting = false, startError }: NotStartedProps) {
+function NotStarted({ activity, onOpenComputer, onModelSettings, onStart, starting = false, startError, local }: NotStartedProps) {
   const start = activity.start ?? "ready";
   const needsModel = start === "needs-model";
+  const setup = needsModel && activity.waitingFor !== "cloud-key" ? local : undefined;
+  const preparing = setup?.view.stage === "preparing";
+  const body = start === "needs-model" ? (preparing ? PREPARING_BODY : activity.detail) : NOT_STARTED_BODY[start];
   return (
     <div className="notice" data-tone="quiet">
-      <p className="notice__title">{NOT_STARTED_TITLE[start]}</p>
-      <p className="notice__body">{needsModel ? activity.detail : NOT_STARTED_BODY[start]}</p>
+      <p className="notice__title">{preparing ? "Setting up Pegoles Local" : NOT_STARTED_TITLE[start]}</p>
+      <p className="notice__body">{body}</p>
+      {setup && <LocalLine setup={setup} />}
+      {setup?.problem && <p className="notice__problem" role="alert">{setup.problem}</p>}
       {startError && (
         <p className="notice__problem" role="alert">{startError.hint ? `${startError.title} ${startError.hint}` : startError.title}</p>
       )}
       <div className="notice__actions">
         {needsModel ? (
-          <button type="button" className="btn btn--line btn--small" onClick={onModelSettings}>Model settings</button>
+          <>
+            {setup && canSetUp(setup.view) && (
+              <button type="button" className="btn btn--primary btn--small" disabled={setup.busy} onClick={setup.onSetUp}>{setupLabel(setup.view)}</button>
+            )}
+            {setup && preparing && (
+              <button type="button" className="btn btn--quiet btn--small" disabled={setup.busy} onClick={setup.onCancel}>Cancel setup</button>
+            )}
+            <button type="button" className="btn btn--line btn--small" onClick={onModelSettings}>Open Settings</button>
+          </>
         ) : (
           <button type="button" className="btn btn--primary btn--small" disabled={start === "busy" || starting} onClick={onStart}>
             {starting ? <><span className="spinner" aria-hidden="true" />Starting…</> : "Start"}
@@ -114,7 +164,7 @@ export function TaskView(props: TaskViewProps) {
 
           {notStarted && (
             <NotStarted activity={activity} onOpenComputer={props.onOpenComputer} onModelSettings={props.onModelSettings}
-              onStart={props.onStart} starting={props.starting} startError={props.startError} />
+              onStart={props.onStart} starting={props.starting} startError={props.startError} local={props.local} />
           )}
           <Narrative items={items} animated={props.animated} live={activity.live} failedAt={task.status === "failed" ? activity.detail : undefined} />
           {waitingFirst && <p className="narrative__waiting"><span className="narrative__pulse pg-work-anim" aria-hidden="true" />Waiting for the first action</p>}

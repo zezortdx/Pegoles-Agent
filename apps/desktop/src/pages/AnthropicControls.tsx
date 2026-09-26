@@ -3,19 +3,27 @@ import type { ModelSettings } from "../lib/tauri";
 import type { ModelOp, ModelSettingsState } from "../state/useModelSettings";
 import { effortLabel, modelLabel } from "../lib/format";
 import { ChevronDownIcon } from "../ui/icons";
-import { Row, Section } from "./settingsParts";
+import { Row } from "./settingsParts";
 
+/** What choosing the cloud means for privacy. Pegoles Local sends nothing anywhere. */
 export const PRIVACY_NOTE =
-  "When a task runs, its text and screenshots of Pegoles’ computer (its own virtual machine, never your Mac’s screen) are sent to Anthropic’s API. The key stays in your Mac’s Keychain and never reaches Pegoles’ computer.";
+  "With Anthropic chosen, when a task runs, its text and screenshots of Pegoles’ computer (its own virtual machine, never your Mac’s screen) are sent to Anthropic’s API. The key stays in your Mac’s Keychain and never reaches Pegoles’ computer.";
 
 const FAILED: Record<ModelOp, string> = {
-  load: "Couldn’t read the model settings.",
+  load: "Couldn’t read the Anthropic settings.",
   key: "Couldn’t save the key.",
   clear: "Couldn’t remove the key.",
   choice: "Couldn’t change the model.",
 };
 
-function keyStatus(settings: ModelSettings | null): string {
+/** The cloud settings' failure as one sentence, in Core's words after ours. */
+export function anthropicProblem(model: ModelSettingsState): string | null {
+  const { error } = model;
+  return error ? `${FAILED[error.op]} ${error.text.charAt(0).toUpperCase()}${error.text.slice(1)}` : null;
+}
+
+/** Where the key lives, in a few words. */
+export function keyStatus(settings: ModelSettings | null): string {
   if (!settings) return "Checking…";
   if (settings.key_source === "keychain") return "Connected (Keychain)";
   if (settings.key_source === "environment") return "From ANTHROPIC_API_KEY";
@@ -35,23 +43,22 @@ function Select({ id, label, value, options, disabled, onChange }: {
   );
 }
 
-export interface ModelSectionProps {
-  readonly id: string;
-  readonly native: boolean;
+export interface AnthropicControlsProps {
   readonly model: ModelSettingsState;
+  /** A key was just stored (true), or anything else changed since (false). */
+  readonly onSaved: (saved: boolean) => void;
 }
 
 /**
- * The model Pegoles works with: whether a key is connected and where it
- * lives, a way to store one (it is never shown again), and the model and
- * effort to use. Core is the authority; every value here is what it reports.
+ * The cloud model's rows: whether a key is connected and where it lives,
+ * a way to store one (it is never shown again), and the model and effort
+ * to use. Core is the authority; every value here is what it reports.
  */
-export function ModelSection({ id, native, model }: ModelSectionProps) {
-  const { settings, pending, error } = model;
+export function AnthropicControls({ model, onSaved }: AnthropicControlsProps) {
+  const { settings, pending } = model;
   const keyRef = useRef<HTMLInputElement>(null);
   const fieldId = useId();
   const [filled, setFilled] = useState(false);
-  const [saved, setSaved] = useState(false);
   const busy = pending !== null;
   const configured = !!settings?.configured;
 
@@ -59,39 +66,23 @@ export function ModelSection({ id, native, model }: ModelSectionProps) {
     event.preventDefault();
     const field = keyRef.current;
     if (!field || busy) return;
-    setSaved(false);
+    onSaved(false);
     const ok = await model.saveKey(field.value);
     if (!ok) return;
     // Never kept, never shown again.
     field.value = "";
     setFilled(false);
-    setSaved(true);
+    onSaved(true);
   };
 
-  if (!native) {
-    return (
-      <Section id={id} title="Model" note={PRIVACY_NOTE}>
-        <Row label="Anthropic API key"><span className="setting__muted">Desktop app required</span></Row>
-      </Section>
-    );
-  }
-
-  const problem = error ? `${FAILED[error.op]} ${error.text.charAt(0).toUpperCase()}${error.text.slice(1)}` : null;
   return (
-    <Section
-      id={id} title="Model" lead="Anthropic" note={PRIVACY_NOTE}
-      after={(problem || saved) && (
-        problem
-          ? <p className="settings__problem" role="alert">{problem}</p>
-          : <p className="settings__ok" role="status">Key saved to your Keychain.</p>
-      )}
-    >
-      <Row label="Anthropic API key" hint={configured ? undefined : "Pegoles needs one to work on tasks."}>
+    <>
+      <Row label="Anthropic API key" hint={configured ? undefined : "Needed for tasks while Anthropic is chosen."}>
         <span className="setting__status">
           <span className="dot" data-tone={configured ? "done" : undefined} aria-hidden="true" />
           <span className={configured ? undefined : "setting__muted"}>{keyStatus(settings)}</span>
           {settings?.key_source === "keychain" && (
-            <button type="button" className="btn btn--quiet btn--small" disabled={busy} onClick={() => { setSaved(false); void model.clearKey(); }}>
+            <button type="button" className="btn btn--quiet btn--small" disabled={busy} onClick={() => { onSaved(false); void model.clearKey(); }}>
               {pending === "clear" ? "Removing…" : "Remove key"}
             </button>
           )}
@@ -117,16 +108,16 @@ export function ModelSection({ id, native, model }: ModelSectionProps) {
         <Row label="Model">
           <Select id={`${fieldId}-model`} label="Model" value={settings.model} disabled={busy}
             options={settings.models.map((value) => ({ value, label: modelLabel(value) }))}
-            onChange={(value) => { setSaved(false); void model.choose(value, settings.effort); }} />
+            onChange={(value) => { onSaved(false); void model.choose(value, settings.effort); }} />
         </Row>
       )}
       {settings && (
         <Row label="Effort" hint="Higher effort thinks longer before each step: slower, and it costs more.">
           <Select id={`${fieldId}-effort`} label="Effort" value={settings.effort} disabled={busy}
             options={settings.efforts.map((value) => ({ value, label: effortLabel(value) }))}
-            onChange={(value) => { setSaved(false); void model.choose(settings.model, value); }} />
+            onChange={(value) => { onSaved(false); void model.choose(settings.model, value); }} />
         </Row>
       )}
-    </Section>
+    </>
   );
 }

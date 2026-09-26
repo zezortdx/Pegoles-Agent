@@ -2191,13 +2191,17 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "flate2",
+ "hex",
  "pegoles-computer",
  "pegoles-core",
+ "pegoles-inference",
  "pegoles-policy",
  "pegoles-protocol",
  "png 0.18.1",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -2246,14 +2250,17 @@ name = "pegoles-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "objc2-app-kit",
  "pegoles-agent",
  "pegoles-computer",
  "pegoles-core",
  "pegoles-guest-proto",
+ "pegoles-inference",
  "pegoles-macos-embed",
  "pegoles-policy",
  "pegoles-protocol",
+ "png 0.18.1",
  "security-framework",
  "serde",
  "serde_json",
@@ -2278,6 +2285,22 @@ dependencies = [
  "libc",
  "pegoles-guest-proto",
  "serde_json",
+]
+
+[[package]]
+name = "pegoles-inference"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "libc",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "ureq",
 ]
 
 [[package]]

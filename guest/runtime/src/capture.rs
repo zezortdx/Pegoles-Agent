@@ -711,6 +711,20 @@ struct RealCapture {
     pool_size: u32,
 }
 
+/// The pool memfd must be closed after every capture: an open memfd keeps
+/// its pages (width x height x 4 bytes of shmem) alive after the compositor
+/// connection is gone. Leaking one per screenshot exhausted a 1.5 GB guest
+/// after ~260 captures and the kernel OOM-killed the compositor.
+#[cfg(target_os = "linux")]
+impl Drop for RealCapture {
+    fn drop(&mut self) {
+        if self.pool_fd >= 0 {
+            unsafe { libc::close(self.pool_fd) };
+            self.pool_fd = -1;
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl CaptureStream for RealCapture {
     fn send(&mut self, bytes: &[u8], fds: &[i32]) -> Result<(), String> {
@@ -726,6 +740,11 @@ impl CaptureStream for RealCapture {
 impl PoolStream for RealCapture {
     fn send_pool(&mut self, shm: u32, pool: u32, pool_size: u32) -> Result<i32, String> {
         use crate::capture::{frame_request, put_i32, put_u32};
+        if self.pool_fd >= 0 {
+            // One pool per capture; never orphan an earlier one.
+            unsafe { libc::close(self.pool_fd) };
+            self.pool_fd = -1;
+        }
         // Real memfd + wl_shm.create_pool with SCM_RIGHTS in one step.
         let fd = unsafe { libc::memfd_create(b"pegoles-shot\0".as_ptr(), 1) };
         if fd < 0 {
@@ -735,11 +754,12 @@ impl PoolStream for RealCapture {
             unsafe { libc::close(fd) };
             return Err(format!("ftruncate: {}", std::io::Error::last_os_error()));
         }
+        // Owned from here on (closed by Drop even if the send fails).
+        self.pool_fd = fd;
         let mut payload = Vec::new();
         put_u32(&mut payload, pool);
         put_i32(&mut payload, pool_size as i32);
         self.stream.send(&frame_request(shm, 0, &payload), &[fd])?;
-        self.pool_fd = fd;
         self.pool_size = pool_size;
         Ok(fd)
     }

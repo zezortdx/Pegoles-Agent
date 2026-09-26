@@ -21,11 +21,42 @@ interface Rule {
   readonly title: string;
   readonly hint?: string;
   readonly retryable?: boolean;
+  /** Also names why a run stopped (the planner's words in the task's failure note). */
+  readonly stop?: boolean;
 }
 
 const COMPUTER_TITLE = "Computer couldn’t start.";
 
+/**
+ * Who plans. Before the computer rules: an integrity failure mentions
+ * checksums, and it is the local model's, not the computer image's.
+ */
+const INTELLIGENCE_RULES: readonly Rule[] = [
+  { test: /failed its integrity check/i, scope: "run", title: "Pegoles Local needs to be set up again.",
+    hint: "Its files didn’t pass the integrity check. Remove it in Settings, then set it up again.", retryable: false, stop: true },
+  { test: /Set up Pegoles Local/i, scope: "run", title: "Pegoles Local isn’t set up yet.",
+    hint: "Set it up in Settings (free, runs on this Mac), or connect a cloud model.", retryable: false },
+  { test: /Connect a model/i, scope: "run", title: "Cloud mode needs an Anthropic key.",
+    hint: "Add one in Settings, or switch to Pegoles Local (free, runs on this Mac).", retryable: false },
+  { test: /local model runtime is not installed/i, scope: "run", title: "Pegoles Local can’t run on this Mac yet.",
+    hint: "Its runtime isn’t set up. You can connect a cloud model in Settings instead.", retryable: false, stop: true },
+  { test: /not enough memory to run the local model/i, scope: "run", title: "Not enough free memory for Pegoles Local.",
+    hint: "Quit some apps to free memory, then try again.", stop: true },
+  { test: /local model runtime stopped unexpectedly/i, scope: "run", title: "Pegoles Local stopped unexpectedly.",
+    hint: "Try again. If it keeps happening, restart Pegoles.", stop: true },
+  { test: /local model timed out/i, scope: "run", title: "Pegoles Local took too long to answer.", hint: "Try again.", stop: true },
+  { test: /local model could not load/i, scope: "run", title: "Pegoles Local couldn’t load its model.",
+    hint: "If it keeps happening, remove it in Settings and set it up again.", stop: true },
+  { test: /kept repeating the same action/i, scope: "run", title: "Stopped: it kept repeating the same action.",
+    hint: "Nothing changed on its screen, so Pegoles stopped instead of looping. Try describing the task differently.", stop: true },
+  { test: /did not produce a valid action/i, scope: "run", title: "Stopped: Pegoles Local couldn’t decide on a next step.",
+    hint: "Its answers couldn’t be turned into an action. Try describing the task differently.", stop: true },
+  { test: /rejected the API key/i, scope: "run", title: "Anthropic didn’t accept the API key.",
+    hint: "Check the key in Settings, or switch to Pegoles Local.", retryable: false, stop: true },
+];
+
 const RULES: readonly Rule[] = [
+  ...INTELLIGENCE_RULES,
   { test: /vm-host binary not found|PEGOLES_VM_HOST/i, scope: "computer", title: COMPUTER_TITLE,
     hint: "The helper that runs Pegoles’ computer isn’t installed on this Mac." },
   { test: /not_entitled|entitlement|com\.apple\.security\.virtualization/i, scope: "computer", title: COMPUTER_TITLE,
@@ -34,8 +65,6 @@ const RULES: readonly Rule[] = [
     hint: "Pegoles’ computer needs a few gigabytes free." },
   { test: /computer image|image missing|checksum|sha256/i, scope: "computer", title: "Pegoles’ computer image isn’t ready.",
     hint: "The Pegoles computer image isn’t installed on this Mac, or it’s incomplete." },
-  { test: /Connect a model/i, scope: "run", title: "Connect a model first.",
-    hint: "Add an Anthropic API key in Settings, then start the task." },
   { test: /is already running/i, scope: "run", title: "Pegoles is working on another task.",
     hint: "It works on one task at a time. Start this one when that one ends." },
   { test: /not pending/i, scope: "run", title: "This task has already started." },
@@ -76,4 +105,13 @@ export function humanizeError(raw: unknown, scope: ErrorScope): HumanError {
   }
   const fallback = SCOPE_DEFAULT[scope];
   return { scope, title: fallback.title, hint: fallback.hint, detail, retryable: true };
+}
+
+/**
+ * Why a run stopped, calmly: the planner's known failures ("The model
+ * could not continue: model unavailable: …") become one sentence; any
+ * other note (such as "Stopped by the user.") stays in Pegoles' words.
+ */
+export function stopReason(note: string): string {
+  return INTELLIGENCE_RULES.find((rule) => rule.stop && rule.test.test(note))?.title ?? note;
 }

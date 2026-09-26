@@ -10,6 +10,7 @@ pegoles-protocol = { workspace = true }
 pegoles-core = { workspace = true }
 pegoles-computer = { workspace = true }
 pegoles-policy = { workspace = true }
+pegoles-inference = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -18,6 +19,9 @@ base64 = { workspace = true }
 ureq = { workspace = true }
 
 [dev-dependencies]
+flate2 = "1"
+sha2 = { workspace = true }
+hex = { workspace = true }
 png = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true }

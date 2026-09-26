@@ -1,0 +1,20 @@
+[package]
+name = "pegoles-inference"
+version = "0.1.0"
+edition = "2021"
+description = "Pegoles local inference: hardware profile, verified model store, replaceable inference backends (MLX worker)"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ring = "0.17"
+hex = { workspace = true }
+base64 = { workspace = true }
+ureq = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+tempfile = "3"

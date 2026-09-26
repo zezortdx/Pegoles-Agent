@@ -40,7 +40,12 @@ Argument names: Tauri maps top-level JS keys from camelCase
 | `list_tasks` | — | `AgentTask[]` |
 | `run_task` | `taskId` | starts the agent on a pending task (one run at a time) |
 | `cancel_task` | `taskId` | stops the run, or cancels a pending task |
-| `get_model_settings` / `set_api_key` / `clear_api_key` / `set_model_settings` | … | `{ configured, key_source, model, effort, models, efforts }` — the key is never returned |
+| `get_model_settings` / `set_api_key` / `clear_api_key` / `set_model_settings` | … (Anthropic, optional) | `{ configured, key_source, model, effort, models, efforts }` — the key is never returned |
+| `get_intelligence` | — | `{ provider: "local"\|"anthropic", local_model, local: { runtime_ready, runtime_problem, loaded_model, worker_footprint_bytes, default_model, models[], install, chip, memory_bytes, apple_silicon }, anthropic: ModelSettings }` — no secrets |
+| `set_provider` | `provider`, `localModel?` | `Intelligence` (persists `settings.json`) |
+| `install_local_model` | `model?` (default: chosen) | `Intelligence`; download → verify → atomic install in the background, progress on `pegoles://model-install`; only catalog-offered models |
+| `cancel_local_model_install` | — | `Intelligence` (partial download kept, resumable) |
+| `remove_local_model` | `model` (catalog id) | `Intelligence`; refused while a task runs |
 | `cancel_agent_input` | — | stops any agent run and releases held input |
 | `capture_screen` | — | `{ meta, png_base64 }` (guest framebuffer only; encoded with Core unlocked) |
 | `input_status` / `input_audit` | … | input plane facts; content-free audit rows |
@@ -245,6 +250,8 @@ Wire format: `AgentEvent` serialized with serde, tagged by `type`
 Guest lifecycle events (`guest_runtime_*`, `computer_*`, `task_*`) are
 unchanged. Starting/Unavailable graphical reports only move
 `viewport_state` (no event). Heartbeats never produce events.
+
+`pegoles://model-install` carries `{ model, phase: downloading|verifying|finalizing|ready|failed|cancelled, done_bytes, total_bytes, error, error_kind: disk_space|network|corrupted|other }`, at most ~4/s while downloading and on every phase change.
 
 ## State ownership
 

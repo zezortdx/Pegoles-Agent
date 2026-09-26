@@ -10,6 +10,7 @@ document states what is enforced today, where, and what is not.
 ```text
  user ─▶ webview UI ─(Tauri commands)─▶ Pegoles Core (Rust, host)
                                            │  typed ComputerAction only
+   local VLM (MLX worker, sandboxed) ◀─pipes─┐
           model (Anthropic API) ◀─HTTPS─ agent runner ─▶ Policy ─▶ executor
                                            │
                                   pegoles-vm-host (Swift, child process)
@@ -21,7 +22,9 @@ document states what is enforced today, where, and what is not.
 
 | Boundary | Trust | Enforcement |
 |---|---|---|
-| Model → host | untrusted | model output is parsed into typed actions only (`pegoles-agent/src/anthropic.rs::translate`); unknown tools, out-of-screen coordinates and unsupported members become error results, never actions |
+| Model → host | untrusted (local and cloud alike) | model output is parsed into typed actions only — cloud: `pegoles-agent/src/anthropic.rs::translate`; local: `pegoles-agent/src/local/parse.rs` (exactly one tool call, allow-listed keys, bounded finite coordinates, no control/bidi/zero-width text); unknown tools, out-of-screen coordinates and unsupported members become error results, never actions |
+| Local model worker → host | untrusted process | `workers/mlx/pegoles_mlx_worker.py` runs under `sandbox-exec` (mandatory; missing → Pegoles Local refuses to run): no network (TCP and DNS verified denied), no file contents under `$HOME` except the runtime, the model store and the worker script, no writes except the per-user temp/cache area; cleared environment (no API key), `python -I`; replies bounded (1 MiB/line), invalid or oversized → killed; timeouts and unhonored cancels → killed |
+| Model files → worker | untrusted bytes | compiled-in catalog pins repository commit and SHA-256 of every file; only safetensors/JSON/text/Jinja files; any model JSON with `auto_map`/`custom_pipelines` refused; full re-hash before load; transformers' dynamic-module loader disabled in the worker, `trust_remote_code=False` |
 | Action → execution | untrusted | `pegoles-policy::evaluate` (exhaustive, deterministic) on every action, then Core's executor (rate limit, control arbitration) |
 | Guest → host | hostile | vsock frames ≤ 64 KiB, UTF-8, typed parse, bounded fields; frame reassembly caps; per-connection line-rate limit; bounded queues everywhere between guest and Core |
 | Guest process → host channel | hostile | the helper accepts a vsock peer only from a reserved source port (≤ 1023), which only the runtime (CAP_NET_BIND_SERVICE via its unit) can bind |
@@ -89,13 +92,26 @@ document states what is enforced today, where, and what is not.
    accounts are locked; sshd and its vsock/unix socket activation are
    masked).
 11. **Child processes** get a scrubbed environment (`env_clear`) and fixed
-   arguments: the VM helper and `/usr/bin/tar` (image builder path).
+   arguments: the VM helper, the MLX worker and `/usr/bin/tar` (image
+   builder path).
+12. **Local models are planners, not principals.** Pegoles Local goes
+   through the same `Planner` → runner → Core executor → Policy path as
+   the cloud planner; a local model is not trusted because it is local.
+   Its worker returns text only; it never receives VM, helper, policy,
+   filesystem or secret access. Deterministic brakes live outside the
+   model: one action per step, turn/action/time budgets, a loop brake
+   (the same action on an already-seen screen three times stops the
+   task, including A-B-A-B toggling), bounded invalid-output retries.
+   The only thing a fully malicious local model can do is what any
+   planner can: type, click and look inside the disposable offline VM.
 
 ## Prompt injection
 
-Screen content is data. The system prompt says so, and Anthropic's
-server-side classifiers flag injections in screenshots, but neither is
-relied on: the policy and the missing network bound what a fully
+Screen content is data. The system prompts (cloud and local) say so,
+and Anthropic's server-side classifiers flag injections in
+screenshots, but none of that is relied on (small local models follow
+instructions on screen more readily; see the `injection` task in
+`benchmarks/local-models`): the policy and the missing network bound what a fully
 injected model can do to "type, click and look inside a disposable,
 offline VM". Reset returns the VM to the sealed image.
 
@@ -112,6 +128,14 @@ offline VM". Reset returns the VM to the sealed image.
   the boundary).
 - Windows (HCS) code has not been compiled or run in this environment;
   its security properties are unverified.
+- The MLX worker's sandbox uses `sandbox-exec`, which Apple marks
+  deprecated; it can still read files outside `$HOME` (system
+  libraries, `/opt`) and file metadata under `$HOME`. A compromised
+  worker (e.g. malicious weights exploiting a parser) could lie to the
+  planner — which is already untrusted — but has no network to
+  exfiltrate through.
+- The Python runtime is installed by a hash-locked script today, not
+  shipped signed inside the app.
 
 ## Tests that pin these properties
 
@@ -121,5 +145,13 @@ offline VM". Reset returns the VM to the sealed image.
 symlinked base, fail-closed create, reset restores disk),
 `pegoles-core` (policy short-circuit, stuck-input release, agent session
 vs display), `pegoles-agent` (translation errors, batch halt, budgets,
-cancellation, append-only history, real executor + policy with Mock),
-and the hardware E2E `crates/pegoles-agent/examples/agent_e2e.rs`.
+cancellation, append-only history, real executor + policy with Mock;
+local parser: hostile coordinates, schema escapes, NaN/Infinity, bidi,
+multiple calls; local planner: garbage output fails closed, loop and
+oscillation brakes, crash restart, cancel during inference),
+`pegoles-inference` (store: resume, corruption, oversize, symlinks,
+extra files, remote-code JSON; worker supervisor: crash, garbage,
+oversized reply, hang, unhonored cancel), the hardware E2E
+`crates/pegoles-agent/examples/agent_e2e.rs`, the hostile-model run
+`local_bench --safety` (real VM + policy) and the keyless local E2E
+`apps/desktop/src-tauri/examples/local_e2e.rs`.

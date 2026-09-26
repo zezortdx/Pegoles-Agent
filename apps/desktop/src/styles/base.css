@@ -224,6 +224,43 @@ kbd { font: inherit; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Meter: real progress only ───────────────────────────────────────
+ * The fill scales with the bytes Core reports (transform only). Past its
+ * end (finishing) it breathes; without a measure a short segment travels
+ * the track, and stands still where motion is reduced. */
+.meter {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--fill-press);
+}
+.meter__fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--text-1);
+  transform-origin: 0 50%;
+  transform: scaleX(var(--meter, 0));
+  transition: transform var(--dur-layout) var(--ease-out);
+}
+.meter__fill[data-working] { animation: meter-breathe 1.6s var(--ease-light) infinite alternate; }
+@keyframes meter-breathe { to { opacity: 0.45; } }
+.meter[data-indeterminate] .meter__fill {
+  width: 36%;
+  opacity: 0.8;
+  transform: translateX(-100%);
+  transition: none;
+  animation: meter-travel 1.5s var(--ease-move) infinite;
+}
+@keyframes meter-travel { to { transform: translateX(280%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .meter[data-indeterminate] .meter__fill { width: 100%; opacity: 0.35; transform: none; animation: none; }
+}
+:root[data-reduced-motion="true"] .meter[data-indeterminate] .meter__fill,
+[data-effects-tier="minimal"] .meter[data-indeterminate] .meter__fill { width: 100%; opacity: 0.35; transform: none; animation: none; }
+
 /* ── Notice: a quiet block of real information with its way forward ── */
 .notice {
   display: grid;
@@ -235,7 +272,9 @@ kbd { font: inherit; }
 }
 .notice__title { font: var(--type-heading); letter-spacing: var(--track-heading); color: var(--text-1); }
 .notice__body { color: var(--text-2); font: var(--type-ui); max-width: 60ch; }
-.notice__actions { display: flex; gap: 6px; margin-top: 6px; }
+.notice__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.notice__meta { color: var(--text-3); font: var(--type-small); max-width: 60ch; }
+.notice__progress { max-width: 420px; margin-top: 4px; }
 
 /* ── Disclosure ──────────────────────────────────────────────────── */
 .details > summary {

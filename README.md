@@ -5,6 +5,8 @@
 Pegoles is a computer-use agent for macOS. You give it an objective; a
 model plans; every action it proposes is a typed, policy-checked input
 to an isolated Linux VM (no network, no shared folders, no clipboard).
+No API key needed: the default model, **Pegoles Local**, runs on your
+Mac; cloud models are optional.
 You watch the VM and the agent's activity, stop it at any time, and
 reset the VM to a sealed image.
 
@@ -17,9 +19,14 @@ reset the VM to a sealed image.
   orchestrated task (click, type, keys, observe, pixel verification) →
   cancel → guest-runtime crash recovery → reset/teardown → second boot
   (`crates/pegoles-agent/examples/agent_e2e.rs`).
-- The model planner uses Claude through the Anthropic API (key in the
-  macOS Keychain). It is unit-tested but has not been run against the
-  live API from this environment.
+- Pegoles Local (default): MAI-UI-2B 6-bit on MLX in a sandboxed host
+  worker, chosen on a 22-task benchmark on the real VM
+  ([benchmarks/local-models](benchmarks/local-models/README.md));
+  verified end to end without any API key. Architecture:
+  [docs/MODEL_ARCHITECTURE.md](docs/MODEL_ARCHITECTURE.md).
+- Optional cloud planner: Claude through the Anthropic API (key in the
+  macOS Keychain), behind the same provider switch and policy path;
+  unit-tested, not run against the live API from this environment.
 - Security model and residual risks: [docs/SECURITY.md](docs/SECURITY.md).
   Engineering state and next steps: [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
@@ -37,6 +44,10 @@ cargo build -p pegoles-desktop && bash scripts/codesign-dev.sh
 # Desktop app (dev)
 pnpm --filter @pegoles/desktop tauri dev
 
+# Pegoles Local: runtime (once) + default model
+bash scripts/local-model/setup-runtime.sh
+cargo run --release -p pegoles-inference --example models -- install mai-ui-2b-6bit
+
 # Real hardware E2E (release; helper beside the binary, as in a bundle)
 cargo build --release -p pegoles-agent --example agent_e2e
 cp native/macos/pegoles-vm-host/.build/release/pegoles-vm-host target/release/examples/
@@ -51,7 +62,10 @@ qemu and e2fsprogs.
 
 ```text
 apps/desktop           Tauri 2 shell (Rust commands) + React UI
-crates/pegoles-agent   orchestrator: runner, budgets, Claude planner, scripted planner
+crates/pegoles-agent   orchestrator: runner, budgets, planners (local, Claude, scripted)
+crates/pegoles-inference local inference: hardware, pinned model store, MLX worker backend
+workers/mlx            host MLX worker (Python, sandboxed, offline)
+benchmarks/local-models real-VM model benchmark (harness, fixture, results)
 crates/pegoles-core    computer registry, executor (policy → control → input), tasks, events
 crates/pegoles-policy  deterministic action policy
 crates/pegoles-protocol shared types (actions, events, tasks, limits)

@@ -22,6 +22,8 @@ export interface StatusDockProps {
   readonly onInterrupt: () => void;
   readonly onWatch: () => void;
   readonly onNewTask: () => void;
+  /** While the task waits for Pegoles Local and it is being set up: says so instead of "isn't set up yet". */
+  readonly settingUp?: boolean;
 }
 
 /** Every line stays readable: fast real changes are coalesced, never invented. */
@@ -29,13 +31,16 @@ const HOLD_MS = 600;
 /** Modes where a light passes through the words, and only while live. */
 const SHINE = new Set<TaskActivity["mode"]>(["thinking", "planning", "working", "using-computer", "acknowledging"]);
 
-function detailOf(activity: TaskActivity): string | undefined {
+function detailOf(activity: TaskActivity, settingUp: boolean): string | undefined {
   if (activity.mode === "needs-user") return activity.approvalReason;
   if (!activity.live && activity.at) {
     if (activity.reason) return activity.reason;
     return activity.mode === "error" && activity.detail ? `Stopped at: ${activity.detail}` : `Finished ${timeOf(activity.at)}`;
   }
-  if (activity.start === "needs-model") return "No model is connected";
+  if (activity.start === "needs-model") {
+    if (activity.waitingFor === "cloud-key") return "No Anthropic key is connected";
+    return settingUp ? "Setting up Pegoles Local…" : "Pegoles Local isn’t set up yet";
+  }
   const detail = activity.detail;
   if (!detail) return undefined;
   return detail.startsWith("/") && !detail.includes(" ") ? basename(detail) : detail;
@@ -55,7 +60,7 @@ function headlineOf(activity: TaskActivity, state: ActivityPill): string {
 export function StatusDock(props: StatusDockProps) {
   const { activity, state } = props;
   const headline = headlineOf(activity, state);
-  const detail = detailOf(activity);
+  const detail = detailOf(activity, !!props.settingUp);
   const settledNow = !activity.live || !!activity.start;
   const key = `${headline}·${detail ?? ""}·${settledNow}`;
   // The line and what it offers change together, so an action never outruns its words.

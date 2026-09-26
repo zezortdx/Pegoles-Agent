@@ -229,6 +229,80 @@ button.activity-quiet__row:hover { background: var(--fill-hover); }
 .select select:disabled { color: var(--text-disabled); }
 .select__chevron { position: absolute; right: 9px; color: var(--icon-3); pointer-events: none; }
 
+.setting__value--wrap { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.dot[data-tone="attention"] { background: var(--warn); }
+.dot[data-tone="error"] { background: var(--danger); }
+
+/* ── Intelligence: who plans ─────────────────────────────────────────
+ * Two choices in two groups, one radio group: Pegoles Local first and
+ * whole, the cloud below it as an option. The radio is monochrome (blue
+ * stays Pegoles acting); a checked one is a white disc with a dark eye. */
+.settings__subhead { margin-top: 12px; padding: 0 2px; color: var(--text-3); font: var(--type-small); font-weight: 600; }
+.provider { justify-content: flex-start; gap: 12px; min-height: 56px; }
+.provider--compact { min-height: 48px; }
+.provider > .setting__value { margin-left: auto; padding-left: 12px; }
+.provider__title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.radio {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-radius: 50%;
+  background: var(--fill-hover);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2);
+  transition: box-shadow var(--dur-micro) var(--ease-out), background-color var(--dur-micro) var(--ease-out), opacity var(--dur-micro) var(--ease-out);
+}
+.provider:hover .radio:not(:checked):not(:disabled) { background: var(--fill-press); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.32); }
+.radio:checked { background: var(--text-inverse); box-shadow: inset 0 0 0 5px var(--text-1); }
+.radio:disabled { opacity: 0.55; }
+.radio:focus-visible { outline: var(--focus-width) solid var(--focus-color); outline-offset: var(--focus-offset); }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 0.5px var(--hairline-strong);
+  color: var(--text-2);
+  font: var(--type-micro);
+  letter-spacing: var(--track-micro);
+}
+.setting__status[data-tone="attention"] .local-status__word { color: var(--warn-text); }
+.setting__status[data-tone="error"] .local-status__word { color: var(--danger-text); }
+
+/* The line under Pegoles Local: what it needs and the one thing to do. Indented to its name (14 + 16 + 12). */
+.local-state {
+  gap: 16px;
+  padding-left: 42px;
+  animation: local-state-in var(--dur-surface) var(--ease-out);
+}
+/* It continues the row above: no rule between them. */
+.provider + .local-state { box-shadow: none; padding-top: 0; padding-bottom: 12px; }
+@keyframes local-state-in { from { opacity: 0; transform: translateY(-3px); } }
+.local-state__text { display: grid; gap: 4px; min-width: 0; max-width: 58ch; color: var(--text-2); font: var(--type-small); }
+.local-state__text [data-tone="error"] { color: var(--danger-text); }
+.local-state__problem { color: var(--warn-text); }
+.local-state > .btn { flex: none; }
+
+.local-progress { display: grid; gap: 8px; flex: 1; min-width: 0; padding: 4px 0; }
+.local-progress__line { display: flex; align-items: baseline; gap: 10px; min-width: 0; font: var(--type-small); }
+.local-progress__step { color: var(--text-1); font-weight: 500; white-space: nowrap; }
+.local-progress__bytes { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.local-progress__percent { margin-left: auto; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+.advanced { padding: 0 2px; }
+.advanced > summary { padding: 2px 0; }
+.advanced__body { display: grid; gap: 8px; margin: 10px -2px 0; }
+.advanced__label { padding: 6px 2px 0; color: var(--text-3); font: var(--type-small); font-weight: 600; }
+/* Facts to glance at, not choices: tighter rows than the settings above them. */
+.settings__group--dense > .setting { min-height: 34px; padding-top: 6px; padding-bottom: 6px; }
+.local-remove__trigger { justify-self: start; margin-left: 4px; }
+.local-remove__trigger:not(:disabled) { color: var(--danger-text); }
+.local-remove { margin-top: 2px; }
+
 .settings__dev { margin-top: 28px; }
 .settings__dev-summary { list-style: none; padding: 0 2px 8px; color: var(--text-3); }
 .settings__dev-summary::-webkit-details-marker { display: none; }

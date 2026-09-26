@@ -1,10 +1,17 @@
 //! Agent runs for the desktop app: the Core bridge the orchestrator
-//! drives, the single active run, and model settings + API key storage.
+//! drives, the single active run, which planner a run uses (Pegoles
+//! Local by default, a cloud provider only if the user chose one), and
+//! the cloud API key storage.
+//!
+//! Every provider is an untrusted planner behind the same `Planner`
+//! trait: the runner, Core's executor and Pegoles Policy are identical
+//! whichever one proposes the actions.
 //!
 //! The API key lives in the macOS Keychain (or `ANTHROPIC_API_KEY`). It
 //! never reaches the webview (the UI only learns whether one is set), is
-//! never logged, and never enters the guest: it is only an HTTPS header
-//! on requests to the Anthropic API.
+//! never logged, never enters the guest, and never reaches the local
+//! model worker (which runs with a cleared environment): it is only an
+//! HTTPS header on requests to the Anthropic API.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,12 +19,13 @@ use std::sync::{Arc, Mutex};
 use pegoles_agent::anthropic::{
     AnthropicConfig, AnthropicPlanner, DEFAULT_EFFORT, DEFAULT_MODEL, EFFORTS, SUPPORTED_MODELS,
 };
-use pegoles_agent::{run_task, CoreAccess, CoreComputer, RunLimits};
+use pegoles_agent::{run_task, CoreAccess, CoreComputer, Planner, RunLimits};
 use pegoles_core::{CancellationToken, ComputerRegistry, EventBus, TaskManager};
 use pegoles_protocol::{TaskId, TaskStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{lock_state, SharedState};
+use crate::local::LocalModels;
 
 /// Core access for the orchestrator: one short lock per call, history
 /// synced after, poison-tolerant.
@@ -79,6 +87,16 @@ impl AgentSupervisor {
 
 // --- settings --------------------------------------------------------------
 
+/// Which planner proposes actions. Local is the default: the core product
+/// never needs a cloud account.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    Local,
+    Anthropic,
+}
+
+/// Anthropic model settings (the cloud provider's own choices).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelSettings {
     pub model: String,
@@ -106,19 +124,66 @@ impl ModelSettings {
     }
 }
 
+/// Everything about "who plans", persisted in `settings.json` (never a
+/// secret).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IntelligenceSettings {
+    pub provider: Provider,
+    pub local_model: String,
+    pub anthropic: ModelSettings,
+}
+
+impl Default for IntelligenceSettings {
+    fn default() -> Self {
+        Self {
+            provider: Provider::Local,
+            local_model: pegoles_inference::Catalog::builtin().default_model,
+            anthropic: ModelSettings::default(),
+        }
+    }
+}
+
+impl IntelligenceSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        self.anthropic.validate()?;
+        if pegoles_inference::Catalog::builtin()
+            .get(&self.local_model)
+            .is_none()
+        {
+            return Err(format!("unknown local model {:?}", self.local_model));
+        }
+        Ok(())
+    }
+
+    /// Read `settings.json`, accepting the pre-local format
+    /// (`{"model","effort"}` = Anthropic settings) without switching the
+    /// user away from the local default.
+    fn parse(raw: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+        let s = if v.get("provider").is_some() {
+            serde_json::from_value::<Self>(v).ok()?
+        } else {
+            Self {
+                anthropic: serde_json::from_value::<ModelSettings>(v).ok()?,
+                ..Self::default()
+            }
+        };
+        s.validate().is_ok().then_some(s)
+    }
+}
+
 fn settings_path() -> PathBuf {
     pegoles_computer::pegoles_data_dir().join("settings.json")
 }
 
-pub fn load_settings() -> ModelSettings {
+pub fn load_settings() -> IntelligenceSettings {
     std::fs::read_to_string(settings_path())
         .ok()
-        .and_then(|raw| serde_json::from_str::<ModelSettings>(&raw).ok())
-        .filter(|s| s.validate().is_ok())
+        .and_then(|raw| IntelligenceSettings::parse(&raw))
         .unwrap_or_default()
 }
 
-pub fn save_settings(settings: &ModelSettings) -> Result<(), String> {
+pub fn save_settings(settings: &IntelligenceSettings) -> Result<(), String> {
     settings.validate()?;
     let path = settings_path();
     if let Some(dir) = path.parent() {
@@ -223,9 +288,9 @@ pub fn start_run(
     shared: SharedState,
     bus: EventBus,
     supervisor: AgentSupervisor,
+    local: LocalModels,
     task: TaskId,
 ) -> Result<(), String> {
-    let (key, _) = load_api_key().ok_or("Connect a model in Settings first.")?;
     let settings = load_settings();
     let objective = {
         let guard = lock_state(&shared);
@@ -235,6 +300,20 @@ pub fn start_run(
         }
         t.title.clone()
     };
+    // Build the planner before claiming the run slot: a missing model or
+    // key is an immediate, explained refusal.
+    let mut planner: Box<dyn Planner> = match settings.provider {
+        Provider::Local => Box::new(local.planner(&settings.local_model)?),
+        Provider::Anthropic => {
+            let (key, _) = load_api_key()
+                .ok_or("Connect a model in Settings first: add an Anthropic key or switch to Pegoles Local.")?;
+            Box::new(AnthropicPlanner::new(AnthropicConfig::new(
+                key,
+                &settings.anthropic.model,
+                &settings.anthropic.effort,
+            )))
+        }
+    };
     let cancel = supervisor.claim(task)?;
     let slot = supervisor.clone();
     std::thread::Builder::new()
@@ -242,13 +321,12 @@ pub fn start_run(
         .spawn(move || {
             // Frees the run slot even if the run panics.
             let _slot = SlotGuard(slot, task);
-            let mut planner =
-                AnthropicPlanner::new(AnthropicConfig::new(key, &settings.model, &settings.effort));
+            let _use = local.in_use();
             let computer = CoreComputer::new(AppCore(shared), bus);
             let _report = run_task(
                 task,
                 &objective,
-                &mut planner,
+                planner.as_mut(),
                 &computer,
                 &RunLimits::default(),
                 &cancel,
@@ -280,6 +358,27 @@ mod tests {
         let err = validate_api_key("sk-ant-api03-abc def-ghijklmnopqrstu").unwrap_err();
         assert!(!err.contains("sk-ant"));
         assert!(validate_api_key("sk-ant-api03-abcdefghijk\r\nX-Evil: 1").is_err());
+    }
+
+    #[test]
+    fn local_is_the_default_and_old_settings_keep_it() {
+        assert_eq!(IntelligenceSettings::default().provider, Provider::Local);
+        let old = r#"{"model":"claude-sonnet-5","effort":"low"}"#;
+        let s = IntelligenceSettings::parse(old).unwrap();
+        assert_eq!(s.provider, Provider::Local);
+        assert_eq!(s.anthropic.model, "claude-sonnet-5");
+        let chosen = serde_json::to_string(&IntelligenceSettings {
+            provider: Provider::Anthropic,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            IntelligenceSettings::parse(&chosen).unwrap().provider,
+            Provider::Anthropic
+        );
+        assert!(IntelligenceSettings::parse(r#"{"provider":"openai"}"#).is_none());
+        let bad_local = r#"{"provider":"local","local_model":"../../etc","anthropic":{"model":"claude-opus-5","effort":"high"}}"#;
+        assert!(IntelligenceSettings::parse(bad_local).is_none());
     }
 
     #[test]

@@ -22,8 +22,13 @@ export interface StatusPayload {
   display_setup_error: string | null;
   control_owner: "none" | "agent" | "user";
   core: string;
-  /** An Anthropic API key is available (Keychain or ANTHROPIC_API_KEY). */
+  /**
+   * The chosen provider can run a task now: Pegoles Local is installed and
+   * its runtime is ready, or (with Anthropic chosen) a key is available.
+   */
   model: "configured" | "not_configured";
+  /** Who plans: Pegoles Local on this Mac (the default) or Anthropic. */
+  provider: Provider;
   /** The task an agent run is working on right now, if any. */
   active_task: string | null;
   backend: "mock" | "real";
@@ -209,6 +214,70 @@ export interface ModelSettings {
   readonly efforts: readonly string[];
 }
 
+/** Who plans: Pegoles Local (on this Mac, the default) or Anthropic (cloud, optional). */
+export type Provider = "local" | "anthropic";
+
+/** One model Pegoles Local can run, as Core's catalog and model store report it. */
+export interface LocalModelInfo {
+  readonly id: string;
+  readonly display_name: string;
+  readonly family: string;
+  readonly parameters: string;
+  readonly quantization: string;
+  readonly size_bytes: number;
+  readonly license: string;
+  readonly source: string;
+  readonly state: "not_installed" | "partial" | "installed" | "invalid";
+  /** Bytes already on disk while `state` is `partial` (a retry resumes from here). */
+  readonly partial_bytes: number | null;
+  readonly invalid_reason: string | null;
+  readonly downloadable: boolean;
+  readonly recommended_min_ram_gb: number | null;
+}
+
+export type InstallPhase = "idle" | "downloading" | "verifying" | "finalizing" | "ready" | "failed" | "cancelled";
+export type InstallErrorKind = "disk_space" | "network" | "corrupted" | "other";
+
+/** The latest local-model setup job this session (also the `pegoles://model-install` payload). */
+export interface ModelInstallStatus {
+  readonly model: string;
+  readonly phase: InstallPhase;
+  readonly done_bytes: number;
+  readonly total_bytes: number;
+  /** Plain language, safe to show as text. */
+  readonly error: string | null;
+  readonly error_kind: InstallErrorKind | null;
+}
+
+export interface LocalRuntime {
+  /** The inference runtime is present on this Mac. */
+  readonly runtime_ready: boolean;
+  /** Plain-language reason when it isn't. */
+  readonly runtime_problem: string | null;
+  /** The model loaded in the worker right now (running locally). */
+  readonly loaded_model: string | null;
+  /** Measured memory of the running worker. */
+  readonly worker_footprint_bytes: number | null;
+  readonly default_model: string;
+  readonly models: readonly LocalModelInfo[];
+  readonly install: ModelInstallStatus | null;
+  readonly chip: string | null;
+  readonly memory_bytes: number;
+  readonly apple_silicon: boolean;
+}
+
+/** Everything about who plans, as Core reports it. Never contains a secret. */
+export interface Intelligence {
+  readonly provider: Provider;
+  /** The chosen local model (the catalog default until someone picks another). */
+  readonly local_model: string;
+  readonly local: LocalRuntime;
+  readonly anthropic: ModelSettings;
+}
+
+/** Emitted ~4×/s while downloading and on every phase change. */
+export const MODEL_INSTALL_EVENT = "pegoles://model-install";
+
 export const api = {
   createTask: (title: string) => invoke<AgentTask>("create_task", { title }),
   listTasks: () => invoke<AgentTask[]>("list_tasks"),
@@ -221,6 +290,15 @@ export const api = {
   setApiKey: (key: string) => invoke<ModelSettings>("set_api_key", { key }),
   clearApiKey: () => invoke<ModelSettings>("clear_api_key"),
   setModelSettings: (model: string, effort: string) => invoke<ModelSettings>("set_model_settings", { model, effort }),
+  getIntelligence: () => invoke<Intelligence>("get_intelligence"),
+  /** Choose who plans; `localModel` also changes the chosen local model. */
+  setProvider: (provider: Provider, localModel?: string) =>
+    invoke<Intelligence>("set_provider", { provider, localModel: localModel ?? null }),
+  /** Download, verify and install a local model (default: the chosen one). Resumes a partial download. */
+  installLocalModel: (model?: string) => invoke<Intelligence>("install_local_model", { model: model ?? null }),
+  cancelLocalModelInstall: () => invoke<Intelligence>("cancel_local_model_install"),
+  /** Removes the model and any partial download. Refused while a task runs. */
+  removeLocalModel: (model: string) => invoke<Intelligence>("remove_local_model", { model }),
   suggestedEffects: () => invoke<{ tier: EffectsTier }>("suggested_effects"),
   setDisplayGeometry: (geometry: DisplayGeometry) => invoke("display_set_geometry", { geometry }),
   detachDisplay: () => invoke("display_detach"),

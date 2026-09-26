@@ -1,15 +1,16 @@
 import { useEffect, type Ref } from "react";
 import type { ComputerModel } from "../state/computerModel";
 import type { ModelSettingsState } from "../state/useModelSettings";
+import type { IntelligenceState } from "../state/useIntelligence";
 import type { HostCapabilities, StatusPayload } from "../lib/tauri";
 import { hostLabel, shortcutModifier } from "../lib/format";
 import { SegmentedControl } from "../ui/SegmentedControl";
-import { ModelSection } from "./ModelSection";
+import { IntelligenceSection } from "./IntelligenceSection";
 import { Row, Section } from "./settingsParts";
 
 export type QualityChoice = "auto" | "full" | "reduced";
-/** A section another surface points at (Home's safety line, the composer's model chip). */
-export type SettingsAnchor = "security" | "model";
+/** A section another surface points at (Home's safety line, the composer's model chip, a task waiting for a model). */
+export type SettingsAnchor = "security" | "intelligence";
 
 export const QUALITY_SEGMENTS = [
   { value: "auto", label: "Auto" },
@@ -24,6 +25,8 @@ export interface SettingsViewProps {
   readonly status: StatusPayload | null;
   readonly host: HostCapabilities | null;
   readonly computer: ComputerModel;
+  readonly intelligence: IntelligenceState;
+  /** The cloud provider's key, model and effort. */
   readonly model: ModelSettingsState;
   readonly quality: QualityChoice;
   readonly resolvedQuality: "full" | "reduced";
@@ -77,7 +80,7 @@ export function SettingsView(props: SettingsViewProps) {
         </Row>
       </Section>
 
-      <ModelSection id="settings-model" native={props.native} model={props.model} />
+      <IntelligenceSection id="settings-intelligence" native={props.native} intelligence={props.intelligence} model={props.model} />
 
       <Section id="settings-appearance" title="Appearance">
         <Row label="Motion quality" hint={props.quality === "auto" ? `Auto is using ${props.resolvedQuality === "full" ? "Full" : "Reduced"} on this Mac.` : "Full renders Pegoles in 3D. Reduced keeps it light."}>

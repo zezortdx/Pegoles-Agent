@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod commands;
+pub mod local;
 #[cfg(target_os = "macos")]
 mod native_display;
 pub mod state;
@@ -54,6 +55,11 @@ macro_rules! app_handlers {
             commands::set_api_key,
             commands::clear_api_key,
             commands::set_model_settings,
+            commands::get_intelligence,
+            commands::set_provider,
+            commands::install_local_model,
+            commands::cancel_local_model_install,
+            commands::remove_local_model,
             commands::cancel_agent_input,
             commands::capture_screen,
             commands::input_status,
@@ -72,6 +78,7 @@ pub fn run() {
         .manage(app_state)
         .manage(status_cache)
         .manage(supervisor)
+        .manage(local::LocalModels::default())
         .manage(commands::ScriptCancel::default());
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(app_handlers!(
@@ -117,18 +124,25 @@ pub fn run() {
             // tick when a command holds the state.
             let cache = app.state::<StatusCache>().inner().clone();
             let agent = app.state::<AgentSupervisor>().inner().clone();
+            let local = app.state::<local::LocalModels>().inner().clone();
             let pump_state = shared.clone();
+            let pump_local = local.clone();
             std::thread::Builder::new()
                 .name("pegoles-pump".into())
                 .spawn(move || loop {
                     std::thread::sleep(PUMP_INTERVAL);
                     commands::pump_if_idle(&pump_state, &cache, &agent);
+                    pump_local.idle_check();
                 })?;
-            // Model availability for the status payload (Keychain read off
-            // the main thread).
+            // Planner readiness for the status payload (Keychain read and
+            // model checks off the main thread), then verify the local
+            // model's bytes so the first task does not wait for hashing.
             std::thread::spawn(move || {
-                let configured = agent::load_api_key().is_some();
-                commands::lock_state(&shared).model_configured = configured;
+                commands::refresh_readiness(&shared, &local);
+                let settings = agent::load_settings();
+                if settings.provider == agent::Provider::Local {
+                    local.prewarm_verify(&settings.local_model);
+                }
             });
             Ok(())
         })
@@ -142,6 +156,7 @@ pub fn run() {
             // native/macos/pegoles-vm-host/Sources/Host.swift).
             app.state::<AgentSupervisor>().cancel(None);
             app.state::<commands::ScriptCancel>().trip();
+            app.state::<local::LocalModels>().shutdown();
         }
     });
 }

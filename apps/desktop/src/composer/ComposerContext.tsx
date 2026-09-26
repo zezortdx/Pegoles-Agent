@@ -26,12 +26,15 @@ export function ComposerStrip({ computer, computerOpen, onComputer }: ComposerSt
 export interface ComposerControlsProps {
   readonly modelReady: boolean;
   readonly modelName?: string;
+  /** While not ready: what would make it ready ("Set up Pegoles Local"). Without it the chip says there is no model. */
+  readonly setupLabel?: string;
   readonly onSafety: () => void;
   readonly onModel: () => void;
 }
 
 /** How the job runs: the fixed safety rules and the model, as facts you can open. */
-export function ComposerControls({ modelReady, modelName, onSafety, onModel }: ComposerControlsProps) {
+export function ComposerControls({ modelReady, modelName, setupLabel, onSafety, onModel }: ComposerControlsProps) {
+  const missing = setupLabel ? `${setupLabel.replace(/…$/, "")}. Open settings` : "No model connected. Open settings";
   return (
     <>
       <button type="button" className="composer-chip" onClick={onSafety} title="Pegoles acts only inside its own isolated computer. See the rules.">
@@ -39,9 +42,9 @@ export function ComposerControls({ modelReady, modelName, onSafety, onModel }: C
         <span>Stays inside its computer</span>
       </button>
       <button type="button" className="composer-chip" data-tone={modelReady ? undefined : "attention"} onClick={onModel}
-        aria-label={modelReady ? `Model: ${modelName ?? "connected"}` : "No model connected. Open settings"}>
+        aria-label={modelReady ? `Model: ${modelName ?? "connected"}` : missing}>
         {modelReady ? <ModelIcon size={14} /> : <AlertCircleIcon size={14} />}
-        <span>{modelReady ? modelName ?? "Model connected" : "No model"}</span>
+        <span>{modelReady ? modelName ?? "Model connected" : setupLabel ?? "No model"}</span>
       </button>
     </>
   );

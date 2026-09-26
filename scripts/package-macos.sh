@@ -17,6 +17,10 @@ pnpm --filter @pegoles/desktop tauri build --bundles app
 APP="$ROOT/target/release/bundle/macos/Pegoles Agent.app"
 [ -d "$APP" ] || { echo "bundle not found at $APP"; exit 1; }
 cp native/macos/pegoles-vm-host/.build/release/pegoles-vm-host "$APP/Contents/MacOS/pegoles-vm-host"
+# Pegoles Local worker script (the app looks in Resources/workers/mlx).
+# The Python runtime itself is not bundled yet: see docs/PROJECT_STATE.md.
+mkdir -p "$APP/Contents/Resources/workers/mlx"
+cp workers/mlx/pegoles_mlx_worker.py workers/mlx/requirements.lock "$APP/Contents/Resources/workers/mlx/"
 
 sign() {
   if [ "$IDENTITY" = "-" ]; then

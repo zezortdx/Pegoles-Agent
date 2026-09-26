@@ -1,14 +1,14 @@
 import type { ReactNode } from "react";
 
-/** One labelled row of a settings group. */
-export function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+/** One labelled row of a settings group. `wrap` lets a long value (a path, a source) break instead of overflowing. */
+export function Row({ label, hint, wrap = false, children }: { label: string; hint?: string; wrap?: boolean; children: ReactNode }) {
   return (
     <div className="setting" role="listitem">
       <div className="setting__text">
         <span className="setting__label">{label}</span>
         {hint && <span className="setting__hint">{hint}</span>}
       </div>
-      <div className="setting__value">{children}</div>
+      <div className={wrap ? "setting__value setting__value--wrap" : "setting__value"}>{children}</div>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import type { PresenceMode } from "../presence";
 import { describeAction, describePast } from "../lib/events";
 import { agentMessageOf, capabilityFor, firstLine, requestOf, type Capability } from "../lib/execution";
 import type { ActionRequestWire, AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
+import { stopReason } from "./errors";
 
 /**
  * VisualStateAdapter: real Core state in, what Pegoles looks like out.
@@ -25,6 +26,14 @@ export interface ActionStep {
 /** Why a pending task hasn't started: no model yet, ready to start, or Pegoles is busy with another task. */
 export type StartState = "needs-model" | "ready" | "busy";
 
+/** What a task that needs a model waits for: Pegoles Local set up (the default), or a key for the chosen cloud model. */
+export type ModelNeed = "local-model" | "cloud-key";
+
+export const NEEDS_MODEL_DETAIL: Record<ModelNeed, string> = {
+  "local-model": "Pegoles needs its local model to work on tasks. Set up Pegoles Local (free, runs on this Mac), or connect a cloud model in Settings. The task is kept while the app is open, and its computer still works.",
+  "cloud-key": "Cloud mode needs an Anthropic API key. Add one in Settings, or switch back to Pegoles Local (free, runs on this Mac). The task is kept while the app is open, and its computer still works.",
+};
+
 export interface TaskActivity {
   readonly mode: PresenceMode;
   /** One human line: what Pegoles is doing or needs. */
@@ -42,6 +51,8 @@ export interface TaskActivity {
   readonly offerComputer?: boolean;
   /** Only for a task that hasn't started. */
   readonly start?: StartState;
+  /** With `start: "needs-model"`: what it waits for. */
+  readonly waitingFor?: ModelNeed;
   /** Why a finished run stopped, in Pegoles' words (first line). */
   readonly reason?: string;
   /** When a finished task reached its final state. */
@@ -123,8 +134,14 @@ export interface TaskActivityInputs {
   readonly starting?: boolean;
 }
 
+/** The chosen provider can run a task now (Core's word, never inferred). */
 export function modelConnected(status: StatusPayload | null): boolean {
   return status?.model === "configured";
+}
+
+/** Anthropic only when Core says it was chosen: Pegoles Local is the default. */
+export function modelNeed(status: StatusPayload | null): ModelNeed {
+  return status?.provider === "anthropic" ? "cloud-key" : "local-model";
 }
 
 /** The latest note of a kind Pegoles wrote for this task, as one line. */
@@ -157,7 +174,8 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
   if (task.status === "completed") return { ...base, mode: "done", headline: "Done", live: false, at: task.updated_at };
   if (task.status === "failed") {
     const stopped = [...recent].reverse().find((step) => step.outcome !== "done");
-    return { ...base, mode: "error", headline: "Couldn’t finish this", detail: stopped?.label, reason: latestNote(events, "error"), live: false, at: task.updated_at };
+    const note = latestNote(events, "error");
+    return { ...base, mode: "error", headline: "Couldn’t finish this", detail: stopped?.label, reason: note && stopReason(note), live: false, at: task.updated_at };
   }
   if (task.status === "cancelled") return { ...base, mode: "idle", headline: "Cancelled", reason: latestNote(events, "error"), live: false, at: task.updated_at };
 
@@ -191,9 +209,10 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
   // Not started. A start in flight, or a run claimed but not yet reported as running, is starting.
   if (starting || status?.active_task === task.id) return { ...base, mode: "thinking", headline: "Starting", live: true };
   if (!modelConnected(status)) {
+    const need = modelNeed(status);
     return {
       ...base, mode: "blocked", headline: "Can’t start yet", live: true, offerComputer: true, start: "needs-model",
-      detail: "Pegoles needs a model to work on tasks. Add an Anthropic API key in Settings, then start it. The task is kept while the app is open, and its computer still works.",
+      waitingFor: need, detail: NEEDS_MODEL_DETAIL[need],
     };
   }
   if (status?.active_task) {
