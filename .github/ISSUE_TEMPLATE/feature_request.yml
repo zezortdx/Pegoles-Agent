@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest a change or a new capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pegoles is deliberately narrow: the model only types, clicks and looks
+        inside an offline VM, and every action passes a deterministic policy.
+        Requests that give a model host access (files, shell, network, clipboard,
+        shared folders) are out of scope; see docs/SECURITY.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would like to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security impact
+      description: >-
+        Does this change what a model, the guest, or the webview can reach?
+        Which boundary in docs/SECURITY.md does it touch?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

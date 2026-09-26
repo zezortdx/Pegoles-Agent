@@ -28,3 +28,33 @@ frames/
 *.pem
 *.key
 secrets/
+*.p12
+*.p8
+*.pfx
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+.env.*
+notarytool/
+*.notarization.json
+# Python bytecode and local environments (runtimes are built into target/)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+mlx-venv/
+# Model weights (pinned in crates/pegoles-inference/catalog, never in git)
+*.safetensors
+*.gguf
+# Release artifacts (built by scripts/package-macos.sh into target/)
+release-artifacts/
+*.dmg
+*.cdx.json
+/SHA256SUMS
+/build-manifest.json
+# macOS metadata
+._*
+.AppleDouble

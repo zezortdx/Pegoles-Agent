@@ -10,8 +10,10 @@
 #   /etc/systemd/system/multi-user.target.wants/cloud-init.target
 #     -> /lib/systemd/system/cloud-init.target
 #
-# Method: privileged Docker (nbd + debugfs + e2fsck, all BUILD deps —
-# never runtime deps): journal replay, symlink, fsck-verify, detach.
+# Method: host e2fsprogs on the root filesystem at its byte offset
+# (debugfs/e2fsck `<disk>?offset=`, as patch-image.sh does): journal
+# replay, symlink, fsck-verify. No container, no nbd/loop device, no
+# privileges, no packages installed at build time.
 # Idempotent: exits 0 immediately if the symlink already exists.
 #
 # Usage: enable-cloud-init.sh <disk.img> [partition-offset-bytes]
@@ -19,21 +21,24 @@
 set -euo pipefail
 DISK="${1:?usage: enable-cloud-init.sh <disk.img> [offset]}"
 OFFSET="${2:-134217728}"
-NBD="${NBD_DEV:-/dev/nbd0}"
+E2FS="${E2FSPROGS:-/opt/homebrew/opt/e2fsprogs/sbin}"
+DEBUGFS="$E2FS/debugfs"
+E2FSCK="$E2FS/e2fsck"
+[ -x "$DEBUGFS" ] && [ -x "$E2FSCK" ] || { echo "need e2fsprogs (brew install e2fsprogs)" >&2; exit 1; }
+[ -f "$DISK" ] || { echo "missing disk: $DISK" >&2; exit 1; }
+case "$OFFSET" in '' | *[!0-9]*) echo "offset must be a byte count: $OFFSET" >&2; exit 1 ;; esac
 
-docker run --rm --privileged --platform linux/arm64 -v "$DISK:/d/disk.img:rw" debian:trixie-slim bash -c "
-  set -euo pipefail
-  apt-get update -q >/dev/null 2>&1 && apt-get install -y -q qemu-utils e2fsprogs >/dev/null 2>&1
-  qemu-nbd --disconnect $NBD 2>/dev/null || true
-  sleep 1
-  qemu-nbd -f raw -c $NBD --offset=$OFFSET /d/disk.img
-  sleep 2
-  LINK=\$(debugfs -R 'ls -l /etc/systemd/system/multi-user.target.wants' $NBD 2>/dev/null | tr ' ' '\n' | grep -c cloud-init.target || true)
-  if [ \"\$LINK\" -ge 1 ]; then echo 'already enabled'; qemu-nbd --disconnect $NBD; exit 0; fi
-  e2fsck -y -f $NBD >/dev/null 2>&1 || true
-  debugfs -w -R 'symlink /etc/systemd/system/multi-user.target.wants/cloud-init.target /lib/systemd/system/cloud-init.target' $NBD
-  debugfs -R 'ls -l /etc/systemd/system/multi-user.target.wants' $NBD | tr ' ' '\n' | grep cloud-init.target
-  e2fsck -n -f $NBD 2>&1 | tail -1
-  qemu-nbd --disconnect $NBD
-"
+FS="$DISK?offset=$OFFSET"
+WANTS=/etc/systemd/system/multi-user.target.wants
+# grep reads all input (no -q): an early exit would SIGPIPE the pipeline.
+has_link() { "$DEBUGFS" -R "ls -l $WANTS" "$FS" 2>/dev/null | tr -s ' \t' '\n' | grep -x 'cloud-init.target' >/dev/null; }
+
+if has_link; then
+  echo "already enabled"
+  exit 0
+fi
+"$E2FSCK" -y -f "$FS" >/dev/null 2>&1 || true
+"$DEBUGFS" -w -R "symlink $WANTS/cloud-init.target /lib/systemd/system/cloud-init.target" "$FS"
+has_link || { echo "symlink not present after write" >&2; exit 1; }
+"$E2FSCK" -n -f "$FS" 2>&1 | tail -1
 echo "cloud-init enabled on $DISK"

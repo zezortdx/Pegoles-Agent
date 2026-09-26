@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
-# Reproducible Debian package bundle for Pegoles Guest Image v2.
+# Debian package bundle for Pegoles Guest Image v2.
 # BUILD TOOLING ONLY (Docker + official apt). The runtime stays offline:
 # Debian's apt verifies signed InRelease metadata inside the disposable
 # container; only the resulting verified .debs land on the seed ISO.
 #
 # Usage: bash scripts/build-guest-image/build-deb-bundle.sh [OUT_DIR]
-# Output: $OUT_DIR/*.deb + VERSIONS.txt (pinned name/version/arch).
+#   (default OUT_DIR: a fresh private temp dir)
+# Output: $OUT_DIR/*.deb + VERSIONS.txt (name/version/arch of every .deb).
 set -euo pipefail
-OUT="${1:-/tmp/pgv2-debs}"
-mkdir -p "$OUT"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/build-guest-image/common.sh
+. "$ROOT/scripts/build-guest-image/common.sh"
+OUT="$(out_dir "${1:-}")"
 
-# Pinned minimal graphical stack (trixie arm64, 2026-09). Chromium is
-# NOT included (Phase 5.1 needs no browser). Versions from apt policy;
-# bump deliberately with a manifest note, never floating.
-TOP_PKGS="weston foot fonts-dejavu-core xkb-data"
+# Minimal graphical stack (trixie arm64, 2026-09). Chromium is NOT
+# included (Phase 5.1 needs no browser). The top-level packages are pinned
+# to exact versions: when the archive has moved on, apt fails instead of
+# silently taking a newer build; bump deliberately with a manifest note.
+# Their dependency closure is whatever the signed archive serves at build
+# time and is recorded, per .deb, in VERSIONS.txt (sealed with the image).
+TOP_PKGS="weston=14.0.2-1 foot=1.21.0-2 fonts-dejavu-core=2.37-8 xkb-data=2.42-1"
 
-docker run --rm --platform linux/arm64 -v "$OUT:/out" debian:trixie-slim bash -c "
+docker run --rm --platform linux/arm64 -v "$OUT:/out" "$DEBIAN_IMAGE" bash -c "
   set -euo pipefail
   apt-get update -q
   rm -f /out/*.deb
@@ -26,6 +32,6 @@ docker run --rm --platform linux/arm64 -v "$OUT:/out" debian:trixie-slim bash -c
     dpkg-deb -f \"\$f\" Package Version Architecture | tr '\n' ' '; echo
   done | sort > /out/VERSIONS.txt
 "
-echo "bundle: $(ls "$OUT"/*.deb | wc -l) debs, $(du -sh "$OUT" | cut -f1)"
+echo "bundle at $OUT: $(find "$OUT" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ') debs, $(du -sh "$OUT" | cut -f1)"
 echo "pinned:"
-grep -E "^(weston|foot|fonts-dejavu-core|xkb-data|seatd|libseat1|libinput10|libxkbcommon0) " "$OUT/VERSIONS.txt" || true
+grep -E "^Package: (weston|foot|fonts-dejavu-core|xkb-data|seatd|libseat1|libinput10|libxkbcommon0) " "$OUT/VERSIONS.txt" || true

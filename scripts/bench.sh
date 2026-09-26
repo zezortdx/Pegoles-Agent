@@ -10,16 +10,18 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-OUT="${1:-/tmp/pegoles-bench.txt}"
-
 if [[ -z "${PEGOLES_VM_HOST:-}" ]]; then
   echo "set PEGOLES_VM_HOST to the signed helper binary" >&2
   exit 2
 fi
+# Report and RSS samples live in private mktemp files (a fixed /tmp name
+# could be pre-planted by another local account as a symlink that tee and
+# the sampler would then write through). The report is kept; the samples
+# are removed on exit.
+OUT="${1:-$(mktemp "${TMPDIR:-/tmp}/pegoles-bench.XXXXXX")}"
 
 # Sample helper RSS in the background while the e2e runs.
-SAMPLES=/tmp/pegoles-bench-rss.txt
-: > "$SAMPLES"
+SAMPLES="$(mktemp "${TMPDIR:-/tmp}/pegoles-bench-rss.XXXXXX")"
 (
   while true; do
     RSS=$(ps -ax -o pid=,rss=,command= | awk '/pegoles-vm-host$/ {print $2}' | head -1)
@@ -28,7 +30,7 @@ SAMPLES=/tmp/pegoles-bench-rss.txt
   done
 ) &
 SAMPLER=$!
-trap 'kill $SAMPLER 2>/dev/null || true' EXIT
+trap 'kill $SAMPLER 2>/dev/null || true; rm -f "$SAMPLES"' EXIT
 
 {
   echo "Pegoles benchmark — $(date -u +%Y-%m-%dT%H:%M:%SZ)"

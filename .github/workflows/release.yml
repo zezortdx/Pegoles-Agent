@@ -1,0 +1,301 @@
+name: release
+
+# Builds, signs (Developer ID), notarizes and staples the macOS app and
+# DMG for a version tag, writes SHA256SUMS / build manifest / SBOM,
+# attests build provenance, and creates a DRAFT GitHub release. Publishing
+# the draft is a manual step after review (docs/GITHUB_RELEASE_CHECKLIST.md).
+#
+# Trigger: pushing a tag v* (or "Run workflow" with a v* tag selected as
+# the ref). Three jobs:
+#   build    no secrets: gate, unsigned bundle, runtime sandbox tests,
+#            build manifest + SBOM. All dependency code runs here.
+#   sign     the protected `release` environment (required reviewer,
+#            deployments only from v* tags), the only place the signing and
+#            notarization secrets exist. It runs this repository's scripts
+#            and Apple's tools only: no dependency installs, no builds.
+#   publish  attests and creates a DRAFT release; a human publishes it.
+# No caches are restored or saved; dependencies install from lockfiles.
+# Every job checks out the exact commit that triggered the run.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Same pins as ci.yml; bump together.
+  RUST_TOOLCHAIN: "1.97.1"
+  NODE_VERSION: "24.21.0"
+  # Xcode on the macos-15 image (SDK the app is linked against).
+  DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+  SYFT_VERSION: "1.52.0"
+  SYFT_SHA256: 014d561b6d13059124155f74a6c5a9a99501f5e209313638dd884f39eb418ee6
+  # Apple "Developer ID Certification Authority" (G2) intermediate, so the
+  # signature carries the full chain even if the .p12 holds only the leaf.
+  APPLE_DEVID_G2_SHA256: f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a
+
+jobs:
+  build:
+    name: Build and gate (macOS arm64, no secrets)
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: macos-15
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      # No `ref:`: checkout pins the triggering commit (GITHUB_SHA).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag, commit and versions agree
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::bad tag: $TAG"; exit 1; }
+          VERSION="${TAG#v}"
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] \
+            || { echo "::error::checkout is not the triggering commit"; exit 1; }
+          json_version() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$1"; }
+          for pair in \
+            "apps/desktop/src-tauri/tauri.conf.json=$(json_version apps/desktop/src-tauri/tauri.conf.json)" \
+            "apps/desktop/src-tauri/Cargo.toml=$(sed -n 's/^version = "\(.*\)"/\1/p' apps/desktop/src-tauri/Cargo.toml | head -1)" \
+            "apps/desktop/package.json=$(json_version apps/desktop/package.json)" \
+            "package.json=$(json_version package.json)"; do
+            [ "${pair#*=}" = "$VERSION" ] || { echo "::error::${pair%%=*} has version ${pair#*=}, tag is $TAG"; exit 1; }
+          done
+          if grep -q UNPUBLISHED crates/pegoles-computer/catalog/images.json; then
+            echo "::error::crates/pegoles-computer/catalog/images.json still has UNPUBLISHED image URLs"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Pinned toolchains
+        run: |
+          set -euo pipefail
+          [ -d "$DEVELOPER_DIR" ] || { echo "::error::$DEVELOPER_DIR is not on this runner image"; exit 1; }
+          xcodebuild -version
+          swift --version
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09-12)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: Install syft (pinned by SHA-256)
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/syft"
+          mkdir -p "$dir"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+            -o "$dir/syft.tar.gz" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_darwin_arm64.tar.gz"
+          echo "$SYFT_SHA256  $dir/syft.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$dir/syft.tar.gz" -C "$dir" syft
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Install dependencies from lockfiles
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 > /dev/null
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Gate (scripts/check.sh)
+        run: bash scripts/check.sh
+
+      - name: Build the unsigned bundle (scripts/package-macos.sh build)
+        run: bash scripts/package-macos.sh build
+
+      - name: Worker sandbox tests against the bundled runtime (must not skip)
+        run: |
+          set -euo pipefail
+          out="$(cargo test --locked -p pegoles-inference -- sandbox_blocks_escapes stray_stdout_output_cannot_corrupt_the_protocol --nocapture 2>&1)"
+          echo "$out"
+          if echo "$out" | grep -q "skipped"; then echo "::error::sandbox tests skipped"; exit 1; fi
+
+      - name: Build manifest and SBOM (scripts/release/provenance.sh --no-dmg)
+        env:
+          PEGOLES_RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: bash scripts/release/provenance.sh --no-dmg target/release-artifacts
+
+      - name: Archive the unsigned bundle with its manifest and SBOM
+        run: |
+          set -euo pipefail
+          mkdir -p target/unsigned
+          tar -C target/release/bundle/macos -cpf target/unsigned/unsigned-app.tar "Pegoles Agent.app"
+          (cd target/unsigned && shasum -a 256 unsigned-app.tar > unsigned-app.tar.sha256)
+          cp target/release-artifacts/* target/unsigned/
+          ls -la target/unsigned
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-${{ steps.version.outputs.tag }}
+          path: target/unsigned/
+          if-no-files-found: error
+          retention-days: 3
+
+  sign:
+    name: Sign, notarize and staple (release environment)
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Same commit as the build
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "::error::not the triggering commit"; exit 1; }
+          [ -d "$DEVELOPER_DIR" ] || { echo "::error::$DEVELOPER_DIR is not on this runner image"; exit 1; }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-${{ needs.build.outputs.tag }}
+          path: ${{ runner.temp }}/unsigned
+      - name: Unpack the unsigned bundle
+        run: |
+          set -euo pipefail
+          u="$RUNNER_TEMP/unsigned"
+          (cd "$u" && shasum -a 256 -c unsigned-app.tar.sha256)
+          mkdir -p target/release/bundle/macos target/release-artifacts
+          tar -C target/release/bundle/macos -xpf "$u/unsigned-app.tar"
+          find "$u" -maxdepth 1 -type f ! -name 'unsigned-app.tar*' -exec cp {} target/release-artifacts/ \;
+          ls -la target/release-artifacts
+
+      - name: Import the signing certificate into a temporary keychain
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          for v in APPLE_CERTIFICATE_P12_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_SIGN_IDENTITY; do
+            [ -n "${!v:-}" ] || { echo "::error::secret $v is not set in the release environment"; exit 1; }
+          done
+          KEYCHAIN="$RUNNER_TEMP/pegoles-release.keychain-db"
+          echo "PEGOLES_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          CERT="$RUNNER_TEMP/devid.p12"
+          (umask 077 && printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT")
+          security import "$CERT" -k "$KEYCHAIN" -f pkcs12 -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$CERT"
+          G2="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+            -o "$G2" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          echo "$APPLE_DEVID_G2_SHA256  $G2" | shasum -a 256 -c -
+          security import "$G2" -k "$KEYCHAIN" || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          existing=()
+          while IFS= read -r k; do existing+=("$k"); done < <(security list-keychains -d user | tr -d '"' | sed 's/^ *//')
+          security list-keychains -d user -s "$KEYCHAIN" "${existing[@]}"
+          security find-identity -v -p codesigning "$KEYCHAIN" | grep -Fq "\"$APPLE_SIGN_IDENTITY\"" \
+            || { echo "::error::APPLE_SIGN_IDENTITY is not in the imported certificate"; exit 1; }
+
+      - name: Sign (scripts/package-macos.sh sign)
+        env:
+          PEGOLES_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+        run: bash scripts/package-macos.sh sign
+
+      - name: Notarize and staple (scripts/release/notarize.sh)
+        env:
+          PEGOLES_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+        run: bash scripts/release/notarize.sh
+
+      - name: Delete the temporary keychain
+        if: always()
+        run: |
+          if [ -n "${PEGOLES_KEYCHAIN:-}" ]; then
+            security delete-keychain "$PEGOLES_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/devid.p12" "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+
+      - name: Verify the distribution DMG
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: bash scripts/release/verify-artifact.sh "target/release-artifacts/Pegoles_${VERSION}_arm64.dmg" --distribution
+
+      - name: Checksums (scripts/release/provenance.sh --sums)
+        run: bash scripts/release/provenance.sh --sums target/release-artifacts
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ needs.build.outputs.tag }}
+          path: target/release-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    # No signing secrets here; this job only attests and drafts.
+    name: Attest and draft the GitHub release
+    needs: [build, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the draft release
+      id-token: write # Sigstore certificate for the attestation
+      attestations: write # store the provenance attestation
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.build.outputs.tag }}
+          path: dist
+      - name: Checksums match
+        working-directory: dist
+        run: sha256sum --strict -c SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.dmg
+            dist/SHA256SUMS
+      - name: Create the draft release (never published automatically)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
+          cat > notes.md <<EOF
+          Pegoles Agent $VERSION for macOS on Apple silicon (Developer ID signed, notarized, stapled).
+
+          See CHANGELOG.md for what changed.
+
+          Verify a download:
+
+              shasum -a 256 -c SHA256SUMS --ignore-missing
+              gh attestation verify Pegoles_${VERSION}_arm64.dmg --repo $GH_REPO
+              spctl --assess --type open --context context:primary-signature -v Pegoles_${VERSION}_arm64.dmg
+
+          build-manifest.json records the commit, toolchains and pinned inputs;
+          pegoles-${VERSION}.cdx.json is the CycloneDX SBOM.
+          EOF
+          gh release create "$TAG" --draft --verify-tag "${prerelease[@]}" \
+            --title "Pegoles Agent $VERSION" --notes-file notes.md dist/*

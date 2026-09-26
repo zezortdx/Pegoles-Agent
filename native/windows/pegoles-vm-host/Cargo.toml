@@ -2,6 +2,7 @@
 name = "pegoles-vm-host-windows"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Pegoles Windows VM host: HCS lifecycle + Hyper-V socket transport (Phase 3.6)"
 license = "MIT"
 

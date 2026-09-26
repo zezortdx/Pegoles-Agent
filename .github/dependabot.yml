@@ -1,0 +1,62 @@
+# Weekly, grouped version updates. Nothing is auto-merged: every
+# Dependabot PR goes through CI and review like any other change, and
+# lockfile diffs are read before merging.
+#
+# Not covered here, on purpose:
+# - workers/mlx/requirements.lock: hash-locked wheels regenerated with
+#   scripts/local-model/lock_runtime.py (a bump needs a runtime rebuild and
+#   the local benchmark).
+# - Docker images in scripts/build-guest-image/common.sh: pinned by digest,
+#   bumped deliberately together with a guest image rebuild.
+# - native/macos/pegoles-vm-host (Swift): Package.swift has no dependencies.
+# - Model weights: pinned by revision and SHA-256 in
+#   crates/pegoles-inference/catalog/models.json.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Let a new release age before it is proposed (malicious-publish window).
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      tauri:
+        patterns: ["tauri*", "wry", "tao"]
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    # The pnpm workspace root (pnpm-lock.yaml covers apps/desktop and packages/*).
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      tauri:
+        patterns: ["@tauri-apps/*"]
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]

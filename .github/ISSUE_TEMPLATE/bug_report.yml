@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in Pegoles does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issues do not belong here.** If the bug lets a model, a guest,
+        a web page or a file reach the host Mac, bypass policy, leak the API key,
+        or weaken signing/sandboxing, report it privately (see SECURITY.md).
+
+        Please remove anything private (API keys, file paths with your name,
+        screenshots of your own screen) before posting logs.
+  - type: input
+    id: version
+    attributes:
+      label: Pegoles version
+      description: From the About panel, or the DMG / tag name.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 15.6, MacBook Air M2 16 GB
+    validations:
+      required: true
+  - type: dropdown
+    id: planner
+    attributes:
+      label: Planner
+      options:
+        - Pegoles Local (on-device model)
+        - Claude (Anthropic API)
+        - Not relevant
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a computer
+        2. Give the objective "..."
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines (redacted). They are rendered as plain text.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go to private reporting).
+          required: true

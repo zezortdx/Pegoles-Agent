@@ -1,70 +1,279 @@
 name: ci
 
+# Pull requests and pushes to main. Nothing here boots a VM, downloads a
+# guest image or model, signs, or touches a secret: every job runs with a
+# read-only token on GitHub-hosted runners (never self-hosted).
+#
+# The reference platform is macOS on Apple silicon, so the full gate
+# (Rust incl. the Tauri shell, Swift helper, frontend) runs on macos-15
+# (arm64). The Linux/Windows jobs cover only crates that are proven to
+# build there (see the portability job).
+#
+# Caches are deliberately not used anywhere: a cache written by one run
+# can be restored by another ref, and the release workflow must never
+# consume anything a CI run produced.
+#
+# Actions are pinned to full commit SHAs (version in the comment);
+# Dependabot proposes updates (.github/dependabot.yml).
+
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
-# Phase 3.5: one matrix, three OSes. No job boots a real VM, downloads a
-# multi-hundred-MB image, or touches Hyper-V: this gate proves the
-# architecture stays portable (shared code + Windows skeleton compile and
-# behave on every platform). Swift stays macOS-only (Apple toolchain).
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The toolchain the gate is known green with (clippy lints change
+  # between releases). Bump deliberately, together with release.yml.
+  RUST_TOOLCHAIN: "1.97.1"
+  NODE_VERSION: "24.21.0"
+  # pnpm's version comes from "packageManager" in package.json.
+  # Xcode (macOS SDK, Swift) on the macos-15 image; same as release.yml.
+  # Ignored on Linux and Windows.
+  DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   rust:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    name: Rust (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09-12)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
-      # The workspace includes the Tauri shell; on Linux it links WebKitGTK.
-      - if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
-            libayatana-appindicator3-dev librsvg2-dev
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-
-  guest-cross:
-    # The guest runtime must compile for aarch64 Linux without a VM.
-    # `cargo check` needs no linker, so this runs on the macOS image.
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          targets: aarch64-unknown-linux-gnu
-      - run: cargo check -p pegoles-guest-runtime --target aarch64-unknown-linux-gnu
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      # pegoles-desktop builds with Tauri's custom-protocol feature, which
+      # embeds apps/desktop/dist at compile time: build the frontend first.
+      # Dependency lifecycle scripts are not run (only esbuild has one, and
+      # esbuild locates its platform binary without it).
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --filter @pegoles/desktop build
+      - run: xcodebuild -version && rustc --version && node --version && pnpm --version
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+
+  rust-release:
+    # Release-only code (cfg(not(debug_assertions)): the shipped IPC
+    # command set, image selection, policy/inference release paths) is
+    # compiled and tested here with the release profile.
+    name: Rust release profile (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09-12)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --filter @pegoles/desktop build
+      # pegoles-computer's tests assert the release behaviour of the
+      # debug-only overrides (image id, builder mode) and pin enforcement.
+      - run: cargo test --release --locked -p pegoles-policy -p pegoles-inference -p pegoles-computer
+      # The shipped desktop code (release IPC command set) must compile.
+      # Its tests call debug-only helpers (ScriptCancel::arm/disarm), so
+      # they run in the debug job only.
+      - run: cargo build --release --locked -p pegoles-desktop
 
   swift:
-    runs-on: macos-latest
+    name: Swift VM helper (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - run: swift build --package-path native/macos/pegoles-vm-host
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: xcodebuild -version && swift --version
+      - run: swift build -c release --package-path native/macos/pegoles-vm-host
 
   web:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: Frontend (lint, typecheck, test, build)
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: 9
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm --filter @pegoles/desktop lint
       - run: pnpm --filter @pegoles/desktop typecheck
       - run: pnpm --filter @pegoles/desktop test
+      - run: pnpm --filter @pegoles/ui typecheck
+      - run: pnpm --filter @pegoles/ui test
       - run: pnpm --filter @pegoles/desktop build
+
+  guest-cross:
+    # The guest runtime (and the dev input fixture) must compile for
+    # aarch64 Linux. `cargo check` needs no linker, so this runs on macOS.
+    name: Guest runtime (aarch64 Linux check)
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09-12)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-unknown-linux-gnu
+      - run: cargo check --locked -p pegoles-guest-runtime --all-targets --target aarch64-unknown-linux-gnu
+      - run: cargo check --locked --manifest-path guest/fixture/Cargo.toml --target aarch64-unknown-linux-gnu
+
+  portability:
+    # Only crates proven to build and pass here. The Tauri shell, the macOS
+    # embed and the VM backends are macOS-only today; the Windows HCS
+    # backend has never been compiled (docs/PROJECT_STATE.md), so
+    # pegoles-computer and everything above it are not built on Windows.
+    name: Portability (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            crates: >-
+              -p pegoles-protocol -p pegoles-policy -p pegoles-guest-proto
+              -p pegoles-core -p pegoles-computer -p pegoles-agent -p pegoles-inference
+          - os: windows-2025
+            crates: -p pegoles-protocol -p pegoles-policy -p pegoles-guest-proto
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09-12)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - run: cargo clippy --locked ${{ matrix.crates }} --all-targets -- -D warnings
+      - run: cargo test --locked ${{ matrix.crates }}
+      # The guest runtime is Linux code: run its unit tests natively. (Its
+      # Linux-only paths are not clippy-clean yet, so no clippy here.)
+      - if: runner.os == 'Linux'
+        run: cargo test --locked -p pegoles-guest-runtime
+
+  supply-chain:
+    name: Supply chain (cargo-deny, cargo-audit, pnpm audit, lockfiles)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      CARGO_DENY_VERSION: "0.20.2"
+      CARGO_AUDIT_VERSION: "0.22.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09-12)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install cargo-deny and cargo-audit (pinned, from their own lockfiles)
+        run: |
+          cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
+          cargo install --locked cargo-audit --version "$CARGO_AUDIT_VERSION"
+      # Advisories (vulnerabilities fail), licenses (deny.toml allow-list),
+      # bans, and sources (crates.io only: no git or other registries).
+      - run: cargo deny --locked check
+      # RustSec: vulnerabilities fail; unmaintained/unsound are printed.
+      - run: cargo audit
+      - name: npm lockfile resolves only to registry tarballs with integrity
+        run: |
+          bad="$(grep -nE '^\s+resolution:' pnpm-lock.yaml \
+            | grep -vE 'resolution: \{integrity: sha512-[A-Za-z0-9+/=]+\}$' || true)"
+          if [ -n "$bad" ]; then
+            echo "::error file=pnpm-lock.yaml::non-registry or integrity-less resolution"
+            echo "$bad"
+            exit 1
+          fi
+      - name: Python runtime lock pins every file by hash
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          text = open("workers/mlx/requirements.lock").read().replace("\\\n", " ")
+          reqs = [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+          bad = [l.split()[0] for l in reqs if not re.match(r"^[A-Za-z0-9_.-]+==\S+\s", l) or "--hash=sha256:" not in l]
+          if bad:
+              print("::error file=workers/mlx/requirements.lock::unpinned or unhashed:", ", ".join(bad))
+              sys.exit(1)
+          print(f"{len(reqs)} requirements, all pinned with hashes")
+          PY
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - run: pnpm audit --prod
+
+  hygiene:
+    # Workflow and build-script rules (SHA pins, permissions, timeouts,
+    # no caches, --locked/--frozen-lockfile, no privileged or unpinned
+    # containers, no fixed /tmp paths), actionlint, and shellcheck.
+    name: Workflow and script hygiene
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 .github/scripts/ci-hygiene.py
+      - name: actionlint (pinned by SHA-256)
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+            -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --strict -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      - name: shellcheck (errors)
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck -x -S error
