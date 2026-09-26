@@ -836,9 +836,20 @@ impl ComputerImageManager {
         match &source {
             BootSource::Derived(raw) => {
                 if enforce_pins {
-                    self.verify_pinned(&active_image_id())?;
+                    // Clone exactly the file that was just hashed against the
+                    // pin, never a path taken from the manifest on disk.
+                    let id = active_image_id();
+                    self.verify_pinned(&id)?;
+                    let pin = crate::image_release::release_image(&id).ok_or_else(|| {
+                        ComputerError::ImageVerificationFailed(format!("{id} has no pin"))
+                    })?;
+                    instantiate_from(
+                        &self.derived_dir_for(&id).join(&pin.disk.file_name),
+                        dest_disk,
+                    )?;
+                } else {
+                    instantiate_from(raw, dest_disk)?;
                 }
-                instantiate_from(raw, dest_disk)?;
             }
             BootSource::Official(_) => {
                 self.instantiate(computer_id, dest_disk)?;
@@ -1766,8 +1777,7 @@ mod tests {
             mgr.verify_pinned(id),
             Err(ComputerError::ImageVerificationFailed(_))
         ));
-        let saved = std::env::var(IMAGE_ID_ENV).ok();
-        std::env::remove_var(IMAGE_ID_ENV);
+        // (No env changes here: other tests read the image id concurrently.)
         let dest = dir.path().join("vm").join("disk.img");
         let refused = mgr.instantiate_boot_source_with(
             &ComputerId::new(),
@@ -1776,14 +1786,8 @@ mod tests {
             false,
             true,
         );
-        assert!(matches!(
-            refused,
-            Err(ComputerError::ImageVerificationFailed(_))
-        ));
+        assert!(refused.is_err(), "an unpinned image must not be cloned");
         assert!(!dest.exists(), "nothing is cloned from an unpinned image");
-        if let Some(v) = saved {
-            std::env::set_var(IMAGE_ID_ENV, v);
-        }
         // An id with no pin at all is refused too.
         assert!(mgr.verify_pinned("pegoles-base-9.9").is_err());
     }

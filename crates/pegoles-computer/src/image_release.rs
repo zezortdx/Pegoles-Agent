@@ -119,6 +119,18 @@ impl ReleaseImage {
         if !id_ok {
             return bad("invalid id");
         }
+        let archive_name_ok = !self.archive.file_name.is_empty()
+            && self.archive.file_name.len() <= 128
+            && !self.archive.file_name.starts_with('.')
+            && self
+                .archive
+                .file_name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            && self.archive.file_name.ends_with(".gz");
+        if !archive_name_ok {
+            return bad("invalid archive file name");
+        }
         if self.disk.file_name != "disk.raw" {
             return bad("disk file must be disk.raw");
         }
@@ -231,11 +243,13 @@ pub fn installed_matches_pin(dir: &Path, image: &ReleaseImage) -> bool {
     let Some(manifest) = manifest else {
         return false;
     };
-    let record_ok = manifest.artifacts.first().is_some_and(|a| {
-        a.file_name == image.disk.file_name
-            && a.sha512 == image.disk.sha512
-            && a.bytes == image.disk.bytes
-    });
+    let record_ok = manifest.artifacts.len() == 1
+        && manifest.artifacts[0].disk_format == DiskFormat::Raw
+        && manifest.artifacts.first().is_some_and(|a| {
+            a.file_name == image.disk.file_name
+                && a.sha512 == image.disk.sha512
+                && a.bytes == image.disk.bytes
+        });
     let disk_ok = fs::symlink_metadata(dir.join(&image.disk.file_name))
         .is_ok_and(|m| m.file_type().is_file() && m.len() == image.disk.bytes);
     manifest.image_id == image.id
@@ -411,14 +425,22 @@ pub struct HttpsSource {
     agent: ureq::Agent,
 }
 
+/// Bytes requested per HTTPS request: every request is short and bounded
+/// by the timeouts below, so a stalled host costs at most a minute and a
+/// cancel is honoured at least that often; progress is kept between them.
+const RANGE_BYTES: u64 = 8 << 20;
+
 impl Default for HttpsSource {
     fn default() -> Self {
+        use std::time::Duration;
         Self {
             agent: ureq::Agent::new_with_config(
                 ureq::Agent::config_builder()
                     .https_only(true)
                     .max_redirects(5)
-                    .timeout_connect(Some(std::time::Duration::from_secs(30)))
+                    .timeout_connect(Some(Duration::from_secs(30)))
+                    .timeout_recv_response(Some(Duration::from_secs(30)))
+                    .timeout_recv_body(Some(Duration::from_secs(60)))
                     .build(),
             ),
         }
@@ -432,10 +454,11 @@ impl ArchiveSource for HttpsSource {
                 "image URLs must be HTTPS".into(),
             ));
         }
-        let mut req = self.agent.get(url);
-        if offset > 0 {
-            req = req.header("Range", &format!("bytes={offset}-"));
-        }
+        let end = offset.saturating_add(RANGE_BYTES - 1);
+        let req = self
+            .agent
+            .get(url)
+            .header("Range", &format!("bytes={offset}-{end}"));
         let res = req
             .call()
             .map_err(|e| ComputerError::Backend(format!("image download failed: {e}")))?;
@@ -643,6 +666,9 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<()> {
     f.sync_all().map_err(io_err)
 }
 
+/// Consecutive attempts on one mirror that add no bytes before moving on.
+const MAX_STALLED_ATTEMPTS: u32 = 3;
+
 fn download(
     image: &ReleaseImage,
     source: &dyn ArchiveSource,
@@ -653,81 +679,98 @@ fn download(
     let total = image.archive.bytes;
     let mut last_err = None;
     for url in &image.archive.urls {
-        let mut have = match fs::symlink_metadata(part) {
-            Ok(m) if m.file_type().is_file() && m.len() <= total => m.len(),
-            Ok(_) => {
-                let _ = fs::remove_file(part);
-                0
-            }
-            Err(_) => 0,
-        };
-        if have == total {
-            return Ok(());
-        }
-        let (mut body, ranged) = match source.open(url, have) {
-            Ok(v) => v,
-            Err(e) => {
-                last_err = Some(e);
-                continue;
-            }
-        };
-        let mut out = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(part)
-            .map_err(io_err)?;
-        if !ranged {
-            have = 0;
-            out.set_len(0).map_err(io_err)?;
-        }
-        out.seek(SeekFrom::Start(have)).map_err(io_err)?;
-        let mut buf = vec![0u8; CHUNK];
-        let outcome = loop {
+        let mut stalled = 0;
+        while stalled < MAX_STALLED_ATTEMPTS {
             if cancel() {
-                break Err(cancelled());
+                return Err(cancelled());
             }
-            let n = match body.read(&mut buf) {
-                Ok(n) => n,
+            let mut have = match fs::symlink_metadata(part) {
+                Ok(m) if m.file_type().is_file() && m.len() <= total => m.len(),
+                Ok(_) => {
+                    let _ = fs::remove_file(part);
+                    0
+                }
+                Err(_) => 0,
+            };
+            if have == total {
+                return Ok(());
+            }
+            let before = have;
+            let (mut body, ranged) = match source.open(url, have) {
+                Ok(v) => v,
                 Err(e) => {
-                    break Err(ComputerError::Backend(format!(
-                        "image download interrupted: {e}"
-                    )))
+                    last_err = Some(e);
+                    stalled += 1;
+                    continue;
                 }
             };
-            if n == 0 {
-                break Ok(());
+            let mut out = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(part)
+                .map_err(io_err)?;
+            if !ranged && have > 0 {
+                // The server sent the whole file: start over.
+                have = 0;
+                out.set_len(0).map_err(io_err)?;
             }
-            if have + n as u64 > total {
-                // Never keep more bytes than the pin allows.
-                let _ = out.set_len(0);
-                break Err(ComputerError::ImageVerificationFailed(
-                    "image archive is larger than its pinned size".into(),
-                ));
-            }
-            if let Err(e) = out.write_all(&buf[..n]) {
-                break Err(io_err(e));
-            }
-            have += n as u64;
-            progress(InstallStage::Downloading, have, total);
-        };
-        out.sync_all().map_err(io_err)?;
-        match outcome {
-            Ok(()) if have == total => return Ok(()),
-            Ok(()) => {
-                last_err = Some(ComputerError::Backend(format!(
-                    "image download ended early ({have} of {total} bytes); retry to resume"
-                )))
-            }
-            Err(e) => {
-                if matches!(e, ComputerError::ImageVerificationFailed(_)) || cancel() {
-                    return Err(e);
+            out.seek(SeekFrom::Start(have)).map_err(io_err)?;
+            let mut buf = vec![0u8; CHUNK];
+            let outcome = loop {
+                if cancel() {
+                    break Err(cancelled());
                 }
-                last_err = Some(e);
+                let n = match body.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        break Err(ComputerError::Backend(format!(
+                            "image download interrupted: {e}"
+                        )))
+                    }
+                };
+                if n == 0 {
+                    break Ok(());
+                }
+                if have + n as u64 > total {
+                    // Never keep more bytes than the pin allows.
+                    let _ = out.set_len(0);
+                    break Err(ComputerError::ImageVerificationFailed(
+                        "image archive is larger than its pinned size".into(),
+                    ));
+                }
+                if let Err(e) = out.write_all(&buf[..n]) {
+                    break Err(io_err(e));
+                }
+                have += n as u64;
+                progress(InstallStage::Downloading, have, total);
+            };
+            out.sync_all().map_err(io_err)?;
+            match outcome {
+                Ok(()) if have == total => return Ok(()),
+                Ok(()) => {}
+                Err(e) => {
+                    if matches!(e, ComputerError::ImageVerificationFailed(_)) || cancel() {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+            // Ranged requests end early by design; only attempts that add
+            // nothing count towards giving up on this mirror.
+            if have > before {
+                stalled = 0;
+            } else {
+                stalled += 1;
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| ComputerError::Backend("no image download location".into())))
+    let have = fs::symlink_metadata(part).map(|m| m.len()).unwrap_or(0);
+    Err(last_err.unwrap_or_else(|| {
+        ComputerError::Backend(format!(
+            "image download stopped at {have} of {total} bytes; retry to resume"
+        ))
+    }))
 }
 
 fn unpack(
@@ -845,6 +888,7 @@ mod tests {
         cuts: AtomicUsize,
         honour_range: bool,
         fail_first_mirror: bool,
+        offline: std::sync::atomic::AtomicBool,
         requests: Mutex<Vec<(String, u64)>>,
     }
 
@@ -856,6 +900,7 @@ mod tests {
                 cuts: AtomicUsize::new(0),
                 honour_range: true,
                 fail_first_mirror: false,
+                offline: std::sync::atomic::AtomicBool::new(false),
                 requests: Mutex::new(Vec::new()),
             }
         }
@@ -887,6 +932,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((url.to_string(), offset));
+            if self.offline.load(Ordering::SeqCst) {
+                return Err(ComputerError::Backend("network down".into()));
+            }
             if self.fail_first_mirror && url.contains("mirror-a") {
                 return Err(ComputerError::Backend("mirror down".into()));
             }
@@ -970,9 +1018,44 @@ mod tests {
         let image = entry(&disk, &archive);
         let mut src = FakeSource::new(archive.clone());
         src.cut = archive.len() / 2;
-        src.cuts = AtomicUsize::new(2);
-        // First attempt: both mirrors cut mid-stream -> resumable error.
-        assert!(run(tmp.path(), &image, &src).is_err());
+        src.cuts = AtomicUsize::new(1);
+        // A stream cut mid-way is resumed with a ranged request right away.
+        run(tmp.path(), &image, &src).unwrap();
+        let reqs = src.requests.lock().unwrap();
+        assert!(
+            reqs.iter()
+                .any(|(_, off)| *off == (archive.len() / 2) as u64),
+            "{reqs:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_that_stops_adding_bytes_is_given_up_and_the_part_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let disk = fake_disk();
+        let archive = gz(&disk);
+        let image = entry(&disk, &archive);
+        let mut src = FakeSource::new(archive.clone());
+        src.cut = archive.len() / 3;
+        src.cuts = AtomicUsize::new(1);
+        // Cut once, then every mirror refuses: bounded attempts, then an error.
+        let first = install(
+            tmp.path(),
+            &image,
+            &src,
+            &mut |_, done, _| {
+                if done > 0 {
+                    src.offline.store(true, Ordering::SeqCst);
+                }
+            },
+            &|| false,
+        );
+        assert!(first.is_err());
+        let per_mirror = src.requests.lock().unwrap().len();
+        assert!(
+            per_mirror <= 1 + 2 * MAX_STALLED_ATTEMPTS as usize,
+            "{per_mirror} requests"
+        );
         let part = tmp
             .path()
             .join(".staging")
@@ -980,10 +1063,15 @@ mod tests {
             .join(format!("{}.part", image.archive.file_name));
         let partial = fs::metadata(&part).unwrap().len();
         assert!(partial > 0 && partial < archive.len() as u64);
-        // Retry resumes with a ranged request from the staged length.
+        // Back online: the next attempt resumes from the staged bytes.
+        src.offline.store(false, Ordering::SeqCst);
         run(tmp.path(), &image, &src).unwrap();
-        let reqs = src.requests.lock().unwrap();
-        assert!(reqs.iter().any(|(_, off)| *off == partial));
+        assert!(src
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, off)| *off == partial));
     }
 
     #[test]
