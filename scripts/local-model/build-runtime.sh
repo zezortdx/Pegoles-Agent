@@ -63,7 +63,7 @@ env -i PATH=/usr/bin:/bin HOME="$HOME" "$PY" -I -m pip install --quiet \
 # Strip what the worker never needs and what must not ship: installers,
 # console scripts with absolute shebangs, the test suite, GUI toolkits.
 rm -rf "$SITE"/pip "$SITE"/pip-* "$SITE"/setuptools "$SITE"/setuptools-* \
-  "$SITE"/_distutils_hack "$SITE"/distutils-precedence.pth "$SITE"/bin
+  "$SITE"/_distutils_hack "$SITE"/distutils-precedence.pth "${SITE:?}"/bin
 find "$STAGE/python/bin" -mindepth 1 ! -name python3.12 -exec rm -rf {} +
 # Their RECORD entries hash absolute shebangs (the build path): drop them so
 # the tree does not depend on where it was built.

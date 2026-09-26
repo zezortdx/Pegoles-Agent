@@ -2,20 +2,27 @@
 # Verify a built "Pegoles Agent.app" (or a DMG containing it) before it is
 # distributed. Fails on the first violated property.
 #
-#   bash scripts/release/verify-artifact.sh <app-or-dmg> [--distribution]
+#   bash scripts/release/verify-artifact.sh <app-or-dmg> [--signed|--distribution]
 #
 # Always checked: strict signature of the bundle, every Mach-O file signed,
 # the helper carries exactly the virtualization entitlement, the app and the
 # interpreter carry none, the bundled runtime and worker are present, no
 # file is group/other-writable, no symlink escapes the bundle, no
 # developer paths, venvs, keys or model weights are inside.
-# With --distribution additionally: Developer ID authority with a Team ID,
-# hardened runtime and secure timestamp on every Mach-O, Gatekeeper
-# assessment, and a stapled notarization ticket (DMG and app).
+# With --signed additionally: Developer ID authority with a Team ID,
+# hardened runtime and secure timestamp on every Mach-O (before
+# notarization). With --distribution also: Gatekeeper assessment and a
+# stapled notarization ticket (DMG and app).
 set -euo pipefail
-TARGET="${1:?usage: verify-artifact.sh <app-or-dmg> [--distribution]}"
+TARGET="${1:?usage: verify-artifact.sh <app-or-dmg> [--signed|--distribution]}"
 DIST=0
-[ "${2:-}" = "--distribution" ] && DIST=1
+SIGNED=0
+case "${2:-}" in
+  --distribution) DIST=1; SIGNED=1 ;;
+  --signed) SIGNED=1 ;;
+  "") ;;
+  *) echo "unknown option: $2" >&2; exit 2 ;;
+esac
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
@@ -64,7 +71,7 @@ done
 ok "entitlements (helper: virtualization only; app and interpreter: none)"
 
 TEAM=""
-if [ "$DIST" = 1 ]; then
+if [ "$SIGNED" = 1 ]; then
   TEAM="$(codesign -dv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
   [ -n "$TEAM" ] && [ "$TEAM" != "not set" ] || fail "no Team ID on the app"
   codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "^Authority=Developer ID Application:" \
@@ -77,13 +84,13 @@ while IFS= read -r -d '' f; do
   machos=$((machos + 1))
   info="$(codesign -dv --verbose=4 "$f" 2>&1)" || fail "unsigned Mach-O: $f"
   codesign --verify --strict "$f" 2>/dev/null || fail "invalid signature: $f"
-  if [ "$DIST" = 1 ]; then
+  if [ "$SIGNED" = 1 ]; then
     echo "$info" | grep -q "TeamIdentifier=$TEAM" || fail "different Team ID: $f"
     echo "$info" | grep -Eq "flags=0x[0-9a-f]*\(.*runtime" || fail "no hardened runtime: $f"
     echo "$info" | grep -q "^Timestamp=" || fail "no secure timestamp: $f"
   fi
 done < <(find "$APP" -type f -print0)
-ok "$machos Mach-O files signed$([ "$DIST" = 1 ] && echo ", hardened runtime, timestamped, Team $TEAM")"
+ok "$machos Mach-O files signed$([ "$SIGNED" = 1 ] && echo ", hardened runtime, timestamped, Team $TEAM")"
 
 bad="$(find "$APP" -perm -g+w -o -perm -o+w | head -5)"
 [ -z "$bad" ] || fail "group/other-writable files: $bad"
