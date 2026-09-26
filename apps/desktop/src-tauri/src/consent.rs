@@ -29,6 +29,48 @@ pub trait Consent: Send + Sync {
     fn api_key(&self, replacing: bool) -> Result<Option<String>, String>;
 }
 
+/// A prompt the page kept reopening after the person dismissed it.
+pub const PROMPT_PAUSED: &str =
+    "that macOS window was dismissed several times, so Pegoles won't show it again for a while (or until it restarts).";
+
+/// Declines of one native prompt. Each keeps it closed longer (30 s, then
+/// 2 min, then 10 min) and after four it stays closed until Pegoles
+/// restarts: a compromised page cannot wear the person down by reopening
+/// the question. Accepting resets it.
+#[derive(Debug, Default)]
+pub struct DeclineBackoff {
+    declines: usize,
+    last: Option<std::time::Instant>,
+}
+
+impl DeclineBackoff {
+    const WAITS: [std::time::Duration; 3] = [
+        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(120),
+        std::time::Duration::from_secs(600),
+    ];
+
+    /// Whether the prompt must not be shown at `now`.
+    pub fn closed(&self, now: std::time::Instant) -> bool {
+        match self.declines {
+            0 => false,
+            n if n > Self::WAITS.len() => true,
+            n => self
+                .last
+                .is_some_and(|t| now.saturating_duration_since(t) < Self::WAITS[n - 1]),
+        }
+    }
+
+    pub fn declined(&mut self, now: std::time::Instant) {
+        self.declines += 1;
+        self.last = Some(now);
+    }
+
+    pub fn accepted(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Managed state: the app's `Consent` (native alerts in the app).
 #[derive(Clone)]
 pub struct ConsentGate(pub Arc<dyn Consent>);
@@ -76,27 +118,23 @@ pub use native::NativeConsent;
 mod native {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use objc2::rc::Retained;
     use objc2::{MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSSecureTextField};
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-    use super::Consent;
+    use super::{Consent, DeclineBackoff, PROMPT_PAUSED};
     use crate::agent::Provider;
-
-    /// After the user declines the cloud planner, further requests are
-    /// refused for this long without showing anything, so a page cannot
-    /// re-open the question until a keystroke lands on it.
-    const CLOUD_DECLINE_COOLDOWN: Duration = Duration::from_secs(30);
 
     /// One alert at a time: a page can't stack prompts behind the one the
     /// user is reading.
     pub struct NativeConsent {
         app: tauri::AppHandle,
         open: AtomicBool,
-        cloud_declined_at: Mutex<Option<Instant>>,
+        cloud_backoff: Mutex<DeclineBackoff>,
+        key_backoff: Mutex<DeclineBackoff>,
     }
 
     struct Reopen<'a>(&'a AtomicBool);
@@ -112,7 +150,8 @@ mod native {
             Self {
                 app,
                 open: AtomicBool::new(false),
-                cloud_declined_at: Mutex::new(None),
+                cloud_backoff: Mutex::new(DeclineBackoff::default()),
+                key_backoff: Mutex::new(DeclineBackoff::default()),
             }
         }
 
@@ -157,14 +196,8 @@ mod native {
                 Provider::Anthropic => "Anthropic",
                 Provider::Local => return Ok(true),
             };
-            {
-                let declined = self
-                    .cloud_declined_at
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if declined.is_some_and(|t| t.elapsed() < CLOUD_DECLINE_COOLDOWN) {
-                    return Ok(false);
-                }
+            if lock(&self.cloud_backoff).closed(Instant::now()) {
+                return Err(PROMPT_PAUSED.to_string());
             }
             let allowed = self.ask(move |mtm| {
                 let alert = alert(
@@ -189,17 +222,20 @@ mod native {
                 }
                 alert.runModal() == NSAlertFirstButtonReturn
             })?;
-            if !allowed {
-                *self
-                    .cloud_declined_at
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            let mut backoff = lock(&self.cloud_backoff);
+            if allowed {
+                backoff.accepted();
+            } else {
+                backoff.declined(Instant::now());
             }
             Ok(allowed)
         }
 
         fn api_key(&self, replacing: bool) -> Result<Option<String>, String> {
-            self.ask(move |mtm| {
+            if lock(&self.key_backoff).closed(Instant::now()) {
+                return Err(PROMPT_PAUSED.to_string());
+            }
+            let key = self.ask(move |mtm| {
                 let alert = alert(
                     mtm,
                     if replacing {
@@ -221,8 +257,18 @@ mod native {
                 // Nothing lingers in the view once it closes.
                 field.setStringValue(&NSString::from_str(""));
                 key
-            })
+            })?;
+            let mut backoff = lock(&self.key_backoff);
+            match key {
+                Some(_) => backoff.accepted(),
+                None => backoff.declined(Instant::now()),
+            }
+            Ok(key)
         }
+    }
+
+    fn lock(m: &Mutex<DeclineBackoff>) -> std::sync::MutexGuard<'_, DeclineBackoff> {
+        m.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -398,5 +444,29 @@ mod tests {
         let busy = Scripted::new(Ok(false), Err("another one is open".into()));
         let result = enter_api_key(&busy, true, |_| panic!("nothing to store"));
         assert_eq!(result, Err("another one is open".to_string()));
+    }
+
+    #[test]
+    fn declines_close_a_prompt_for_longer_each_time_then_for_good() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut b = DeclineBackoff::default();
+        assert!(!b.closed(t0));
+        b.declined(t0);
+        assert!(b.closed(t0 + Duration::from_secs(29)));
+        assert!(!b.closed(t0 + Duration::from_secs(31)));
+        b.declined(t0);
+        assert!(b.closed(t0 + Duration::from_secs(119)));
+        assert!(!b.closed(t0 + Duration::from_secs(121)));
+        b.declined(t0);
+        assert!(b.closed(t0 + Duration::from_secs(599)));
+        assert!(!b.closed(t0 + Duration::from_secs(601)));
+        b.declined(t0);
+        assert!(
+            b.closed(t0 + Duration::from_secs(86_400)),
+            "closed until restart"
+        );
+        b.accepted();
+        assert!(!b.closed(t0));
     }
 }
