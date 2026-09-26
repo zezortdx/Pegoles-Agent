@@ -2,6 +2,7 @@
 name = "pegoles-protocol"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Shared serializable types for Pegoles Agent (desktop <-> core <-> computer <-> guest)"
 license = "MIT"
 
@@ -10,3 +11,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -2,9 +2,14 @@
 name = "pegoles-policy"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Pegoles Guard (phase 1): deterministic policy evaluation for structured actions"
 license = "MIT"
 
 [dependencies]
 pegoles-protocol = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }

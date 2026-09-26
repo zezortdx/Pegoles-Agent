@@ -46,14 +46,23 @@ pub enum PointerButton {
 }
 
 /// Structured action executed inside Pegoles Computer. NEVER the host.
-/// Unknown `type` tags fail to deserialize: deny by construction.
+/// Wire form: ONE object, the `type` tag plus exactly the variant's
+/// fields. Unknown tags, unknown or duplicate fields and any other shape
+/// (positional array, bare string, externally tagged) fail to
+/// deserialize: deny by construction. The derive below is `remote =
+/// "Self"` so the trait impls further down can gate the shape first;
+/// always go through the serde traits (`serde_json::from_*`), never the
+/// inherent `ComputerAction::deserialize` the derive generates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(remote = "Self")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ComputerAction {
     /// Capture the CURRENT guest framebuffer (VM display only, never the
     /// host screen) with frame metadata. On demand; no streaming.
+    #[serde(deserialize_with = "no_fields")]
     ObserveScreen,
     /// Guest display size without pixels (cheap layout probe).
+    #[serde(deserialize_with = "no_fields")]
     GetDisplayInfo,
     /// Glide the agent pointer to a normalized position.
     MovePointer { x: f64, y: f64 },
@@ -113,6 +122,44 @@ pub enum ComputerAction {
     },
     /// Do nothing for `duration_ms`. Cancellable like any action.
     Wait { duration_ms: u32 },
+}
+
+impl Serialize for ComputerAction {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ComputerAction::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ComputerAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Objects only: serde also accepts an internally tagged enum as a
+        // positional array (`["click", 0.5, 0.5]`).
+        struct ObjectOnly;
+        impl<'de> serde::de::Visitor<'de> for ObjectOnly {
+            type Value = ComputerAction;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a computer action object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                ComputerAction::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+        }
+        deserializer.deserialize_map(ObjectOnly)
+    }
+}
+
+/// Unit variants carry no fields. serde's internally tagged unit visitor
+/// would skip unknown ones silently, even under `deny_unknown_fields`.
+fn no_fields<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct NoFields {}
+    NoFields::deserialize(deserializer).map(|_| ())
 }
 
 impl ComputerAction {
@@ -179,6 +226,7 @@ impl ComputerAction {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActionRequest {
     pub action_id: ActionId,
     pub task_id: TaskId,

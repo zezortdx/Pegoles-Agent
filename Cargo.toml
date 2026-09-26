@@ -33,3 +33,4 @@ base64 = "0.22"
 png = "0.18"
 ureq = { version = "3", features = ["rustls"] }
 libc = "0.2"
+proptest = { version = "1", default-features = false, features = ["std"] }

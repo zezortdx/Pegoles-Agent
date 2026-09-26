@@ -17,6 +17,7 @@ pub mod keys;
 pub mod limits;
 pub mod policy;
 pub mod tasks;
+pub mod text;
 
 pub use actions::{ActionOutcome, ActionRequest, ActionResult, ComputerAction, PointerButton};
 pub use computer::{ComputerConfig, ComputerInfo, ComputerState, SnapshotId, VirtualPath};
@@ -30,6 +31,7 @@ pub use ids::{ActionId, AgentId, ComputerId, FrameId, SessionId, TaskId};
 pub use keys::{is_modifier, normalize_key_name, validate_chord};
 pub use policy::{Decision, PolicyVerdict, RiskLevel};
 pub use tasks::{AgentTask, TaskStatus};
+pub use text::is_invisible_format;
 
 /// Architecture tripwire (Phase 3.5): the shared-vocabulary crates
 /// (protocol, guest-proto, policy) must stay platform-free: no hypervisor

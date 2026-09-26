@@ -41,9 +41,12 @@ pub const NAMED_KEYS: &[&str] = &[
 /// Normalize a user/model key name to canonical form.
 /// Returns `None` for unknown names. Aliases: Return->Enter, Esc->Escape,
 /// Del->Delete, Super/Cmd/Command->Meta, Option->Alt.
+/// Only ASCII spaces are trimmed and names must be ASCII: a Unicode
+/// space or control (e.g. U+0085) or a case-folding lookalike (U+212A
+/// KELVIN SIGN lowercases to `k`) must not normalize to a real key.
 pub fn normalize_key_name(name: &str) -> Option<String> {
-    let t = name.trim();
-    if t.is_empty() {
+    let t = name.trim_matches(' ');
+    if t.is_empty() || !t.is_ascii() {
         return None;
     }
     // Single printable ASCII character (typed literally, Shift handled by
@@ -104,7 +107,12 @@ pub fn validate_chord(keys: &[String]) -> Result<Vec<String>, String> {
     }
     let mut out = Vec::with_capacity(keys.len());
     for k in keys {
-        let n = normalize_key_name(k).ok_or_else(|| format!("unknown key: {k}"))?;
+        // The reason reaches events and the UI: bounded and ASCII-escaped,
+        // never the raw (hostile, possibly huge or bidi) name.
+        let n = normalize_key_name(k).ok_or_else(|| {
+            let head: String = k.chars().take(24).flat_map(char::escape_default).collect();
+            format!("unknown key: \"{head}\"")
+        })?;
         if out.contains(&n) {
             return Err(format!("duplicate key in chord: {n}"));
         }
@@ -138,5 +146,35 @@ mod tests {
         assert!(validate_chord(&["Shift".into()]).is_err());
         assert!(validate_chord(&["Control".into(), "Control".into()]).is_err());
         assert!(validate_chord(&[]).is_err());
+    }
+
+    #[test]
+    fn hostile_names_do_not_normalize() {
+        // ASCII spaces are the only padding tolerated.
+        assert_eq!(normalize_key_name("  return ").as_deref(), Some("Enter"));
+        for name in [
+            "\u{85}Enter",      // C1 NEL: Unicode whitespace
+            "Enter\u{2028}",    // line separator: Unicode whitespace
+            "\u{A0}Tab",        // no-break space
+            "\u{3000}Escape",   // ideographic space
+            "Enter\n",          // control characters are not padding
+            "\tTab",            // ditto
+            "BAC\u{212A}SPACE", // KELVIN SIGN lowercases to ASCII `k`
+            "\u{200B}Enter",    // zero-width space
+            "\u{202E}retnE",    // bidi override
+            "é",
+            " ",
+        ] {
+            assert_eq!(normalize_key_name(name), None, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn chord_errors_do_not_echo_hostile_names() {
+        let long = format!("\u{202E}{}", "x".repeat(100_000));
+        let err = validate_chord(&["Control".into(), long]).unwrap_err();
+        assert!(err.chars().count() < 200, "{} chars", err.chars().count());
+        assert!(!err.contains('\u{202E}'), "{err}");
+        assert!(err.contains("\\u{202e}"), "{err}");
     }
 }

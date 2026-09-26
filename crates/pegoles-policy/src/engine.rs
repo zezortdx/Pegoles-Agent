@@ -15,6 +15,7 @@ pub struct PolicyContext {}
 /// action variant does not compile until it gets a rule here.
 pub fn evaluate(req: &ActionRequest, _ctx: &PolicyContext) -> PolicyVerdict {
     use pegoles_protocol::keys::{normalize_key_name, validate_chord};
+    use pegoles_protocol::text::is_invisible_format;
     match &req.action {
         ComputerAction::ObserveScreen => allow("observing the VM screen"),
         ComputerAction::GetDisplayInfo => allow("display size probe inside VM"),
@@ -72,7 +73,13 @@ pub fn evaluate(req: &ActionRequest, _ctx: &PolicyContext) -> PolicyVerdict {
                 .chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t')
             {
+                // C0, DEL and C1 (category Cc).
                 deny("typed text contains control characters")
+            } else if text.chars().any(is_invisible_format) {
+                // Bidi, zero-width and other format characters: the feed
+                // would show different text than the guest receives. Here,
+                // not in a parser, so every provider fails closed alike.
+                deny("typed text contains invisible formatting characters")
             } else if looks_like_private_key_material(text) {
                 deny("refusing to type key material")
             } else {
@@ -284,6 +291,36 @@ mod tests {
             &ctx(),
         );
         assert_eq!(ok.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn typing_invisible_formatting_and_c1_controls_denies() {
+        // Every provider reaches this rule, so the local parser's check is
+        // no longer the only one.
+        for text in [
+            "rm -rf \u{202E}txt.exe",  // right-to-left override
+            "a\u{2066}b\u{2069}",      // isolates
+            "ok\u{200B}",              // zero-width space
+            "a\u{200D}b",              // zero-width joiner
+            "\u{FEFF}hello",           // byte order mark
+            "x\u{2062}y",              // invisible times
+            "tag\u{E0041}",            // tag character
+            "PRIVATE\u{200B}KEY-----", // tripwire split by an invisible
+            "next\u{85}line",          // C1 NEL
+            "csi\u{9B}31m",            // C1 CSI
+        ] {
+            for sensitive in [false, true] {
+                let v = evaluate(
+                    &req(ComputerAction::TypeText {
+                        text: text.into(),
+                        sensitive,
+                    }),
+                    &ctx(),
+                );
+                assert_eq!(v.decision, Decision::Deny, "text: {text:?}");
+                assert_eq!(v.risk, RiskLevel::Blocked);
+            }
+        }
     }
 
     #[test]
