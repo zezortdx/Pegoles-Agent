@@ -746,7 +746,7 @@ impl PoolStream for RealCapture {
             self.pool_fd = -1;
         }
         // Real memfd + wl_shm.create_pool with SCM_RIGHTS in one step.
-        let fd = unsafe { libc::memfd_create(b"pegoles-shot\0".as_ptr(), 1) };
+        let fd = unsafe { libc::memfd_create(c"pegoles-shot".as_ptr(), 1) };
         if fd < 0 {
             return Err(format!("memfd_create: {}", std::io::Error::last_os_error()));
         }
