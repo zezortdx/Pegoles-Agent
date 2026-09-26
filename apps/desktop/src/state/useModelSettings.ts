@@ -15,16 +15,20 @@ export interface ModelSettingsState {
   readonly settings: ModelSettings | null;
   readonly pending: ModelOp | null;
   readonly error: ModelSettingsError | null;
-  /** Store a key in the Keychain. Resolves true when Core accepted it. */
-  readonly saveKey: (key: string) => Promise<boolean>;
+  /**
+   * Ask Core for the key: it opens a macOS dialog, so the key never passes
+   * through this web view, and stores it in the Keychain. Resolves true
+   * when Core stored one.
+   */
+  readonly enterKey: () => Promise<boolean>;
   readonly clearKey: () => Promise<boolean>;
   readonly choose: (model: string, effort: string) => Promise<boolean>;
 }
 
 /**
- * The model Pegoles works with, as Core reports it. The API key only ever
- * travels one way (into Core, which keeps it in the Keychain); nothing here
- * holds on to it. `onChanged` lets Core's status catch up after a change.
+ * The model Pegoles works with, as Core reports it. The API key never
+ * reaches this web view: Core asks for it in a native dialog and keeps it
+ * in the Keychain. `onChanged` lets Core's status catch up after a change.
  */
 export function useModelSettings(enabled: boolean, onChanged?: () => void): ModelSettingsState {
   const [settings, setSettings] = useState<ModelSettings | null>(null);
@@ -63,15 +67,9 @@ export function useModelSettings(enabled: boolean, onChanged?: () => void): Mode
     if (enabled) void perform("load", api.getModelSettings);
   }, [enabled, perform]);
 
-  const saveKey = useCallback((key: string) => {
-    if (!key.trim()) {
-      setError({ op: "key", text: "Paste a key first." });
-      return Promise.resolve(false);
-    }
-    return perform("key", () => api.setApiKey(key));
-  }, [perform]);
+  const enterKey = useCallback(() => perform("key", api.enterApiKey), [perform]);
   const clearKey = useCallback(() => perform("clear", api.clearApiKey), [perform]);
   const choose = useCallback((model: string, effort: string) => perform("choice", () => api.setModelSettings(model, effort)), [perform]);
 
-  return { settings, pending, error, saveKey, clearKey, choose };
+  return { settings, pending, error, enterKey, clearKey, choose };
 }

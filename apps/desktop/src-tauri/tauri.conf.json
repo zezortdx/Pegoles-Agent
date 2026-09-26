@@ -5,13 +5,15 @@
   "identifier": "ai.pegoles.agent",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1430",
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Pegoles Agent",
         "width": 1440,
         "height": 900,

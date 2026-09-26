@@ -2,6 +2,7 @@
 name = "pegoles-desktop"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lib]
 name = "pegoles_desktop"
@@ -30,14 +31,33 @@ pegoles-inference = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 pegoles-macos-embed = { path = "../../../native/macos/pegoles-macos-embed" }
 # Public AppKit only: the system accessibility display options (Reduce
-# Transparency, Increase Contrast), which WKWebView does not expose to CSS.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility"] }
+# Transparency, Increase Contrast), which WKWebView does not expose to CSS,
+# and the native alerts that confirm cloud settings (src/consent.rs), which
+# script in the webview can neither read nor answer.
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSWorkspace",
+    "NSAccessibility",
+    "NSAlert",
+    "NSApplication",
+    "NSButton",
+    "NSControl",
+    "NSResponder",
+    "NSSecureTextField",
+    "NSTextField",
+    "NSView",
+    "NSWindow",
+] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray"] }
 # Keychain storage for the model API key (never a file, never the webview).
 security-framework = "3"
 
 [dev-dependencies]
 png = { workspace = true }
 libc = { workspace = true }
+# Mock runtime: the IPC tests run real requests through the app's ACL.
+tauri = { version = "2", features = ["test"] }
 
 [features]
 default = ["custom-protocol"]

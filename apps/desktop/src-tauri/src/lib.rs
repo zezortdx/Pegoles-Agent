@@ -5,10 +5,15 @@
 
 pub mod agent;
 pub mod commands;
+pub mod consent;
 pub mod local;
 #[cfg(target_os = "macos")]
 mod native_display;
+pub mod nav_guard;
 pub mod state;
+
+#[cfg(test)]
+mod ipc_acl;
 
 use agent::AgentSupervisor;
 use commands::{SharedState, StatusCache};
@@ -20,53 +25,39 @@ use tauri::{Emitter, Manager};
 /// display, lifecycle) independent of whether the UI is polling.
 const PUMP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Every command the webview may call. Debug builds add the Design Lab
-/// commands that drive raw actions and scripts.
-macro_rules! app_handlers {
-    ($($extra:path,)*) => {
-        tauri::generate_handler![
-            commands::get_status,
-            commands::pump,
-            commands::create_computer,
-            commands::start_computer,
-            commands::pause_computer,
-            commands::resume_computer,
-            commands::stop_computer,
-            commands::reset_computer,
-            commands::destroy_computer,
-            commands::list_events,
-            commands::get_image_status,
-            commands::read_boot_log,
-            commands::guest_info,
-            commands::guest_ping,
-            commands::get_host_capabilities,
-            commands::accessibility_display,
-            commands::suggested_config,
-            commands::suggested_effects,
-            commands::display_set_geometry,
-            commands::display_detach,
-            commands::take_control,
-            commands::return_control,
-            commands::create_task,
-            commands::list_tasks,
-            commands::run_task,
-            commands::cancel_task,
-            commands::get_model_settings,
-            commands::set_api_key,
-            commands::clear_api_key,
-            commands::set_model_settings,
-            commands::get_intelligence,
-            commands::set_provider,
-            commands::install_local_model,
-            commands::cancel_local_model_install,
-            commands::remove_local_model,
-            commands::cancel_agent_input,
-            commands::capture_screen,
-            commands::input_status,
-            commands::input_audit,
-            $($extra,)*
-        ]
+/// Every command the webview may call, from src/ipc_commands.rs (also
+/// read by build.rs for the ACL). Debug builds add the Design Lab and
+/// diagnostics commands and the capability that grants them.
+macro_rules! ipc_commands {
+    (release: [$($release:ident),* $(,)?], debug: [$($debug:ident),* $(,)?] $(,)?) => {
+        /// Commands the release webview may call (capabilities/default.json).
+        pub const RELEASE_COMMANDS: &[&str] = &[$(stringify!($release)),*];
+        /// Debug-build extras (debug-capabilities/design-lab.json).
+        pub const DEBUG_COMMANDS: &[&str] = &[$(stringify!($debug)),*];
+
+        #[cfg(debug_assertions)]
+        fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+            tauri::generate_handler![$(commands::$release,)* $(commands::$debug,)*]
+        }
+
+        #[cfg(not(debug_assertions))]
+        fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+            tauri::generate_handler![$(commands::$release,)*]
+        }
     };
+}
+include!("ipc_commands.rs");
+
+/// Grants the debug-only commands to the main window. Debug builds only:
+/// release builds neither register nor grant them.
+#[cfg(any(debug_assertions, test))]
+fn grant_debug_commands<R: tauri::Runtime>(app: &impl Manager<R>) -> tauri::Result<()> {
+    app.add_capability(include_str!("../debug-capabilities/design-lab.json"))
+}
+
+/// The app's config, assets and ACL (capabilities/, the build.rs manifest).
+fn context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
 }
 
 pub fn run() {
@@ -79,19 +70,21 @@ pub fn run() {
         .manage(status_cache)
         .manage(supervisor)
         .manage(local::LocalModels::default())
-        .manage(commands::ScriptCancel::default());
-    #[cfg(debug_assertions)]
-    let builder = builder.invoke_handler(app_handlers!(
-        commands::prepare_image,
-        commands::execute_action,
-        commands::run_input_script,
-        commands::demo_script_steps,
-    ));
-    #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(app_handlers!());
+        .manage(commands::ScriptCancel::default())
+        .invoke_handler(invoke_handler());
 
     let app = builder
         .setup(|app| {
+            // Switching to a cloud planner and storing its key are
+            // confirmed in native alerts the webview can't answer.
+            app.manage(consent::ConsentGate(Arc::new(consent::NativeConsent::new(
+                app.handle().clone(),
+            ))));
+            #[cfg(debug_assertions)]
+            grant_debug_commands(app)?;
+            // The only window, with navigation kept on the app origin and
+            // new windows refused (see nav_guard.rs).
+            nav_guard::build_main_window(app)?;
             // Platform display adapter (macOS: in-process VM host + native
             // framebuffer view). Failure is recorded, never fatal, never
             // replaced by a fake display.
@@ -146,7 +139,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("error while building tauri application");
 
     app.run(|app, event| {

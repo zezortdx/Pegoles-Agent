@@ -188,27 +188,6 @@ button.activity-quiet__row:hover { background: var(--fill-hover); }
 .settings__problem { padding: 0 2px; color: var(--danger-text); font: var(--type-small); max-width: 64ch; overflow-wrap: anywhere; }
 .settings__ok { padding: 0 2px; color: var(--tone-done); font: var(--type-small); }
 
-/* A key goes in once and is never shown again: the field is a password field. */
-.setting--form { flex-wrap: wrap; row-gap: 8px; }
-.setting__field { display: flex; align-items: center; gap: 6px; flex: 1 1 260px; max-width: 360px; }
-.field {
-  flex: 1;
-  min-width: 0;
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--hairline-strong);
-  color: var(--text-1);
-  font: var(--type-mono);
-  transition: box-shadow var(--dur-micro) var(--ease-out);
-}
-.field::placeholder { color: var(--text-4); }
-.field:hover:not(:disabled) { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.22); }
-.field:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent-line), 0 0 0 3px var(--accent-soft); }
-.field:disabled { color: var(--text-disabled); }
-
 /* A native select in the grouped-form style: the menu stays the system's. */
 .select { position: relative; display: inline-flex; align-items: center; }
 .select select {

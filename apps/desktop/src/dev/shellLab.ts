@@ -369,10 +369,9 @@ export function installShellLab(hash: string): void {
     list_events: () => state.events,
     list_tasks: () => state.tasks,
     get_model_settings: () => model,
-    set_api_key: (args) => {
-      if (String(args.key ?? "").trim().length < 20) throw "the key should be 20 to 256 characters";
-      return setModel({ ...model, configured: true, key_source: "keychain" });
-    },
+    // Core asks for the key in a macOS window; the lab stands in for a
+    // person who pastes a valid one.
+    enter_api_key: () => setModel({ ...model, configured: true, key_source: "keychain" }),
     clear_api_key: () => setModel({ ...model, configured: false, key_source: null }),
     set_model_settings: (args) => setModel({ ...model, model: String(args.model), effort: String(args.effort) }),
     get_intelligence: () => { readiness(); return intelligence(); },

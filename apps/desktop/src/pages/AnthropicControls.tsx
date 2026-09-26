@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent } from "react";
+import { useId } from "react";
 import type { ModelSettings } from "../lib/tauri";
 import type { ModelOp, ModelSettingsState } from "../state/useModelSettings";
 import { effortLabel, modelLabel } from "../lib/format";
@@ -51,28 +51,20 @@ export interface AnthropicControlsProps {
 
 /**
  * The cloud model's rows: whether a key is connected and where it lives,
- * a way to store one (it is never shown again), and the model and effort
- * to use. Core is the authority; every value here is what it reports.
+ * a way to store one, and the model and effort to use. The key itself is
+ * pasted into a macOS dialog Core opens, never into this page, and is never
+ * shown again. Core is the authority; every value here is what it reports.
  */
 export function AnthropicControls({ model, onSaved }: AnthropicControlsProps) {
   const { settings, pending } = model;
-  const keyRef = useRef<HTMLInputElement>(null);
   const fieldId = useId();
-  const [filled, setFilled] = useState(false);
   const busy = pending !== null;
   const configured = !!settings?.configured;
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    const field = keyRef.current;
-    if (!field || busy) return;
+  const enter = async () => {
+    if (busy) return;
     onSaved(false);
-    const ok = await model.saveKey(field.value);
-    if (!ok) return;
-    // Never kept, never shown again.
-    field.value = "";
-    setFilled(false);
-    onSaved(true);
+    if (await model.enterKey()) onSaved(true);
   };
 
   return (
@@ -88,22 +80,12 @@ export function AnthropicControls({ model, onSaved }: AnthropicControlsProps) {
           )}
         </span>
       </Row>
-      <form className="setting setting--form" role="listitem" aria-label="Save an API key" onSubmit={(event) => void submit(event)}>
-        <label className="setting__text" htmlFor={fieldId}>
-          <span className="setting__label">{configured ? "Replace the key" : "Add a key"}</span>
-          <span className="setting__hint">Stored in your Mac’s Keychain. It isn’t shown again.</span>
-        </label>
-        <span className="setting__value setting__field">
-          <input
-            id={fieldId} ref={keyRef} className="field" type="password" placeholder="sk-ant-…"
-            autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} disabled={busy}
-            onInput={(event) => setFilled(event.currentTarget.value.trim().length > 0)}
-          />
-          <button type="submit" className="btn btn--line btn--small" disabled={!filled || busy}>
-            {pending === "key" ? "Saving…" : "Save"}
-          </button>
-        </span>
-      </form>
+      <Row label={configured ? "Replace the key" : "Add a key"}
+        hint="You paste it in a macOS window Pegoles opens, never on this screen. It’s kept in your Mac’s Keychain and isn’t shown again.">
+        <button type="button" className="btn btn--line btn--small" disabled={busy} onClick={() => void enter()}>
+          {pending === "key" ? "Waiting for the key…" : configured ? "Replace key…" : "Add key…"}
+        </button>
+      </Row>
       {settings && (
         <Row label="Model">
           <Select id={`${fieldId}-model`} label="Model" value={settings.model} disabled={busy}

@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "debug-design-lab",
+  "description": "Debug builds only: added at startup under cfg(debug_assertions) and never part of a release build. The Design Lab's raw action and script commands, base-image preparation and diagnostics.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-prepare-image",
+    "allow-execute-action",
+    "allow-run-input-script",
+    "allow-demo-script-steps",
+    "allow-input-status",
+    "allow-pump",
+    "allow-get-image-status",
+    "allow-guest-info",
+    "allow-guest-ping",
+    "allow-suggested-config",
+    "allow-input-audit"
+  ]
+}

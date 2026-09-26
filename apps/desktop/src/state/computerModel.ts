@@ -34,7 +34,7 @@ export interface ComputerModel {
   /** Headline inside the preview when there is no screen to show. */
   readonly headline: string;
   readonly body?: string;
-  /** A line for developers (how to fix a missing image), shown under the body. */
+  /** A line for developers (how to fix a missing image), shown under the body. Dev builds only. */
   readonly devNote?: string;
   readonly primary?: ComputerAction;
   /** Less frequent actions, disclosed in an overflow. */
@@ -97,7 +97,11 @@ function factsOf(status: StatusPayload, up: boolean): ComputerFact[] {
 const STOP: ComputerAction = { command: "stop", label: "Stop computer" };
 const PAUSE: ComputerAction = { command: "pause", label: "Pause" };
 
-/** How to get the sealed image onto this Mac; for developers, in the panel only. */
+/**
+ * How developers get the sealed image onto this Mac. Dev builds only: the
+ * product never tells people to run repository scripts, and production
+ * builds drop this text (checked by src/dev/prodBundle.test.ts).
+ */
 const IMAGE_HOW = "with scripts/build-guest-image (see docs/PROJECT_STATE.md).";
 
 export function computerModel({ connected, native, status, events }: ComputerInputs): ComputerModel {
@@ -115,13 +119,14 @@ export function computerModel({ connected, native, status, events }: ComputerInp
       body: "Its isolated computer ran into a problem. Details has what engineers need.",
       primary: { command: "start", label: "Try again" } };
   }
-  // The sealed Pegoles image is installed by building it, not from the app:
-  // say so plainly and offer nothing that can't fix it.
+  // Without the sealed Pegoles image nothing can run: say so plainly and
+  // offer nothing that can't fix it.
   if (status.backend === "real" && !status.computer_created && status.image_status !== "ready") {
     const incomplete = status.image_status === "invalid";
     return { ...base, specs, facts, phase: "needs-setup", chip: incomplete ? "Image incomplete" : "Not installed",
       headline: incomplete ? "The Pegoles computer image on this Mac is incomplete." : "The Pegoles computer image isn’t installed on this Mac.",
-      body: "Without it, Pegoles can’t create its isolated computer or work on tasks.", devNote: `${incomplete ? "Rebuild" : "Build"} it ${IMAGE_HOW}` };
+      body: "Without it, Pegoles can’t create its isolated computer or work on tasks.",
+      devNote: import.meta.env.DEV ? `${incomplete ? "Rebuild" : "Build"} it ${IMAGE_HOW}` : undefined };
   }
   if (!status.computer_created || status.computer_state === "stopped" || status.computer_state === null) {
     return { ...base, specs, facts, phase: "off", chip: "Off", headline: "Off",

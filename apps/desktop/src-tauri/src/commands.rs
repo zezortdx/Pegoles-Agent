@@ -11,6 +11,7 @@
 //! sync (`get_host_capabilities`).
 
 use crate::agent::AgentSupervisor;
+use crate::consent::ConsentGate;
 use crate::local::LocalModels;
 use crate::state::AppState;
 use pegoles_computer::{DisplayGeometry, EffectsRecommendation, ImageStatus, PerformanceProfile};
@@ -215,6 +216,8 @@ fn parse_profile(profile: Option<&str>) -> PerformanceProfile {
 
 /// Governor recommendation for this host (advisory; create() still takes
 /// explicit configs). Lets the UI/bench avoid host-starving defaults.
+/// Debug builds only (diagnostics; the product UI never calls it).
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn suggested_config(
     state: tauri::State<'_, SharedState>,
@@ -367,7 +370,9 @@ pub async fn get_status(
 
 /// Event-driven refresh: call on `pegoles://display-activity` (native
 /// display wake) or any other nudge. Same work as `get_status`, plus the
-/// events this pump published.
+/// events this pump published. Debug builds only (the product UI refreshes
+/// with `get_status`; the background pump keeps Core moving).
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn pump(
     state: tauri::State<'_, SharedState>,
@@ -459,6 +464,8 @@ pub async fn list_events(state: tauri::State<'_, SharedState>) -> Result<Vec<Age
     .await
 }
 
+/// Base-image preparation progress (`prepare_image`). Debug builds only.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn get_image_status(
     state: tauri::State<'_, SharedState>,
@@ -574,8 +581,15 @@ fn run_image_preparation(
 
 #[tauri::command]
 pub async fn read_boot_log(state: tauri::State<'_, SharedState>) -> Result<BootLogPayload, String> {
-    with_state(state.inner().clone(), |s| {
-        match s.registry.read_boot_log(50) {
+    // Only the path is read under the app lock; the guest-written file is
+    // read (tail only) without it.
+    let path = with_state(state.inner().clone(), |s| Ok(s.registry.serial_log_path())).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let read = match path {
+            Some(path) => pegoles_core::ComputerRegistry::read_boot_log_file(&path, 50),
+            None => Err(CoreError::NoBootLog),
+        };
+        match read {
             Ok(log) => Ok(BootLogPayload {
                 available: log.available,
                 total_lines: log.total_lines,
@@ -590,6 +604,7 @@ pub async fn read_boot_log(state: tauri::State<'_, SharedState>) -> Result<BootL
         }
     })
     .await
+    .map_err(|e| e.to_string())?
 }
 
 pub fn shared_state(app: &tauri::AppHandle) -> SharedState {
@@ -597,6 +612,8 @@ pub fn shared_state(app: &tauri::AppHandle) -> SharedState {
 }
 
 /// Last SystemInfo reported by the guest (no UI event; queried on demand).
+/// Debug builds only (diagnostics; the product UI never calls it).
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn guest_info(state: tauri::State<'_, SharedState>) -> Result<GuestInfoPayload, String> {
     with_state(state.inner().clone(), |s| {
@@ -611,7 +628,9 @@ pub async fn guest_info(state: tauri::State<'_, SharedState>) -> Result<GuestInf
 }
 
 /// Blocking Ping -> Pong round-trip against the guest (latency in ms).
-/// Fails fast when the guest is not Ready.
+/// Fails fast when the guest is not Ready. Debug builds only: it holds the
+/// app state while it waits on the guest.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn guest_ping(state: tauri::State<'_, SharedState>) -> Result<GuestPingPayload, String> {
     with_state(state.inner().clone(), |s| {
@@ -761,7 +780,8 @@ pub async fn execute_action(
 }
 
 /// Cooperative cancel for the running agent sequence (Take Control also
-/// cancels; this is the explicit dev path). Releases pressed state.
+/// cancels; the UI's Stop uses this when no task is selected). Releases
+/// pressed state.
 #[tauri::command]
 pub async fn cancel_agent_input(
     state: tauri::State<'_, SharedState>,
@@ -872,6 +892,8 @@ pub struct UnavailabilityRow {
     pub reason: String,
 }
 
+/// Input plane state for the Design Lab. Debug builds only.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn input_status(
     state: tauri::State<'_, SharedState>,
@@ -912,7 +934,8 @@ pub struct AuditRow {
 }
 
 /// Recent audit rows, newest last. Content-free by construction (verbs +
-/// lengths, never typed text).
+/// lengths, never typed text). Debug builds only (diagnostics).
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn input_audit(
     state: tauri::State<'_, SharedState>,
@@ -1066,20 +1089,25 @@ pub async fn get_intelligence(
     intelligence_op(state.inner().clone(), local.inner().clone(), |_| Ok(())).await
 }
 
+/// Choose who plans. Moving to a cloud provider waits for the user's
+/// answer in a native alert (see consent.rs); declined, nothing changes.
 #[tauri::command]
 pub async fn set_provider(
     state: tauri::State<'_, SharedState>,
     local: tauri::State<'_, LocalModels>,
+    consent: tauri::State<'_, ConsentGate>,
     provider: crate::agent::Provider,
     local_model: Option<String>,
 ) -> Result<IntelligencePayload, String> {
+    let consent = consent.inner().clone();
     intelligence_op(state.inner().clone(), local.inner().clone(), move |_| {
-        let mut settings = crate::agent::load_settings();
-        settings.provider = provider;
-        if let Some(m) = local_model {
-            settings.local_model = m;
-        }
-        crate::agent::save_settings(&settings)
+        crate::consent::change_provider(
+            consent.0.as_ref(),
+            provider,
+            local_model,
+            crate::agent::load_settings,
+            crate::agent::save_settings,
+        )
     })
     .await
 }
@@ -1136,15 +1164,21 @@ pub async fn get_model_settings(
     settings_op(state.inner().clone(), || Ok(())).await
 }
 
-/// Store the Anthropic API key in the Keychain. The key is validated for
-/// shape only and is never echoed back, logged, or sent to the guest.
+/// Ask for the Anthropic API key in a native secure field and store it in
+/// the Keychain. The key never passes through the webview; it is checked
+/// for shape only and is never echoed back, logged, or sent to the guest.
 #[tauri::command]
-pub async fn set_api_key(
+pub async fn enter_api_key(
     state: tauri::State<'_, SharedState>,
-    key: String,
+    consent: tauri::State<'_, ConsentGate>,
 ) -> Result<ModelSettingsPayload, String> {
+    let consent = consent.inner().clone();
     settings_op(state.inner().clone(), move || {
-        crate::agent::store_api_key(&key)
+        let replacing = matches!(
+            crate::agent::load_api_key(),
+            Some((_, crate::agent::KeySource::Keychain))
+        );
+        crate::consent::enter_api_key(consent.0.as_ref(), replacing, crate::agent::store_api_key)
     })
     .await
 }

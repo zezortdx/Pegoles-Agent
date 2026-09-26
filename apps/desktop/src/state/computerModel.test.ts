@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { computerModel, withCommandError, type ComputerInputs } from "./computerModel";
 import type { AgentEvent, StatusPayload } from "../lib/tauri";
 
@@ -50,6 +50,20 @@ describe("computerModel", () => {
     // A computer that already exists keeps working; the simulated backend needs no image.
     expect(computerModel(input({ image_status: "missing" })).phase).toBe("ready");
     expect(computerModel(input({ computer_created: false, computer_state: null, image_status: "missing", backend: "mock" })).phase).toBe("off");
+  });
+
+  it("keeps developer build steps out of production: the product never points people at repository scripts", () => {
+    vi.stubEnv("DEV", false);
+    try {
+      for (const image_status of ["missing", "invalid"] as const) {
+        const model = computerModel(input({ computer_created: false, computer_state: null, image_status }));
+        expect(model.phase).toBe("needs-setup");
+        expect(model.devNote).toBeUndefined();
+        expect(JSON.stringify(model)).not.toMatch(/scripts\/|\.sh\b|docs\/|cargo /);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("walks through boot with real stages only", () => {

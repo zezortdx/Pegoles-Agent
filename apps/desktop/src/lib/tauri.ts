@@ -36,8 +36,8 @@ export interface StatusPayload {
   computer_state: ComputerState | null;
   computer_id: string | null;
   /**
-   * The sealed Pegoles computer image on this Mac. `missing`: not installed
-   * (built with scripts/build-guest-image); `invalid`: present but not verified.
+   * The sealed Pegoles computer image on this Mac. `missing`: not installed;
+   * `invalid`: present but not verified.
    */
   image_status: "missing" | "downloading" | "ready" | "invalid";
   spec_os: string;
@@ -286,12 +286,20 @@ export const api = {
   /** Stop a running task, or cancel one that never started. */
   cancelTask: (taskId: string) => invoke<null>("cancel_task", { taskId }),
   getModelSettings: () => invoke<ModelSettings>("get_model_settings"),
-  /** Stored in the macOS Keychain; never returned. */
-  setApiKey: (key: string) => invoke<ModelSettings>("set_api_key", { key }),
+  /**
+   * Opens a macOS dialog where the person pastes their key. Core stores it in
+   * the Keychain; it never passes through this web view and is never returned.
+   * Rejects when the dialog is cancelled.
+   */
+  enterApiKey: () => invoke<ModelSettings>("enter_api_key"),
   clearApiKey: () => invoke<ModelSettings>("clear_api_key"),
   setModelSettings: (model: string, effort: string) => invoke<ModelSettings>("set_model_settings", { model, effort }),
   getIntelligence: () => invoke<Intelligence>("get_intelligence"),
-  /** Choose who plans; `localModel` also changes the chosen local model. */
+  /**
+   * Choose who plans; `localModel` also changes the chosen local model.
+   * Moving to Anthropic waits for the person to confirm in a macOS dialog,
+   * and rejects when they don't.
+   */
   setProvider: (provider: Provider, localModel?: string) =>
     invoke<Intelligence>("set_provider", { provider, localModel: localModel ?? null }),
   /** Download, verify and install a local model (default: the chosen one). Resumes a partial download. */
@@ -328,9 +336,10 @@ type WireAction = { type: string; [k: string]: unknown };
 type ScriptStep = { label: string; action: WireAction; observe_after?: boolean };
 
 /**
- * Design Lab only. `execute_action`, `run_input_script` and
- * `demo_script_steps` exist only in debug builds of Core; production code
- * never calls anything here.
+ * Design Lab only. These commands exist, and are granted to the web view,
+ * only in debug builds of Core; production code never calls anything here.
+ * Every command in `api` above, and only those, is granted to the release
+ * web view (src-tauri/capabilities/default.json, checked by its tests).
  */
 export const debugApi = {
   executeAction: (action: WireAction, taskId?: string, observeAfter?: boolean) =>

@@ -15,7 +15,6 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
-const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
 const stored: ModelSettings = { ...NO_KEY, configured: true, key_source: "keychain" };
 const cloud = intelligenceOf({ provider: "anthropic" });
 
@@ -29,12 +28,9 @@ const emit = (payload: unknown) => act(() => { bus.handlers.get(MODEL_INSTALL_EV
 const localRadio = () => screen.getByRole("radio", { name: "Pegoles Local" }) as HTMLInputElement;
 const cloudRadio = () => screen.getByRole("radio", { name: "Anthropic" }) as HTMLInputElement;
 const loaded = () => waitFor(() => expect(localRadio().disabled).toBe(false));
-const keyField = () => screen.getByLabelText(/Add a key|Replace the key/) as HTMLInputElement;
-const type = (value: string) => {
-  const input = keyField();
-  input.value = value;
-  fireEvent.input(input);
-};
+const keyButton = () => screen.getByRole("button", { name: /^(Add|Replace) key…$/ }) as HTMLButtonElement;
+/** The page never has a field the key could be typed into (Core asks for it natively). */
+const noKeyField = () => expect(document.querySelector("input[type=password], input[type=text], textarea")).toBeNull();
 
 beforeEach(() => {
   vi.spyOn(api, "getIntelligence").mockResolvedValue(intelligenceOf());
@@ -53,7 +49,7 @@ describe("Intelligence settings: Pegoles Local", () => {
     expect(screen.getByText("Not set up")).toBeTruthy();
     expect(screen.getByText("One download of 2.2 GB, checked before it’s used. After that it works offline.")).toBeTruthy();
     // Nothing about the cloud is asked for.
-    expect(screen.queryByLabelText(/Add a key/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add key…" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Set up" }));
     await waitFor(() => expect(install).toHaveBeenCalledExactlyOnceWith(MAI.id));
@@ -212,20 +208,21 @@ describe("Intelligence settings: choosing the cloud", () => {
     const choose = vi.spyOn(api, "setProvider").mockResolvedValue(cloud);
     render(<Harness onChanged={onChanged} />);
     await loaded();
-    expect(screen.queryByLabelText(/Add a key/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add key…" })).toBeNull();
     expect(screen.getByText("No key")).toBeTruthy();
     fireEvent.click(cloudRadio());
     await waitFor(() => expect(choose).toHaveBeenCalledExactlyOnceWith("anthropic", undefined));
     await waitFor(() => expect(cloudRadio().checked).toBe(true));
     expect(localRadio().checked).toBe(false);
-    expect(keyField().type).toBe("password");
+    expect(keyButton().textContent).toBe("Add key…");
+    noKeyField();
     expect(screen.getByText(/screenshots of Pegoles’ computer \(its own virtual machine, never your Mac’s screen\)/)).toBeTruthy();
     expect(onChanged).toHaveBeenCalled();
 
     vi.mocked(api.setProvider).mockResolvedValue(intelligenceOf());
     fireEvent.click(localRadio());
     await waitFor(() => expect(choose).toHaveBeenLastCalledWith("local", undefined));
-    await waitFor(() => expect(screen.queryByLabelText(/Add a key/)).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Add key…" })).toBeNull());
   });
 
   it("says Core's reason when the switch is refused, and keeps the choice as it was", async () => {
@@ -237,33 +234,52 @@ describe("Intelligence settings: choosing the cloud", () => {
     expect(localRadio().checked).toBe(true);
   });
 
-  it("stores a key in the Keychain and never shows it again", async () => {
+  it("says in plain words when moving to the cloud wasn't confirmed in the macOS dialog", async () => {
+    vi.spyOn(api, "setProvider").mockRejectedValue("Pegoles Local still plans your tasks: switching to Anthropic wasn't confirmed in the macOS dialog.");
+    render(<Harness />);
+    await loaded();
+    fireEvent.click(cloudRadio());
+    expect((await screen.findByRole("alert")).textContent)
+      .toBe("Couldn’t change the model. Pegoles Local still plans your tasks: switching to Anthropic wasn't confirmed in the macOS dialog.");
+    expect(localRadio().checked).toBe(true);
+    expect(screen.queryByRole("button", { name: "Add key…" })).toBeNull();
+  });
+
+  it("has Core ask for the key in a macOS window, so the page never holds it", async () => {
     vi.mocked(api.getIntelligence).mockResolvedValue(cloud);
     const onChanged = vi.fn();
-    const save = vi.spyOn(api, "setApiKey").mockResolvedValue(stored);
+    let answer: (value: ModelSettings) => void = () => undefined;
+    const enter = vi.spyOn(api, "enterApiKey").mockReturnValue(new Promise((resolve) => { answer = resolve; }));
     render(<Harness onChanged={onChanged} />);
     await screen.findByText("Not connected");
-    const submit = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
-    expect(submit.disabled).toBe(true);
-    type(KEY);
-    fireEvent.click(submit);
-    await waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith(KEY));
+    noKeyField();
+    expect(screen.getByText(/You paste it in a macOS window Pegoles opens, never on this screen/)).toBeTruthy();
+    fireEvent.click(keyButton());
+    await waitFor(() => expect(enter).toHaveBeenCalledOnce());
+    // Nothing is passed from the page: Core asks the person itself.
+    expect(enter.mock.calls[0]).toEqual([]);
+    expect(await screen.findByRole("button", { name: "Waiting for the key…" })).toBeTruthy();
+    await act(async () => { answer(stored); });
     expect(await screen.findByText("Connected (Keychain)")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toBe("Key saved to your Keychain.");
-    expect(keyField().value).toBe("");
-    expect(document.body.innerHTML).not.toContain(KEY);
+    expect(keyButton().textContent).toBe("Replace key…");
+    noKeyField();
     expect(onChanged).toHaveBeenCalledOnce();
   });
 
-  it("shows Core's reason when a key is refused, and keeps what was typed to fix it", async () => {
+  it("shows Core's reason when no key was stored: cancelled, or refused", async () => {
     vi.mocked(api.getIntelligence).mockResolvedValue(cloud);
-    vi.spyOn(api, "setApiKey").mockRejectedValue("the key should be 20 to 256 characters");
+    const enter = vi.spyOn(api, "enterApiKey").mockRejectedValue("the macOS key window was cancelled, so nothing was stored.");
     render(<Harness />);
     await screen.findByText("Not connected");
-    type("sk-short");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t save the key. The key should be 20 to 256 characters");
-    expect(keyField().value).toBe("sk-short");
+    fireEvent.click(keyButton());
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t save the key. The macOS key window was cancelled, so nothing was stored.");
+    expect(screen.queryByRole("status")).toBeNull();
+
+    enter.mockRejectedValue("the key should be 20 to 256 characters");
+    fireEvent.click(keyButton());
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Couldn’t save the key. The key should be 20 to 256 characters"));
+    expect(screen.getByText("Not connected")).toBeTruthy();
   });
 
   it("removes a Keychain key, and names one from the environment without offering to remove it", async () => {
@@ -280,7 +296,7 @@ describe("Intelligence settings: choosing the cloud", () => {
     render(<Harness />);
     expect(await screen.findByText("From ANTHROPIC_API_KEY")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove key" })).toBeNull();
-    expect(screen.getByLabelText(/Replace the key/)).toBeTruthy();
+    expect(keyButton().textContent).toBe("Replace key…");
   });
 
   it("changes the cloud model and effort through Core", async () => {

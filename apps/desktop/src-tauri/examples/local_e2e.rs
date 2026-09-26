@@ -129,7 +129,10 @@ fn main() {
         settings.local_model
     );
 
-    // App state exactly as the app builds it (real VM backend).
+    // App state as the app builds it (real VM backend), plus a test display
+    // adapter the app does not install yet (native_display.rs is a stub):
+    // with it Core configures a DesktopLarge display (1440x900, the helper's
+    // fixed scanout); the app creates its computer with `display: None`.
     let shared: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState::new()));
     lock_state(&shared)
         .registry

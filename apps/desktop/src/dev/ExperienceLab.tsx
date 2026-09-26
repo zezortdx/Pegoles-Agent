@@ -17,6 +17,9 @@ import type { TaskStatusWire } from "@pegoles/ui";
 import type { AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
 import "../styles/tokens.css";
 
+/** Unique string that must never appear in a production bundle. */
+export const EXPERIENCE_LAB_MARKER = "__PEGOLES_EXPERIENCE_LAB__";
+
 const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
 const qualities: readonly PresenceQuality[] = ["auto", "full", "reduced"];
 const initialMode = (PRESENCE_MODES as readonly string[]).includes(params.get("mode") ?? "") ? params.get("mode") as PresenceMode : "idle";
@@ -108,7 +111,7 @@ export function ExperienceLab() {
   }, []);
 
   return <FluxGlassRoot tier="full" reducedMotion={reduced}>
-    <div style={page} data-lab-marker="__PEGOLES_EXPERIENCE_LAB__">
+    <div style={page} data-lab-marker={EXPERIENCE_LAB_MARKER}>
       <header style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <strong style={{ font: "var(--type-heading)" }}>Presence lab</strong>
         <span style={label}>Development only, no backend</span>
