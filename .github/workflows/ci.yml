@@ -287,7 +287,9 @@ jobs:
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
-            if ($_ -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsRedistDir|VCToolsVersion|WindowsSdkDir|WindowsSdkBinPath|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir|VSINSTALLDIR|DevEnvDir)=(.*)$') {
+            # Not VCINSTALLDIR & co: with those set, rustc takes link.exe
+            # from PATH, where Git's GNU link comes first in bash steps.
+            if ($_ -match '^(PATH|INCLUDE|LIB|LIBPATH|WindowsSdkDir|WindowsSdkBinPath|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=(.*)$') {
               "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             }
           }
