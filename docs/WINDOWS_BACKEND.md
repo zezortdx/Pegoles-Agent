@@ -1,5 +1,7 @@
 # Windows Backend (HCS implementation — Phase 3.6)
 
+> **Superseded (2026-09-27).** This describes the Phase 3.6 design (Windows Pro, the Hyper-V role, Hyper-V Administrators membership, a registry socket registration). The current design is in `docs/WINDOWS_ARCHITECTURE.md` (Host Compute System with only the Virtual Machine Platform, a small broker service, the guest runtime listening on vsock 850, an image provisioned at build time by `scripts/build-guest-image/build-x64.sh`). Kept for history.
+
 Target #1: **Windows 11 Pro, x86_64**, Hyper-V enabled. Not Home (needs a
 separate WHP backend — research only, see below). Not ARM64 Windows yet
 (architecture stays possible: `GuestArchitecture::Arm64` ≠ Mac).

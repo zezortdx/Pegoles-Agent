@@ -1,5 +1,7 @@
 # Windows Image (Debian 13 amd64 → VHDX)
 
+> **Superseded (2026-09-27).** This describes the Phase 3.6 image path (an unprovisioned VHDX provisioned on first boot on the PC). The current design is in `docs/WINDOWS_ARCHITECTURE.md` (Host Compute System with only the Virtual Machine Platform, a small broker service, the guest runtime listening on vsock 850, an image provisioned at build time by `scripts/build-guest-image/build-x64.sh`). Kept for history.
+
 How the Windows artifact is produced, verified, and recorded. Build
 machine only (macOS/Linux with Docker + qemu-img + e2fsprogs); the
 Windows runtime never needs any of these tools.
