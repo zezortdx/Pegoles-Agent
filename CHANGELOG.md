@@ -8,7 +8,41 @@ the tag (the release workflow refuses a mismatch).
 
 ## [Unreleased]
 
-Nothing yet.
+Work toward 0.2 on the `phase/windows-0.2` branch. Nothing here is
+released; Windows has not run on a consumer PC.
+
+### Added
+
+- **New Pegoles mark** (silver ring, two eyes) across the app icon, the
+  `.ico`/`.icns`, PNG sizes (with simplified 16–48 px glyphs), the README,
+  the social preview and the Windows installer art.
+- **First-run onboarding**: welcome, how it works, a real system check
+  (OS, architecture, virtualization, memory, disk, acceleration), one
+  "Set up Pegoles" job with real byte progress, speed, time left, pause
+  and retry, the choice of intelligence (Pegoles Local recommended), and
+  first tasks that match what the computer can do. Errors in plain words
+  with the technical detail kept behind "Technical details".
+- **Windows backend (in development)**: `PegolesVmBroker`, a small
+  LocalSystem service that owns every Host Compute System call behind
+  eight typed verbs; an unprivileged `pegoles-vm-host.exe` speaking the
+  macOS helper's protocol; the guest runtime's listen mode (vsock 850 over
+  AF_HYPERV); UEFI boot from the computer's VHDX with no network device;
+  turning on the Virtual Machine Platform from onboarding with consent,
+  restart and resume.
+- **Pegoles Local on llama.cpp**: `pegoles-llm-worker` (GGUF, Vulkan or
+  CPU on Windows, Metal on macOS) behind the same protocol and supervisor
+  as the MLX worker, confined by an AppContainer and a job object on
+  Windows and `sandbox-exec` on macOS; MAI-UI-2B Q8_0 GGUF pinned in the
+  catalog for Windows.
+- **Windows packaging**: per-machine NSIS installer
+  (`scripts/package-windows.sh` → `Pegoles-Setup-x64.exe`, unsigned),
+  WebView2 network containment, and a WinGet manifest draft.
+- **x64 guest image build** (`scripts/build-guest-image/build-x64.sh`):
+  provisioned at build time like the arm64 image; not published yet.
+- **CI on Windows**: every Windows crate linted and tested, the webview
+  egress probe, the installer built, installed and uninstalled, an HCS VM
+  booted through the helper and the broker, and the x64 image built and
+  booted.
 
 ## [0.1.0] - 2026-09-27
 

@@ -98,6 +98,20 @@ goals on the real-VM benchmark, [details](benchmarks/local-models/README.md)).
 The evidence for each release gate is in
 [docs/RELEASE_GATES.md](docs/RELEASE_GATES.md).
 
+### Windows (in development, not released)
+
+A Windows 11 x64 version is being built on the `phase/windows-0.2`
+branch with the same design: Hyper-V's Host Compute System (works on
+Home with the Virtual Machine Platform feature, which onboarding helps
+turn on), a small privileged service that only creates Pegoles' VMs, an
+offline Debian guest, and Pegoles Local on llama.cpp (Vulkan or CPU) in
+an AppContainer sandbox. It compiles for Windows and has CI jobs on
+GitHub's Windows Server runners (build, install, VM boot), but **it has
+not run on a Windows PC yet** and there is no Windows download. The GGUF model path it uses scored 17 of 22 on the
+same real-VM benchmark on a Mac, like the MLX default. Status and
+evidence: [docs/PLATFORM_MATRIX.md](docs/PLATFORM_MATRIX.md),
+[docs/WINDOWS_ARCHITECTURE.md](docs/WINDOWS_ARCHITECTURE.md).
+
 ## Security model, briefly
 
 A model is an untrusted planner, local or cloud alike. Its output is

@@ -80,6 +80,31 @@ tree and runs only when `PEGOLES_BINARY_RELEASES` is enabled.
 | Native consent for cloud planner and key | PASS (logic) | `consent.rs` tests with an injected decider and the decline backoff |
 | Lifecycle / resource soak | PASS | `release_soak`: 12 VM lifecycles, 1200 observations, 60 inferences with 2 forced worker kills; nothing left after each destroy |
 
+## Windows gates (0.2 candidate, in progress)
+
+For the first Windows release (a future `v0.2.0-rc.1`). **Nothing below is
+PASS on consumer hardware**: the project has no Windows PC yet. CI rows run
+on GitHub's Windows Server 2025 runners (real Windows and Hyper-V, nested,
+as an administrator), which is evidence for the code, not for a consumer
+PC.
+
+| # | Gate | Status | Evidence / what it needs |
+|---|---|---|---|
+| W1 | Windows crates build, lint and test on Windows | PENDING (CI) | `ci.yml` job `windows` |
+| W2 | Webview has no network under WebView2 | PENDING (CI) | `webview_egress_probe` control + contained in `windows` |
+| W3 | Installer builds; silent per-machine install registers the broker; uninstall leaves nothing | PENDING (CI) | `windows-installer` |
+| W4 | HCS VM boots through the helper and the broker (empty disk) | PENDING (CI) | `windows-hcs-smoke.ps1` in `windows-installer` |
+| W5 | Model worker starts inside its AppContainer and job from the install folder | PENDING (CI) | `the_real_worker_starts_confined` in `windows-installer` |
+| W6 | x64 guest image built and provisioned from pinned inputs | PENDING (CI) | `guest-image-x64` |
+| W7 | Guest runtime reachable over AF_HYPERV in a booted x64 guest | PENDING (CI) | `windows-guest-boot` |
+| W8 | x64 image published with pins in `catalog/images.json` | NOT DONE | Publishing a release asset needs the owner's approval |
+| W9 | Local model quality on the GGUF path (MAI-UI-2B Q8_0, llama.cpp) | PASS on macOS (Metal), not on Windows | `local_bench` on the real VM: 17/22 goals, the same as MLX 6-bit; 0 % invalid outputs; worker peak 2.4 GB (`benchmarks/local-models/README.md`, `results-gguf.json`) |
+| W10 | Consumer PC end to end: Windows 11 Home and Pro, standard user, virtualization off → onboarding turns it on → restart → resume → first task | NOT RUN | A Windows 11 PC (Home and Pro), ideally one with an NVIDIA/AMD GPU and one CPU-only |
+| W11 | Performance on Windows (CPU and Vulkan step latency, memory) | NOT MEASURED | Same PCs as W10 |
+| W12 | Authenticode signing of the installer and binaries | DEFERRED | A certificate: SignPath Foundation (free for OSS, application needed) or Azure Artifact Signing (individual accounts: US/Canada only today) |
+| W13 | SmartScreen / Smart App Control with a signed build | NOT RUN | Follows W12; unsigned builds are blocked by Smart App Control and warned by SmartScreen, and Pegoles never asks anyone to turn either off |
+| W14 | WinGet | DRAFT | `packaging/winget/` (not submitted; needs a published release) |
+
 ## Supply chain and provenance
 
 | Item | Status | Evidence |
