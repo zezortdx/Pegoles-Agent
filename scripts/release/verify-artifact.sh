@@ -25,6 +25,10 @@ case "${2:-}" in
 esac
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Tool output is captured and then matched (here-strings, case), never piped
+# into grep -q or head: with pipefail, their early exit kills the producer
+# with SIGPIPE, the pipeline fails, and a check could pass on a match.
+# (Listings cut with head turn pipefail off inside their own $(...).)
 ok() { echo "ok: $*"; }
 
 MOUNT=""
@@ -34,8 +38,8 @@ trap cleanup EXIT
 if [[ "$TARGET" == *.dmg ]]; then
   if [ "$DIST" = 1 ]; then
     codesign --verify --strict --verbose=2 "$TARGET" >/dev/null 2>&1 || fail "DMG signature"
-    spctl --assess --type open --context context:primary-signature -v "$TARGET" 2>&1 \
-      | grep -q "accepted" || fail "Gatekeeper rejects the DMG"
+    grep -q "accepted" <<<"$(spctl --assess --type open --context context:primary-signature -v "$TARGET" 2>&1)" \
+      || fail "Gatekeeper rejects the DMG"
     xcrun stapler validate "$TARGET" >/dev/null || fail "DMG has no stapled ticket"
     ok "DMG signed, accepted by Gatekeeper, stapled"
   fi
@@ -63,11 +67,11 @@ codesign --verify --deep --strict --verbose=2 "$APP" >/dev/null 2>&1 \
 ok "bundle signature (strict)"
 
 entitlements() { codesign -d --entitlements - --xml "$1" 2>/dev/null || true; }
-entitlements "$HELPER" | grep -q "com.apple.security.virtualization" || fail "helper lacks the virtualization entitlement"
+grep -q "com.apple.security.virtualization" <<<"$(entitlements "$HELPER")" || fail "helper lacks the virtualization entitlement"
 [ "$(entitlements "$HELPER" | grep -o '<key>[^<]*</key>' | sort -u | wc -l | tr -d ' ')" = 1 ] \
   || fail "helper has entitlements beyond virtualization: $(entitlements "$HELPER")"
 for f in "$MAIN" "$PY"; do
-  entitlements "$f" | grep -q '<key>' && fail "unexpected entitlements on $f: $(entitlements "$f")"
+  grep -q '<key>' <<<"$(entitlements "$f")" && fail "unexpected entitlements on $f: $(entitlements "$f")"
 done
 ok "entitlements (helper: virtualization only; app and interpreter: none)"
 
@@ -75,7 +79,7 @@ TEAM=""
 if [ "$SIGNED" = 1 ]; then
   TEAM="$(codesign -dv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
   [ -n "$TEAM" ] && [ "$TEAM" != "not set" ] || fail "no Team ID on the app"
-  codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "^Authority=Developer ID Application:" \
+  grep -q "^Authority=Developer ID Application:" <<<"$(codesign -dv --verbose=4 "$APP" 2>&1)" \
     || fail "app not signed with a Developer ID Application certificate"
 fi
 
@@ -93,16 +97,16 @@ while IFS= read -r -d '' f; do
   info="$(codesign -dv --verbose=4 "$f" 2>&1)" || fail "unsigned Mach-O: $f"
   codesign --verify --strict "$f" 2>/dev/null || fail "invalid signature: $f"
   if [ "$SIGNED" = 1 ]; then
-    echo "$info" | grep -q "TeamIdentifier=$TEAM" || fail "different Team ID: $f"
-    echo "$info" | grep -Eq "flags=0x[0-9a-f]*\(.*runtime" || fail "no hardened runtime: $f"
-    echo "$info" | grep -q "^Timestamp=" || fail "no secure timestamp: $f"
+    grep -q "TeamIdentifier=$TEAM" <<<"$info" || fail "different Team ID: $f"
+    grep -Eq "flags=0x[0-9a-f]*\(.*runtime" <<<"$info" || fail "no hardened runtime: $f"
+    grep -q "^Timestamp=" <<<"$info" || fail "no secure timestamp: $f"
   fi
 done < <(find "$APP" -type f -print0)
 ok "$machos Mach-O files signed$([ "$SIGNED" = 1 ] && echo ", hardened runtime, timestamped, Team $TEAM")"
 
-bad="$(find "$APP" -perm -g+w -o -perm -o+w | head -5)"
+bad="$(set +o pipefail; find "$APP" -perm -g+w -o -perm -o+w | head -5)"
 [ -z "$bad" ] || fail "group/other-writable files: $bad"
-bad="$(find "$APP" \( -perm -4000 -o -perm -2000 -o -perm -1000 \) | head -5)"
+bad="$(set +o pipefail; find "$APP" \( -perm -4000 -o -perm -2000 -o -perm -1000 \) | head -5)"
 [ -z "$bad" ] || fail "setuid/setgid/sticky files: $bad"
 while IFS= read -r -d '' l; do
   t="$(cd "$(dirname "$l")" && realpath "$(readlink "$l")" 2>/dev/null || true)"
@@ -123,7 +127,7 @@ ok "worker, lock and runtime manifest match the checkout"
 
 # certifi's cacert.pem is the public Mozilla CA bundle (required by the
 # HTTP stack mlx-vlm imports); any other PEM is refused.
-forbidden="$(find "$APP" ! -path '*/site-packages/certifi/cacert.pem' \( -name '*.safetensors' -o -name '*.gguf' -o -name '*.pem' -o -name '*.p12' \
+forbidden="$(set +o pipefail; find "$APP" ! -path '*/site-packages/certifi/cacert.pem' \( -name '*.safetensors' -o -name '*.gguf' -o -name '*.pem' -o -name '*.p12' \
   -o -name '*.key' -o -name '.env' -o -name 'pyvenv.cfg' -o -name '*.img' -o -name '*.raw' \
   -o -name 'pip' -o -name 'ensurepip' \) | head -5)"
 [ -z "$forbidden" ] || fail "forbidden content in bundle: $forbidden"
@@ -131,18 +135,19 @@ forbidden="$(find "$APP" ! -path '*/site-packages/certifi/cacert.pem' \( -name '
 # anywhere, the builder's home in our own binaries. (Third-party wheel
 # metadata legitimately mentions its own CI paths, e.g. /Users/runner/work.)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-if grep -rIlF --exclude='*.pyc' "$REPO_ROOT" "$APP" 2>/dev/null | grep -q .; then
-  fail "checkout path in bundle: $(grep -rIlF "$REPO_ROOT" "$APP" | head -3)"
-fi
+leaks="$(grep -rIlF --exclude='*.pyc' "$REPO_ROOT" "$APP" 2>/dev/null || true)"
+[ -z "$leaks" ] || fail "checkout path in bundle: $(sed -n 1,3p <<<"$leaks")"
 for f in "$MAIN" "$HELPER"; do
-  if strings -a "$f" | grep -qF -e "$HOME/" -e "$REPO_ROOT"; then
-    fail "build-machine path embedded in $(basename "$f"): $(strings -a "$f" | grep -m3 -F -e "$HOME/" -e "$REPO_ROOT")"
-  fi
+  s="$(strings -a "$f")"
+  case "$s" in
+    *"$HOME/"* | *"$REPO_ROOT"*)
+      fail "build-machine path embedded in $(basename "$f"): $(grep -m3 -F -e "$HOME/" -e "$REPO_ROOT" <<<"$s")" ;;
+  esac
 done
 ok "no weights, keys, venvs, installers or developer paths"
 
 if [ "$DIST" = 1 ]; then
-  spctl --assess --type execute -vv "$APP" 2>&1 | grep -q "source=Notarized Developer ID" \
+  grep -q "source=Notarized Developer ID" <<<"$(spctl --assess --type execute -vv "$APP" 2>&1)" \
     || fail "Gatekeeper: not accepted as a notarized Developer ID app"
   xcrun stapler validate "$APP" >/dev/null || fail "app has no stapled ticket"
   ok "Gatekeeper accepts (Notarized Developer ID), ticket stapled"

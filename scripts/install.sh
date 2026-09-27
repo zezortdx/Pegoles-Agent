@@ -27,9 +27,28 @@ set -euo pipefail
 
 # --- clean environment ------------------------------------------------------
 # Developer settings (RUSTFLAGS, CARGO_*, NODE_OPTIONS, PYTHON*, DYLD_*,
-# PEGOLES_* overrides, a custom PATH) must not reach the build: re-run this
-# script with only what it needs.
-if [ "${PEGOLES_INSTALL_ENV:-}" != "clean" ]; then
+# PEGOLES_* overrides, a custom PATH, exported shell functions) must not
+# reach the build: re-run this script with only what it needs. The marker
+# alone is not trusted: the environment must also be exactly that set.
+env_is_clean() {
+  [ "${PEGOLES_INSTALL_ENV:-}" = "clean" ] && [ "$PATH" = /usr/bin:/bin:/usr/sbin:/sbin ] || return 1
+  # No shell functions but this one (exported functions are imported).
+  [ "$(declare -F)" = "declare -f env_is_clean" ] || return 1
+  local name
+  for name in $(compgen -e); do
+    case "$name" in
+      PEGOLES_INSTALL_ENV | HOME | USER | LOGNAME | TMPDIR | TERM | LANG | LC_ALL | PATH | PWD | SHLVL | OLDPWD | _) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+if ! env_is_clean; then
+  if [ "${PEGOLES_INSTALL_ENV:-}" = "clean" ]; then
+    # Only reachable if the marker was set from outside, or the system adds
+    # variables after env -i: stop rather than build in that environment.
+    echo "error: unexpected environment for the installer: $(compgen -e | tr '\n' ' ')" >&2
+    exit 1
+  fi
   exec /usr/bin/env -i \
     PEGOLES_INSTALL_ENV=clean \
     HOME="${HOME:-}" \
@@ -42,6 +61,7 @@ if [ "${PEGOLES_INSTALL_ENV:-}" != "clean" ]; then
     PATH=/usr/bin:/bin:/usr/sbin:/sbin \
     /bin/bash "${BASH_SOURCE[0]}" "$@"
 fi
+unset -f env_is_clean
 umask 022
 
 # --- pinned build tools -------------------------------------------------------
@@ -76,21 +96,23 @@ case "$ROOT" in /*) ;; *) die "cannot resolve the checkout directory" ;; esac
 # Paths reach several build tools; refuse characters that some of them
 # would interpret (spaces are fine).
 unsafe_path() {
-  case "$1" in *'"'* | *'$'* | *'`'* | *'\'* | *"
+  case "$1" in *'"'* | *'$'* | *'`'* | *'\'* | *'*'* | *'?'* | *'['* | *"
 "*) return 0 ;; esac
   return 1
 }
-unsafe_path "$ROOT" && die "the checkout path contains a quote, \$, backtick, backslash or newline: move it"
-unsafe_path "${HOME:-}" && die "HOME contains a quote, \$, backtick, backslash or newline"
+unsafe_path "$ROOT" && die "the checkout path contains a quote, \$, backtick, backslash, *, ?, [ or a newline: move it"
+unsafe_path "${HOME:-}" && die "HOME contains a quote, \$, backtick, backslash, *, ?, [ or a newline"
 for f in Cargo.toml Cargo.lock pnpm-lock.yaml scripts/package-macos.sh \
   apps/desktop/src-tauri/tauri.conf.json workers/mlx/requirements.lock; do
   [ -f "$ROOT/$f" ] || die "$ROOT does not look like a Pegoles checkout (missing $f)"
 done
 grep -q "\"identifier\": \"$BUNDLE_ID\"" "$ROOT/apps/desktop/src-tauri/tauri.conf.json" \
   || die "unexpected app identifier in tauri.conf.json"
-VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$ROOT/apps/desktop/src-tauri/tauri.conf.json" | head -1)"
+VERSION="$(sed -n '/^  "version": "/{s/^  "version": "\(.*\)",$/\1/p;q;}' "$ROOT/apps/desktop/src-tauri/tauri.conf.json")"
 [ -n "$VERSION" ] || die "cannot read the version from tauri.conf.json"
 TARGET_DIR="$ROOT/target"
+# target/ (git-ignored) is part of the checkout's trust boundary, like the
+# sources: the installer reuses tools it verified and stamped there.
 TOOLS="$TARGET_DIR/bootstrap"
 
 # --- preflight --------------------------------------------------------------------
@@ -123,14 +145,38 @@ preflight() {
   # attributes. The installer does not remove them for you: clone with git
   # (which never sets them), or clear them yourself if you trust the source.
   local quarantined
-  quarantined="$(find "$ROOT" \( -path "$TARGET_DIR" -o -path "$ROOT/node_modules" -o -path "$ROOT/.git" \) -prune \
-    -o -xattrname com.apple.quarantine -print 2>/dev/null | head -3)"
+  # (head closes the pipe early: pipefail off inside this subshell only)
+  quarantined="$(
+    set +o pipefail
+    find "$ROOT" \( -path "$TARGET_DIR" -o -path "$ROOT/node_modules" -o -path "$ROOT/.git" \) -prune \
+      -o -xattrname com.apple.quarantine -print 2>/dev/null | head -3
+  )"
   if [ -n "$quarantined" ]; then
     die "files in this checkout are quarantined (downloaded from the internet), e.g.:
 $quarantined
 Clone the repository with git instead (see README.md), or, if you trust this
 copy, remove the attribute yourself: xattr -dr com.apple.quarantine \"$ROOT\""
   fi
+
+  # Cargo reads .cargo/config.toml from the build directory and every
+  # directory above it, whatever CARGO_HOME says. One that another user
+  # could have planted (e.g. in /tmp) could run code in the build: refuse
+  # it. Your own (e.g. ~/.cargo/config.toml) applies too: say so.
+  local d="$ROOT" f
+  while :; do
+    for f in "$d/.cargo/config" "$d/.cargo/config.toml"; do
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      if [ -L "$f" ] || [ "$(stat -f %u "$f")" != "$(id -u)" ] || [ "$(stat -f %u "$d/.cargo")" != "$(id -u)" ]; then
+        die "$f is not owned by you (or is a link); cargo would apply it to this build: remove it or move the checkout"
+      fi
+      case "$(stat -f %Lp "$f") $(stat -f %Lp "$d/.cargo")" in
+        *[2367]? | *[2367] | *[2367]?\ * | *[2367]\ *) die "$f or its folder is writable by other users; cargo would apply it to this build" ;;
+      esac
+      echo "note: your cargo configuration $f applies to this build" >&2
+    done
+    [ "$d" = "/" ] && break
+    d="$(dirname "$d")"
+  done
 
   mkdir -p "$TARGET_DIR"
   # A rebuild reuses the tools and most of the build cache.
@@ -152,8 +198,9 @@ take_lock() {
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       die "another install is running (pid $pid)"
     fi
-    rm -rf "$LOCK"
-    mkdir "$LOCK" || die "cannot take the install lock $LOCK"
+    # Stale: move it aside atomically (only one racer can), then retake.
+    mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
+    mkdir "$LOCK" 2>/dev/null || die "cannot take the install lock $LOCK (another install may be starting)"
   fi
   echo $$ >"$LOCK/pid"
 }
@@ -228,7 +275,7 @@ build_rust() {
     done <"$top/components"
   done
   rm -rf "$tmp"
-  "$stage/bin/rustc" --version | grep -q "^rustc $RUST_VERSION " || die "unexpected rustc"
+  case "$("$stage/bin/rustc" --version)" in "rustc $RUST_VERSION "*) ;; *) die "unexpected rustc" ;; esac
 }
 
 build_node() {
@@ -246,7 +293,9 @@ build_pnpm() {
 }
 
 build_cargo_about() {
-  # From crates.io, with the lockfile it was published with.
+  # From crates.io: the version is immutable there, cargo checks the crate
+  # against the registry index checksum, and --locked pins every dependency
+  # by checksum (the same trust as the app's own Cargo.lock).
   cargo install --quiet --locked --features cli --root "$1" "cargo-about@$CARGO_ABOUT_VERSION"
   [ -x "$1/bin/cargo-about" ] || die "cargo-about did not build"
 }
@@ -312,15 +361,23 @@ install_app() {
   elif [ -e "$dest" ]; then
     [ -d "$dest" ] && [ "$(bundle_id "$dest")" = "$BUNDLE_ID" ] \
       || die "$dest exists and is not Pegoles; move it away and run the installer again"
-    if ps -axo command= | grep -qF "$dest/Contents/"; then
-      die "Pegoles is running from $dest; quit it and run the installer again"
-    fi
+    # No pipe into grep -q here: under pipefail, grep's early exit fails
+    # ps with SIGPIPE and the check would read as "not running".
+    local procs
+    procs="$(ps -axww -o command=)"
+    case "$procs" in *"$dest/Contents/"*)
+      die "Pegoles is running from $dest; quit it and run the installer again" ;;
+    esac
   fi
 
-  # Leftovers of an interrupted earlier install (exact names only).
-  local old
+  # Leftovers of an interrupted earlier install (exact names only, and only
+  # if the installer that made them is gone).
+  local old pid
   for old in "$dir"/.Pegoles.app.installing.* "$dir"/.Pegoles.app.previous.*; do
     [ -d "$old" ] || continue
+    pid="${old##*.}"
+    case "$pid" in '' | *[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null && continue
     case "$(basename "$old")" in
       .Pegoles.app.installing.[0-9]* | .Pegoles.app.previous.[0-9]*) rm -rf "$old" ;;
     esac
@@ -361,6 +418,7 @@ main() {
     "") ;;
     *) die "unknown option: $1 (see --help)" ;;
   esac
+  cd "$ROOT"
   preflight
   trap cleanup EXIT
   take_lock

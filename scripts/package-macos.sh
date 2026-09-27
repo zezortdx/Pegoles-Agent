@@ -48,7 +48,7 @@ APP="$ROOT/target/release/bundle/macos/Pegoles Agent.app"
 # --- versions must agree -------------------------------------------------
 json_version() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$1"; }
 VERSION="$(json_version "$TAURI_DIR/tauri.conf.json")"
-CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$TAURI_DIR/Cargo.toml" | head -1)"
+CARGO_VERSION="$(sed -n '/^version = "/{s/^version = "\(.*\)"/\1/p;q;}' "$TAURI_DIR/Cargo.toml")"
 for v in "$CARGO_VERSION" "$(json_version "$ROOT/apps/desktop/package.json")" "$(json_version "$ROOT/package.json")"; do
   [ "$v" = "$VERSION" ] || { echo "version mismatch: tauri.conf.json=$VERSION vs $v" >&2; exit 1; }
 done
@@ -87,8 +87,11 @@ build() {
 sign_bundle() {
   [ -d "$APP" ] || { echo "no assembled bundle at $APP (run the build stage)" >&2; exit 1; }
   if [ -n "$IDENTITY" ]; then
-    security find-identity -v -p codesigning | grep -Fq "\"$IDENTITY\"" \
-      || { echo "signing identity not found in the keychain: $IDENTITY" >&2; exit 1; }
+    # Captured, not piped into grep -q: under pipefail an early grep exit
+    # would fail the pipeline even on a match.
+    local identities
+    identities="$(security find-identity -v -p codesigning)"
+    case "$identities" in *"\"$IDENTITY\""*) ;; *) echo "signing identity not found in the keychain: $IDENTITY" >&2; exit 1 ;; esac
     case "$IDENTITY" in
       "Developer ID Application:"*) ;;
       *) echo "distribution requires a 'Developer ID Application' identity" >&2; exit 1 ;;
@@ -96,7 +99,12 @@ sign_bundle() {
   else
     echo "WARNING: PEGOLES_SIGN_IDENTITY unset; ad-hoc signing. NOT FOR DISTRIBUTION." >&2
   fi
-  # Extended attributes (quarantine, Finder info) break code signatures.
+  # Extended attributes (Finder info, resource forks) break code
+  # signatures, so they are cleared. A quarantine attribute is not: it
+  # would mean downloaded content reached the bundle, so stop instead.
+  local quarantined
+  quarantined="$(set +o pipefail; find "$APP" -xattrname com.apple.quarantine -print 2>/dev/null | head -3)"
+  [ -z "$quarantined" ] || { echo "quarantined files in the bundle (not removing the attribute): $quarantined" >&2; exit 1; }
   xattr -cr "$APP"
   # Normalize modes: nothing setuid/setgid/sticky or writable by others.
   chmod -R u+rwX,go-w,-s,-t "$APP"

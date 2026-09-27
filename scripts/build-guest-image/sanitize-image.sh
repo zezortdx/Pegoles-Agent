@@ -52,19 +52,19 @@ echo "rm /var/lib/systemd/random-seed" >> "$CMDS"
 "$E2FSCK" -fn "$FS" >/dev/null
 
 # Proof: nothing that looks like a private key in the places that hold them.
+# debugfs output is captured and then matched, never piped into grep -q:
+# under pipefail, grep's early exit would fail the pipeline on a match and
+# the check would pass.
 fail=0
-if "$DEBUGFS" -R "ls /etc/ssh" "$FS" 2>/dev/null | grep -q "ssh_host_"; then
-  echo "FAIL: SSH host keys still present" >&2; fail=1
-fi
-if "$DEBUGFS" -R "stat /var/lib/systemd/random-seed" "$FS" 2>/dev/null | grep -q "Inode:"; then
-  echo "FAIL: random seed still present" >&2; fail=1
-fi
+out="$("$DEBUGFS" -R "ls /etc/ssh" "$FS" 2>/dev/null || true)"
+case "$out" in *ssh_host_*) echo "FAIL: SSH host keys still present" >&2; fail=1 ;; esac
+out="$("$DEBUGFS" -R "stat /var/lib/systemd/random-seed" "$FS" 2>/dev/null || true)"
+case "$out" in *Inode:*) echo "FAIL: random seed still present" >&2; fail=1 ;; esac
 for dir in /etc/ssh /etc/ssl/private /root /root/.ssh /home/debian /home/debian/.ssh /var/lib/pegoles; do
   names="$("$DEBUGFS" -R "ls -p $dir" "$FS" 2>/dev/null | awk -F/ 'NF>5 && $3 ~ /^100/ {print $6}')" || true
   for name in $names; do
-    if "$DEBUGFS" -R "cat $dir/$name" "$FS" 2>/dev/null | grep -q "PRIVATE KEY"; then
-      echo "FAIL: private key material in $dir/$name" >&2; fail=1
-    fi
+    out="$("$DEBUGFS" -R "cat $dir/$name" "$FS" 2>/dev/null || true)"
+    case "$out" in *"PRIVATE KEY"*) echo "FAIL: private key material in $dir/$name" >&2; fail=1 ;; esac
   done
 done
 for f in /root/.ssh/authorized_keys /home/debian/.ssh/authorized_keys; do

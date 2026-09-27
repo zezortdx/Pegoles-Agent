@@ -19,5 +19,5 @@ if [[ ! -f "$HELPER" ]]; then
   exit 1
 fi
 codesign --entitlements "$PLIST" -f -s - "$HELPER"
-codesign -d --entitlements - "$HELPER" 2>/dev/null | grep -q "com.apple.security.virtualization"
+grep -q "com.apple.security.virtualization" <<<"$(codesign -d --entitlements - "$HELPER" 2>/dev/null)"
 echo "signed $HELPER with the virtualization entitlement"

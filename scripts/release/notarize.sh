@@ -34,8 +34,8 @@ case "$IDENTITY" in
   "Developer ID Application:"*) ;;
   *) fail "PEGOLES_SIGN_IDENTITY must be a 'Developer ID Application: ...' identity" ;;
 esac
-security find-identity -v -p codesigning | grep -Fq "\"$IDENTITY\"" \
-  || fail "signing identity not found in the keychain: $IDENTITY"
+identities="$(security find-identity -v -p codesigning)"
+case "$identities" in *"\"$IDENTITY\""*) ;; *) fail "signing identity not found in the keychain: $IDENTITY" ;; esac
 [ -d "$APP" ] || fail "no app at $APP (run scripts/package-macos.sh first)"
 VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$TAURI_DIR/tauri.conf.json")"
 DMG="$OUT/Pegoles_${VERSION}_arm64.dmg"
@@ -62,7 +62,7 @@ fi
 # The app must already be a valid Developer ID + hardened-runtime build;
 # notarization would reject anything else after a long round trip.
 codesign --verify --strict --verbose=2 "$APP" >/dev/null 2>&1 || fail "app signature is invalid"
-codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "^Authority=Developer ID Application:" \
+grep -q "^Authority=Developer ID Application:" <<<"$(codesign -dv --verbose=4 "$APP" 2>&1)" \
   || fail "app is not signed with a Developer ID Application certificate"
 
 json_field() { # json_field <file> <key>
