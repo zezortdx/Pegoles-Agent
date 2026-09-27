@@ -276,9 +276,8 @@ jobs:
             "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/windows/vulkansdk-windows-X64-${VULKAN_SDK_VERSION}.exe"
           echo "$VULKAN_SDK_SHA256  $RUNNER_TEMP/vulkansdk.exe" | sha256sum --strict -c -
           "$RUNNER_TEMP/vulkansdk.exe" --root 'C:\VulkanSDK' --accept-licenses --default-answer --confirm-command install
-          echo 'VULKAN_SDK=C:\VulkanSDK' >> "$GITHUB_ENV"
-          echo 'C:\VulkanSDK\Bin' >> "$GITHUB_PATH"
-          echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+          printf '%s\n' 'VULKAN_SDK=C:\VulkanSDK' 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+          printf '%s\n' 'C:\VulkanSDK\Bin' >> "$GITHUB_PATH"
       - run: cargo clippy --locked --manifest-path workers/llama/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path workers/llama/Cargo.toml
       - run: bash scripts/package-windows.sh

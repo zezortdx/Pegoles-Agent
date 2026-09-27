@@ -271,6 +271,7 @@ fn named_tmp_dir(name: &str) -> Result<(PathBuf, OwnedFd), InferenceError> {
 
 /// A fresh, emptied private temp dir for another sandboxed worker (the
 /// llama.cpp one), with the same guarantees as the MLX worker's.
+#[cfg(target_os = "macos")]
 pub(crate) fn fresh_private_tmp(name: &str) -> Result<PathBuf, InferenceError> {
     let (dir, fd) = named_tmp_dir(name)?;
     clear_dir(fd, 0, &mut ClearBudget::new());
