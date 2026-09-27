@@ -236,3 +236,13 @@ Note on "first token": the llama.cpp worker times the image encoding
 and prompt prefill separately from the first generated token, while the
 MLX worker's first-token time includes them, so that column is not
 comparable and is left out.
+
+### CPU only (the fallback when no GPU backend works)
+
+Same worker with `PEGOLES_LLM_CPU=1` (`PEGOLES_BENCH_CPU=1` in the
+harness), four grounding tasks, M4 Pro CPU (12 cores): 3/4 goals, step
+latency p50 17.5 s / p95 39.1 s (about 5× the Metal path), task duration
+p50 146 s, worker 3.75 GB after load / 4.48 GB peak (weights in system
+memory). Usable but slow; a typical Windows laptop CPU will be slower
+still, which is why onboarding's system check says which accelerator
+Pegoles Local expects to use.
