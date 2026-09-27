@@ -96,10 +96,10 @@ TOOLS="$TARGET_DIR/bootstrap"
 # --- preflight --------------------------------------------------------------------
 preflight() {
   [ "$(uname -s)" = "Darwin" ] || die "Pegoles runs on macOS only"
-  [ "$(uname -m)" = "arm64" ] || die "Pegoles needs a Mac with Apple silicon (this shell reports $(uname -m))"
   if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = "1" ]; then
     die "this shell runs under Rosetta; run the installer from a native (arm64) terminal"
   fi
+  [ "$(uname -m)" = "arm64" ] || die "Pegoles needs a Mac with Apple silicon (this shell reports $(uname -m))"
   local os major
   os="$(sw_vers -productVersion)"
   major="${os%%.*}"
