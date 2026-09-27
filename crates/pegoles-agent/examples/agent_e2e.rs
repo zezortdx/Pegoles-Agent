@@ -65,10 +65,14 @@ impl CoreAccess for Shared {
 fn fail(msg: &str, shared: &Shared) -> ! {
     eprintln!("AGENT E2E FAIL: {msg}");
     shared.with_core(|r, _| {
-        if let Ok(log) = r.read_boot_log(40) {
-            for line in log.tail {
-                eprintln!("serial: {line}");
+        match r.read_boot_log(40) {
+            Ok(log) => {
+                eprintln!("serial log: {} lines shown", log.tail.len());
+                for line in log.tail {
+                    eprintln!("serial: {line}");
+                }
             }
+            Err(e) => eprintln!("serial log unavailable: {e}"),
         }
         let _ = r.destroy();
     });

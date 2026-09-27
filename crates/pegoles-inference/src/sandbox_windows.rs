@@ -58,9 +58,9 @@ use windows::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, UpdateProcThreadAttribute,
     WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 use crate::backend::InferenceError;
@@ -504,6 +504,9 @@ pub(crate) fn spawn(cfg: &LlamaWorkerConfig) -> Result<Spawned, InferenceError> 
     startup.lpAttributeList = attrs.list();
     let job = job(cfg.memory_limit_bytes)?;
     let mut info = PROCESS_INFORMATION::default();
+    // Detached: no console at all (an AppContainer cannot start the
+    // console host a console program would otherwise get, and the process
+    // dies in DLL initialization); its standard handles are our pipes.
     // SAFETY: every pointer refers to a live local; the process starts
     // suspended so it is in the job before it runs a single instruction.
     unsafe {
@@ -515,7 +518,7 @@ pub(crate) fn spawn(cfg: &LlamaWorkerConfig) -> Result<Spawned, InferenceError> 
             true,
             EXTENDED_STARTUPINFO_PRESENT
                 | CREATE_UNICODE_ENVIRONMENT
-                | CREATE_NO_WINDOW
+                | DETACHED_PROCESS
                 | CREATE_SUSPENDED,
             Some(env.as_ptr().cast()),
             PCWSTR(dir.as_ptr()),

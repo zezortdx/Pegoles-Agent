@@ -270,9 +270,20 @@ impl ChildTransport {
     pub(crate) fn spawn(binary: &Path, display_name: &str) -> Result<Self> {
         // Fixed binary, no arguments, scrubbed environment: the helper
         // gets nothing from the host environment it does not need.
-        let mut child = Command::new(binary)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        let mut command = Command::new(binary);
+        command.env_clear();
+        if cfg!(windows) {
+            // Winsock (the guest channel) cannot create a socket without
+            // SystemRoot; nothing else is passed.
+            for key in ["SystemRoot", "windir"] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+        } else {
+            command.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

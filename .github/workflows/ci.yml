@@ -449,6 +449,17 @@ jobs:
           New-Item -ItemType Directory -Force $env:PEGOLES_E2E_OUT | Out-Null
           cargo run --locked -p pegoles-agent --example agent_e2e
           if ($LASTEXITCODE -ne 0) { throw 'agent E2E failed' }
+      - name: The computer's files and COM1 log (on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA 'Pegoles'
+          Get-ChildItem -Recurse $root -ErrorAction SilentlyContinue | Format-Table FullName, Length -AutoSize | Out-String -Width 300
+          Get-ChildItem -Recurse $root -Filter serial.log -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Output "--- $($_.FullName) ($($_.Length) bytes) ---"
+            Get-Content $_.FullName -Tail 60
+          }
+          if (Get-Command hcsdiag -ErrorAction SilentlyContinue) { hcsdiag list }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

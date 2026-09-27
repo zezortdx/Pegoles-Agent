@@ -59,7 +59,15 @@ pub struct GuestLink {
 
 fn try_connect(vm: GUID, service: GUID) -> Option<SOCKET> {
     // SAFETY: plain socket creation.
-    let sock = unsafe { socket(AF_HYPERV as i32, SOCK_STREAM, HV_PROTOCOL_RAW as i32) }.ok()?;
+    let sock = match unsafe { socket(AF_HYPERV as i32, SOCK_STREAM, HV_PROTOCOL_RAW as i32) } {
+        Ok(sock) => sock,
+        Err(e) => {
+            // Said once: the loop retries every second.
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| eprintln!("pegoles-vm-host: cannot create a Hyper-V socket: {e}"));
+            return None;
+        }
+    };
     let timeout = CONNECT_TIMEOUT_MS.to_le_bytes();
     let suspend = 1u32.to_le_bytes();
     // SAFETY: option buffers are the documented 4-byte values.
