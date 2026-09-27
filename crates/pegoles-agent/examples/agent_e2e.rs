@@ -174,6 +174,22 @@ fn main() {
         ),
         tasks: TaskManager::new(bus.clone()),
     })));
+    // Guest and computer lifecycle events, as they happen (diagnostics:
+    // why a boot or a handshake failed).
+    {
+        let mut events = bus.subscribe();
+        std::thread::spawn(move || {
+            while let Ok(event) = events.blocking_recv() {
+                let text = format!("{event:?}");
+                if text.starts_with("Guest")
+                    || text.starts_with("Computer")
+                    || text.starts_with("InputCapability")
+                {
+                    eprintln!("event: {}", text.chars().take(300).collect::<String>());
+                }
+            }
+        });
+    }
     // Core maintenance independent of any caller (the desktop app runs
     // the same loop): guest heartbeats keep flowing during waits.
     {

@@ -628,11 +628,23 @@ mod tests {
         reader: &mut impl BufRead,
         request: serde_json::Value,
     ) -> serde_json::Value {
-        writeln!(spawned.stdin, "{request}").unwrap();
-        spawned.stdin.flush().unwrap();
+        let _ = writeln!(spawned.stdin, "{request}");
+        let _ = spawned.stdin.flush();
         let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        serde_json::from_str(&line).unwrap_or_else(|_| panic!("reply: {line:?}"))
+        let _ = reader.read_line(&mut line);
+        match serde_json::from_str(&line) {
+            Ok(reply) => reply,
+            Err(_) => {
+                // The stand-in died: say how.
+                let code = spawned.child.terminate();
+                let mut stderr = String::new();
+                let _ = std::io::Read::read_to_string(&mut spawned.stderr, &mut stderr);
+                panic!(
+                    "no reply to {request}: exit {code:?} (0x{:08x}), stderr {stderr:?}",
+                    code.unwrap_or(0) as u32
+                );
+            }
+        }
     }
 
     /// Escape probes, the Windows counterpart of the macOS worker's
@@ -652,6 +664,7 @@ mod tests {
             serde_json::json!({"v": 1, "id": 2, "op": "probe", "file": secret, "addr": addr});
 
         for confined in [false, true] {
+            eprintln!("stand-in, confined: {confined}");
             let mut cfg = LlamaWorkerConfig::new(stand_in(), models.path().to_path_buf());
             cfg.sandbox = confined;
             let mut spawned = spawn(&cfg).expect("stand-in starts");
