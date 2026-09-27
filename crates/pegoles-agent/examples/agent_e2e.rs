@@ -1,4 +1,5 @@
-//! Real end-to-end proof on Apple Silicon: the product orchestrator
+//! Real end-to-end proof on Apple Silicon (and, with the same code, on
+//! Windows through the Host Compute System): the product orchestrator
 //! (`run_task` + `CoreComputer`, the same code the desktop app runs)
 //! drives a real Virtualization.framework VM booted from the sealed
 //! Pegoles image. No mocks: every action crosses Core's executor,
@@ -22,6 +23,12 @@
 //! 5. recovery: kill the guest runtime from inside the guest; the host
 //!    sees the disconnect and the runtime reconnects;
 //! 6. teardown, then a second session boots and observes successfully.
+//!
+//! On Windows (a debug build: the x64 image is sealed locally with
+//! `seal_x64_image`, and release builds boot only pinned images), with
+//! Pegoles' broker service installed and
+//! `PEGOLES_VM_HOST_WINDOWS` pointing at the installed helper; CI's
+//! `windows-guest-boot` job runs it that way.
 //!
 //! `PEGOLES_E2E_OUT=<dir>` saves the verification frames as PNG.
 //! Exit 0 only when every assertion holds.
@@ -155,9 +162,15 @@ fn main() {
     println!("image: {}", pegoles_computer::active_image_id());
     let bus = EventBus::new();
     let shared = Shared(Arc::new(Mutex::new(Core {
+        // The host's own backend: Virtualization.framework on a Mac, the
+        // Host Compute System (through the broker service) on Windows.
         registry: ComputerRegistry::with_backend_kind(
             bus.clone(),
-            BackendKind::MacOSVirtualization,
+            if cfg!(windows) {
+                BackendKind::WindowsHcs
+            } else {
+                BackendKind::MacOSVirtualization
+            },
         ),
         tasks: TaskManager::new(bus.clone()),
     })));

@@ -403,7 +403,7 @@ jobs:
     name: Windows guest boot (HCS, AF_HYPERV)
     needs: [guest-image-x64]
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
     steps:
@@ -433,6 +433,29 @@ jobs:
       - name: The x64 guest boots and its runtime answers over AF_HYPERV
         shell: pwsh
         run: .github/scripts/windows-hcs-smoke.ps1 -Disk "$env:RUNNER_TEMP\guest\disk.vhdx"
+      # The product path end to end: Core's executor and Pegoles Policy
+      # drive the guest through the helper and the broker (boot, guest
+      # handshake, screenshots, click, typing, keys, cancel, a forged
+      # action denied, the guest runtime killed and recovered, a second
+      # boot). A debug build: it boots the locally sealed image.
+      - name: Seal the x64 image as the Windows product image
+        run: cargo run --locked -p pegoles-computer --example seal_x64_image -- "$RUNNER_TEMP/guest/disk.vhdx" "$RUNNER_TEMP/guest/manifest.json"
+      - name: Agent E2E on Windows (Core, policy, helper, broker, HCS, guest)
+        shell: pwsh
+        env:
+          PEGOLES_VM_HOST_WINDOWS: C:\Program Files\Pegoles Agent\pegoles-vm-host.exe
+          PEGOLES_E2E_OUT: ${{ runner.temp }}\e2e
+        run: |
+          New-Item -ItemType Directory -Force $env:PEGOLES_E2E_OUT | Out-Null
+          cargo run --locked -p pegoles-agent --example agent_e2e
+          if ($LASTEXITCODE -ne 0) { throw 'agent E2E failed' }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: windows-agent-e2e-frames
+          path: ${{ runner.temp }}/e2e
+          retention-days: 3
+          if-no-files-found: ignore
       - name: Unregister the service
         if: always()
         shell: pwsh

@@ -451,6 +451,15 @@ pub(crate) fn spawn(cfg: &LlamaWorkerConfig) -> Result<Spawned, InferenceError> 
             "~implicit~".to_string(),
         ),
     ];
+    // Windows rewrites the profile folders of an AppContainer's
+    // environment to the container's own storage and fails process
+    // creation (ERROR_ENVVAR_NOT_FOUND) when they are absent: pass the
+    // names through (paths only, no secrets) for it to rewrite.
+    for name in ["USERPROFILE", "LOCALAPPDATA", "APPDATA", "SystemDrive"] {
+        if let Ok(value) = std::env::var(name) {
+            vars.push((name.to_string(), value));
+        }
+    }
     if cfg.cpu_only {
         vars.push(("PEGOLES_LLM_CPU".to_string(), "1".to_string()));
     }
@@ -598,6 +607,72 @@ impl ChildProc for PlainChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+
+    /// `examples/stand_in_worker.rs`, built by `cargo test` next to this
+    /// test binary's folder.
+    fn stand_in() -> PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        let debug = exe.parent().and_then(|deps| deps.parent()).unwrap();
+        let path = debug.join("examples").join("stand_in_worker.exe");
+        assert!(
+            path.is_file(),
+            "build it first: cargo test builds examples ({})",
+            path.display()
+        );
+        path
+    }
+
+    fn ask(
+        spawned: &mut Spawned,
+        reader: &mut impl BufRead,
+        request: serde_json::Value,
+    ) -> serde_json::Value {
+        writeln!(spawned.stdin, "{request}").unwrap();
+        spawned.stdin.flush().unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap_or_else(|_| panic!("reply: {line:?}"))
+    }
+
+    /// Escape probes, the Windows counterpart of the macOS worker's
+    /// `sandbox_blocks_escapes`: unconfined, the stand-in can read a file
+    /// of the user's, reach a loopback listener and start a process;
+    /// confined (AppContainer + job object), it can do none of them.
+    #[test]
+    fn a_confined_worker_cannot_read_files_reach_the_network_or_start_processes() {
+        let secret_dir = tempfile::tempdir().unwrap();
+        let secret = secret_dir.path().join("secret.txt");
+        std::fs::write(&secret, b"not for the model").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || for _ in listener.incoming() {});
+        let models = tempfile::tempdir().unwrap();
+        let probe =
+            serde_json::json!({"v": 1, "id": 2, "op": "probe", "file": secret, "addr": addr});
+
+        for confined in [false, true] {
+            let mut cfg = LlamaWorkerConfig::new(stand_in(), models.path().to_path_buf());
+            cfg.sandbox = confined;
+            let mut spawned = spawn(&cfg).expect("stand-in starts");
+            let stdout = std::mem::replace(&mut spawned.stdout, Box::new(std::io::empty()));
+            let mut reader = BufReader::new(stdout);
+            let hello = ask(
+                &mut spawned,
+                &mut reader,
+                serde_json::json!({"v": 1, "id": 1, "op": "hello"}),
+            );
+            assert_eq!(hello["worker"], "pegoles-llama");
+            let got = ask(&mut spawned, &mut reader, probe.clone());
+            for escape in ["file_read", "network", "process"] {
+                assert_eq!(
+                    got[escape], !confined,
+                    "{escape} (confined: {confined}): {got}"
+                );
+            }
+            spawned.child.terminate();
+        }
+    }
 
     #[test]
     fn environment_block_is_sorted_and_double_terminated() {
