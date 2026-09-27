@@ -409,9 +409,13 @@ impl ModelStore {
         let raw =
             serde_json::to_vec_pretty(&manifest).map_err(|e| StoreError::Io(e.to_string()))?;
         let mpath = staging.join(MANIFEST_NAME);
-        let mut out = fs::File::create(&mpath).map_err(io)?;
-        out.write_all(&raw).map_err(io)?;
-        out.sync_all().map_err(io)?;
+        {
+            // Closed before the directory is renamed: Windows refuses to
+            // rename a directory with an open file inside.
+            let mut out = fs::File::create(&mpath).map_err(io)?;
+            out.write_all(&raw).map_err(io)?;
+            out.sync_all().map_err(io)?;
+        }
         let verified = match self.verify_dir(spec, staging) {
             Ok(v) => v,
             Err(e) => {
@@ -870,7 +874,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let res = store.install(&s, &fetcher, &mut |_| {}, &|| false);
-        assert!(matches!(res, Err(StoreError::Corrupted { .. })));
+        assert!(matches!(res, Err(StoreError::Corrupted { .. })), "{res:?}");
         assert_ne!(store.state(&s), InstallState::Installed);
         assert!(!tmp.path().join("models/test-model").exists());
         // The corrupt part file was deleted: a retry starts from zero.
