@@ -2,7 +2,7 @@
 # Build, assemble and sign "Pegoles Agent.app" and its DMG from the
 # current checkout. Nothing is published.
 #
-#   bash scripts/package-macos.sh [build|sign|all]        (default: all)
+#   bash scripts/package-macos.sh [build|sign|all|app]    (default: all)
 #
 #   build  compile the runtime, helper and app and assemble an UNSIGNED
 #          bundle at target/release/bundle/macos/ (no identity needed; the
@@ -11,6 +11,8 @@
 #          target/release-artifacts/ (runs only codesign, hdiutil and this
 #          repository's scripts: no dependency code runs while the signing
 #          identity is available)
+#   app    build, then sign the bundle without making a DMG (the source
+#          install path: scripts/install.sh)
 #
 #   PEGOLES_SIGN_IDENTITY="Developer ID Application: <Name> (<TEAMID>)" \
 #     bash scripts/package-macos.sh
@@ -34,7 +36,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 STAGE_ARG="${1:-all}"
-case "$STAGE_ARG" in build | sign | all) ;; *) echo "usage: package-macos.sh [build|sign|all]" >&2; exit 2 ;; esac
+case "$STAGE_ARG" in build | sign | all | app) ;; *) echo "usage: package-macos.sh [build|sign|all|app]" >&2; exit 2 ;; esac
 TAURI_DIR="$ROOT/apps/desktop/src-tauri"
 HELPER_PLIST="$TAURI_DIR/entitlements/vm-host.plist"
 IDENTITY="${PEGOLES_SIGN_IDENTITY:-}"
@@ -130,7 +132,13 @@ sign_bundle() {
   sign "$py" noruntime
   sign "$APP/Contents/MacOS/pegoles-vm-host" runtime "$HELPER_PLIST"
   sign "$APP" runtime
+  # --signed: Developer ID, Team ID, hardened runtime and timestamps.
+  # Gatekeeper and stapling are checked after notarization (notarize.sh).
+  bash scripts/release/verify-artifact.sh "$APP" ${IDENTITY:+--signed}
+  echo "packaged: $APP"
+}
 
+make_dmg() {
   # Keep other release files already in $OUT (the build job's manifest and
   # SBOM); only the DMG is (re)made here.
   mkdir -p "$OUT"
@@ -145,15 +153,12 @@ sign_bundle() {
   if [ -n "$IDENTITY" ]; then
     codesign --force --timestamp --sign "$IDENTITY" "$dmg"
   fi
-  # --signed: Developer ID, Team ID, hardened runtime and timestamps.
-  # Gatekeeper and stapling are checked after notarization (notarize.sh).
-  bash scripts/release/verify-artifact.sh "$APP" ${IDENTITY:+--signed}
-  echo "packaged: $APP"
   echo "dmg:      $dmg"
 }
 
 case "$STAGE_ARG" in
   build) build ;;
-  sign) sign_bundle ;;
-  all) build; sign_bundle ;;
+  sign) sign_bundle; make_dmg ;;
+  all) build; sign_bundle; make_dmg ;;
+  app) build; sign_bundle ;;
 esac
