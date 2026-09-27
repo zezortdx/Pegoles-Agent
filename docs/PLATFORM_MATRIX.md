@@ -30,9 +30,9 @@ real Windows but not a consumer PC.
 |---|---|
 | Broker service (`PegolesVmBroker`) + typed pipe protocol | IMPLEMENTED; CI: linted and unit-tested on Windows |
 | Unprivileged VM helper (`pegoles-vm-host.exe`, same JSONL as macOS) | IMPLEMENTED; CI: linted and unit-tested on Windows |
-| HCS VM boot (UEFI from VHDX, COM1 log, no network) | CI smoke with an empty disk: pending first run |
+| HCS VM boot (UEFI from VHDX, no network) | CI: a firmware-only VM and the real x64 guest both boot through the broker and the helper (Windows Server 2025, nested); the COM1 log came back empty (fix pending in CI) |
 | x64 guest image (Debian 13 amd64, runtime in listen mode, Hyper-V drivers) | CI: built and provisioned under KVM; boots under QEMU/UEFI with its services started; **not published** — setup on Windows reports "not available yet" |
-| Guest channel (AF_HYPERV → guest listener on vsock 850) | IMPLEMENTED; CI boot of the real image: pending first run |
+| Guest channel (AF_HYPERV → guest listener on vsock 850) | CI: the helper reaches the booted guest runtime (transport level; the full handshake, frames and input on Windows are not exercised yet) |
 | Pegoles Local (llama.cpp, GGUF Q8, Vulkan/CPU) in AppContainer + job | Worker VERIFIED on macOS (Metal) against the real VM (`local_bench`); Windows sandbox IMPLEMENTED; CI start test pending |
 | Onboarding (system check, turning on virtualization, restart and resume) | IMPLEMENTED (UI tested with fixtures; Windows facts from real APIs, cross-compiled); never run on Windows |
 | Webview network containment (WebView2 switches) | CI: egress probe on Windows — 0 TCP / 0 UDP contained (33 / 353 without) |
