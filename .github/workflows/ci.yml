@@ -349,6 +349,8 @@ jobs:
           if ($LASTEXITCODE -ne 1060) { throw 'PegolesVmBroker is still registered' }
           $left = Get-ChildItem $dir -ErrorAction SilentlyContinue | Where-Object Name -ne 'uninstall.exe'
           if ($left) { $left | Format-Table Name; throw 'files left behind' }
+          # 1060 above was the expected answer; do not end the step with it.
+          exit 0
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Pegoles-Setup-x64-unsigned
