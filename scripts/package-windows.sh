@@ -79,17 +79,23 @@ install -m 0755 target/release/pegoles-broker.exe "$BIN/pegoles-broker-$TRIPLE.e
 install -m 0755 target/release/pegoles-vm-host.exe "$BIN/pegoles-vm-host-$TRIPLE.exe"
 install -m 0755 "$LLAMA_TARGET/pegoles-llm-worker.exe" "$BIN/pegoles-llm-worker-$TRIPLE.exe"
 
-# llama.cpp: the shared libraries the worker links against (copied next to
-# it by llama-cpp-sys-2) and the backend modules it loads at start (CPU
-# variants, Vulkan) from the newest build's backends directory.
-BACKENDS="$(ls -1dt "$LLAMA_TARGET"/build/llama-cpp-sys-2-*/out/backends 2>/dev/null | head -1)"
-[ -n "$BACKENDS" ] || { echo "llama.cpp backend modules not found" >&2; exit 1; }
+# llama.cpp, from the newest CMake install of llama-cpp-sys-2: the shared
+# libraries the worker links against (out/bin: llama, ggml, ggml-base,
+# mtmd) and the backend modules it loads at start (out/backends: the CPU
+# variants and Vulkan).
+# shellcheck disable=SC2012 # build dirs are cargo-named (no odd characters)
+LLAMA_OUT="$(ls -1dt "$LLAMA_TARGET"/build/llama-cpp-sys-2-*/out 2>/dev/null | head -1)"
+[ -n "$LLAMA_OUT" ] || { echo "llama.cpp build output not found" >&2; exit 1; }
+echo "llama.cpp libraries from $LLAMA_OUT:"
+ls "$LLAMA_OUT/bin" "$LLAMA_OUT/backends" || true
 shopt -s nullglob
-dlls=("$LLAMA_TARGET"/*.dll "$BACKENDS"/*.dll)
+dlls=("$LLAMA_OUT"/bin/*.dll "$LLAMA_OUT"/backends/*.dll)
 shopt -u nullglob
 [ "${#dlls[@]}" -gt 0 ] || { echo "llama.cpp DLLs not found" >&2; exit 1; }
 for dll in "${dlls[@]}"; do install -m 0644 "$dll" "$BIN/llama/"; done
-ls "$BIN/llama"/ggml-vulkan.dll >/dev/null || { echo "Vulkan backend missing" >&2; exit 1; }
+for need in llama.dll ggml.dll ggml-base.dll mtmd.dll ggml-vulkan.dll; do
+  [ -f "$BIN/llama/$need" ] || { echo "llama.cpp: $need missing" >&2; exit 1; }
+done
 ls "$BIN/llama"/ggml-cpu-*.dll >/dev/null || { echo "CPU backends missing" >&2; exit 1; }
 
 # The Visual C++ runtime for those libraries, deployed app-locally (a

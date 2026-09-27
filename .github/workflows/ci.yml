@@ -315,7 +315,7 @@ jobs:
         run: |
           $dir = Join-Path $env:ProgramFiles 'Pegoles Agent'
           Get-ChildItem $dir | Format-Table Name, Length
-          foreach ($f in 'pegoles-vm-host.exe', 'pegoles-broker.exe', 'pegoles-llm-worker.exe', 'llama.dll', 'ggml-vulkan.dll', 'vcruntime140.dll', 'msvcp140.dll', 'uninstall.exe') {
+          foreach ($f in 'pegoles-vm-host.exe', 'pegoles-broker.exe', 'pegoles-llm-worker.exe', 'llama.dll', 'ggml.dll', 'ggml-base.dll', 'mtmd.dll', 'ggml-vulkan.dll', 'vcruntime140.dll', 'msvcp140.dll', 'uninstall.exe') {
             if (-not (Test-Path (Join-Path $dir $f))) { throw "missing $f" }
           }
           if (-not (Get-ChildItem $dir -Filter 'ggml-cpu-*.dll')) { throw 'no CPU backends' }
