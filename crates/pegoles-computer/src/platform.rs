@@ -15,6 +15,8 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostPlatform {
+    // snake_case alone would say "mac_o_s"; the UI and docs say "macos".
+    #[serde(rename = "macos", alias = "mac_o_s")]
     MacOS,
     Windows,
     Linux,
@@ -496,5 +498,13 @@ mod tests {
             tmp.path().join("computers"),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn host_platform_wire_names() {
+        assert_eq!(serde_json::to_string(&HostPlatform::MacOS).unwrap(), "\"macos\"");
+        assert_eq!(serde_json::to_string(&HostPlatform::Windows).unwrap(), "\"windows\"");
+        let old: HostPlatform = serde_json::from_str("\"mac_o_s\"").unwrap();
+        assert_eq!(old, HostPlatform::MacOS);
     }
 }
