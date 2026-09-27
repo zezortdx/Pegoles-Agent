@@ -113,6 +113,9 @@ def sample_colors(rgb: np.ndarray, masks: bl.SourceMasks, outer: dict) -> dict:
         sel = (outside >= d) & (outside < d + 2)
         glow.append({"distance_px": d, "color": hexcolor(np.median(rgb[sel], axis=0))})
     opening_core = ndi.binary_erosion(masks.labels == bl.OPEN, iterations=30)
+    # Halo just outside the eyes (inside the opening): the eye glow's hue.
+    around_eyes = ndi.distance_transform_edt(~masks.eyes)
+    eye_halo = (around_eyes >= 3) & (around_eyes < 9) & (masks.labels == bl.OPEN)
     return {
         "ring_rim": ramp((1, 3), away_from_opening),
         "ring_depth_10": ramp((8, 12), away_from_opening),
@@ -122,6 +125,7 @@ def sample_colors(rgb: np.ndarray, masks: bl.SourceMasks, outer: dict) -> dict:
         "eye_vertical_ramp": eye_ramp,
         "glow_outside": glow,
         "opening": hexcolor(np.median(rgb[opening_core], axis=0)),
+        "eye_halo": hexcolor(np.median(rgb[eye_halo], axis=0)),
         "background_corner": hexcolor(np.median(rgb[:40, :40].reshape(-1, 3), axis=0)),
     }
 
