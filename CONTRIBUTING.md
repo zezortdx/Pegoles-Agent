@@ -10,6 +10,10 @@ see [SECURITY.md](SECURITY.md).
 
 ## Development setup
 
+To just build and use Pegoles, run `./scripts/install.sh` (see the README):
+it downloads its own pinned toolchain and needs nothing below. For
+development, install the tools yourself.
+
 Requirements: a Mac with Apple silicon (the only supported platform),
 Rust (CI uses 1.97.1), Node 24 (engines allow 20 to 26), pnpm 9.15.9 (the
 `packageManager` in `package.json`; `corepack enable` picks it up), and

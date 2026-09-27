@@ -8,7 +8,38 @@ the tag (the release workflow refuses a mismatch).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Source install.** `./scripts/install.sh` builds Pegoles from a clone
+  and installs `~/Applications/Pegoles.app`. It needs only the Xcode
+  Command Line Tools: Rust, Node.js, pnpm and cargo-about are downloaded
+  into the checkout, each pinned by version and SHA-256 or SHA-512. It
+  runs in a clean environment and never uses sudo. It refuses quarantined
+  checkouts, and cargo configurations above the checkout that another
+  user could have planted. It stages the new app next to the old one and
+  swaps it in only after the signature verifies.
+- **Hosted computer image.** `pegoles-base-0.3` is downloaded from the
+  immutable GitHub release `guest-image-0.3`; the pinned digests are
+  unchanged.
+- GitHub social preview and README screenshots; an architecture overview
+  that matches the code.
+
+### Fixed
+
+- Verification scripts could pass a check on a match: tool output piped
+  into `grep -q` or `head` under `pipefail` failed the pipeline on the
+  first match. This affected the bundle verifier's build-path checks, the
+  image sanitizer's key and seed proof, and the installer's
+  "Pegoles is running" check. The shipped app and the published image
+  were re-verified.
+- The guest runtime's `memfd_create` call compiled only on aarch64 (found
+  by the x86_64 CI job).
+
+### Changed
+
+- The binary release workflow runs only when `PEGOLES_BINARY_RELEASES` is
+  enabled (0.1.x is source-first; Developer ID signing is deferred).
+- Commit history uses the maintainer's GitHub noreply address.
 
 ## [0.1.0-rc.1] - not yet tagged
 
