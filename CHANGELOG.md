@@ -8,49 +8,14 @@ the tag (the release workflow refuses a mismatch).
 
 ## [Unreleased]
 
-### Added
+Nothing yet.
 
-- **Source install.** `./scripts/install.sh` builds Pegoles from a clone
-  and installs `~/Applications/Pegoles.app`. It needs only the Xcode
-  Command Line Tools: Rust, Node.js, pnpm and cargo-about are downloaded
-  into the checkout, each pinned by version and SHA-256 or SHA-512. It
-  runs in a clean environment and never uses sudo. It refuses quarantined
-  checkouts, and cargo configurations above the checkout that another
-  user could have planted. It stages the new app next to the old one and
-  swaps it in only after the signature verifies.
-- **Hosted computer image.** `pegoles-base-0.3` is downloaded from the
-  immutable GitHub release `guest-image-0.3`; the pinned digests are
-  unchanged.
-- GitHub social preview and README screenshots; an architecture overview
-  that matches the code.
+## [0.1.0] - 2026-09-27
 
-### Fixed
-
-- Verification scripts could pass a check on a match: tool output piped
-  into `grep -q` or `head` under `pipefail` failed the pipeline on the
-  first match. This affected the bundle verifier's build-path checks, the
-  image sanitizer's key and seed proof, and the installer's
-  "Pegoles is running" check. The shipped app and the published image
-  were re-verified.
-- The guest runtime's `memfd_create` call compiled only on aarch64 (found
-  by the x86_64 CI job).
-- Found by the installed-app end-to-end runs: a guest that stopped
-  responding left the app on "Starting…" forever (it now becomes an error
-  after 60 s without a reconnect); Settings showed "Runs on mac_o_s";
-  image setup errors were unreadable; the installer broke license notices
-  in a developer checkout without a message, and asked for 15 GB of disk
-  (the build peaks at about 5 GB; it now asks for 8 GB).
-
-### Changed
-
-- The binary release workflow runs only when `PEGOLES_BINARY_RELEASES` is
-  enabled (0.1.x is source-first; Developer ID signing is deferred).
-- Commit history uses the maintainer's GitHub noreply address.
-
-## [0.1.0-rc.1] - not yet tagged
-
-First release candidate. macOS on Apple silicon only; tested on one Mac
-(M4 Pro, 24 GB, macOS 26.5). Not yet Developer ID signed or notarized.
+First public release, source-first: build and install with
+`./scripts/install.sh`. macOS on Apple silicon only; tested on one Mac
+(M4 Pro, 24 GB, macOS 26.5). Not Developer ID signed or notarized: an
+official signed download is planned for a later release.
 
 ### Added
 
@@ -107,12 +72,28 @@ First release candidate. macOS on Apple silicon only; tested on one Mac
 - Security policy, contributing guide, code of conduct, threat model
   (`docs/THREAT_MODEL.md`), privacy notes (`docs/PRIVACY.md`), release
   gates (`docs/RELEASE_GATES.md`), hardware soak harness.
+- **Source install.** `./scripts/install.sh` builds Pegoles from a clone
+  and installs `~/Applications/Pegoles.app`. It needs only the Xcode
+  Command Line Tools: Rust, Node.js, pnpm and cargo-about are downloaded
+  into the checkout, each pinned by version and SHA-256 or SHA-512. It
+  runs in a clean environment and never uses sudo. It refuses quarantined
+  checkouts, and cargo configurations above the checkout that another
+  user could have planted. It stages the new app next to the old one and
+  swaps it in only after the signature verifies.
+- **Hosted computer image.** `pegoles-base-0.3` is downloaded from the
+  immutable GitHub release `guest-image-0.3`; the pinned digests are
+  unchanged.
+- GitHub social preview and README screenshots; an architecture overview
+  that matches the code.
 
 ### Changed
 
 - The action vocabulary no longer contains `shell`, `read_file`,
   `write_file` or `open_url`: they were never implemented in the guest and
   used to report false success.
+- The binary release workflow runs only when `PEGOLES_BINARY_RELEASES` is
+  enabled (0.1.x is source-first; Developer ID signing is deferred).
+- Commit history uses the maintainer's GitHub noreply address.
 
 ### Fixed
 
@@ -126,6 +107,20 @@ First release candidate. macOS on Apple silicon only; tested on one Mac
 - Keypress taps, first-click hit-testing and app-level script
   interruption on the real VM.
 - Sealing refuses truncated work disks.
+- Verification scripts could pass a check on a match: tool output piped
+  into `grep -q` or `head` under `pipefail` failed the pipeline on the
+  first match. This affected the bundle verifier's build-path checks, the
+  image sanitizer's key and seed proof, and the installer's
+  "Pegoles is running" check. The shipped app and the published image
+  were re-verified.
+- The guest runtime's `memfd_create` call compiled only on aarch64 (found
+  by the x86_64 CI job).
+- Found by the installed-app end-to-end runs: a guest that stopped
+  responding left the app on "Starting…" forever (it now becomes an error
+  after 60 s without a reconnect); Settings showed "Runs on mac_o_s";
+  image setup errors were unreadable; the installer broke license notices
+  in a developer checkout without a message, and asked for 15 GB of disk
+  (the build peaks at about 5 GB; it now asks for 8 GB).
 
 ### Security
 
@@ -138,10 +133,13 @@ First release candidate. macOS on Apple silicon only; tested on one Mac
 
 ### Known limitations
 
-- Not yet signed with a Developer ID or notarized; no published build.
+- Source install only: no Developer ID signature, notarization or
+  published binary yet.
 - Tested on one Mac (M4 Pro, 24 GB); no minimum RAM is claimed.
 - The Claude planner is unit-tested but has not been run against the live
   API for this release.
-- The agent's computer has no network; no access to the Mac's files.
+- The agent's computer has no network, so no web browsing or downloads
+  inside it (opt-in, controlled internet access is planned after 0.1); no
+  access to the Mac's files.
 - No native VM view or human "take control" input yet; no auto-update.
 - Windows code is not compiled or verified; there is no Linux host backend.
