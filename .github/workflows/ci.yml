@@ -231,6 +231,10 @@ jobs:
       - run: pnpm --filter @pegoles/desktop build
       - run: cargo clippy --locked ${{ env.WINDOWS_CRATES }} --all-targets -- -D warnings
       - run: cargo test --locked ${{ env.WINDOWS_CRATES }}
+      - name: What onboarding's system check sees on this runner
+        run: |
+          cargo run --locked -p pegoles-computer --example windows_readiness
+          cargo run --locked -p pegoles-inference --example models -- hw
       - name: Webview egress probe (WebView2)
         run: |
           cargo run --locked -p pegoles-desktop --example webview_egress_probe -- control
