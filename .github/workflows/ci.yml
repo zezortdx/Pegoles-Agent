@@ -339,6 +339,19 @@ jobs:
           $env:PEGOLES_LLM_WORKER = Join-Path $env:ProgramFiles 'Pegoles Agent\pegoles-llm-worker.exe'
           cargo test --release --locked -p pegoles-inference the_real_worker -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw 'confined worker test failed' }
+      # Pegoles Local on Windows for real: the pinned GGUF model installed
+      # by the product's store code (download, SHA-256 of every file,
+      # atomic install), then generations by the installed worker inside
+      # its sandbox, on a guest screenshot. The runner has no GPU, so
+      # llama.cpp runs on the CPU (the backend it picks is printed).
+      - name: Pegoles Local on Windows (model install, confined generation)
+        shell: pwsh
+        run: |
+          cargo run --release --locked -p pegoles-inference --example models -- hw
+          cargo run --release --locked -p pegoles-inference --example models -- install mai-ui-2b-q8-gguf
+          if ($LASTEXITCODE -ne 0) { throw 'model install failed' }
+          cargo run --release --locked -p pegoles-inference --example gguf_probe -- (Join-Path $env:ProgramFiles 'Pegoles Agent\pegoles-llm-worker.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'generation failed' }
       - name: Uninstall silently and check nothing is left
         shell: pwsh
         run: |
