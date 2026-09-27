@@ -193,3 +193,46 @@ tasks cleanly instead of looping. Qwen3-VL-2B 6-bit stays in the catalog
 as an advanced alternative. Neither 4-bit variant is offered: the memory
 saved (~0.4 GB) does not justify the collapse in reliability; resolution
 and the MLX cache cap are the better memory levers.
+
+## llama.cpp / GGUF (the Windows runtime), measured on macOS (2026-09-27)
+
+Windows cannot run MLX, so Pegoles Local on Windows runs MAI-UI-2B as
+GGUF in the llama.cpp worker (`workers/llama`). The same worker builds
+on macOS with Metal, so the path was measured here on the same real VM,
+harness, tasks, seed and resolution as the MLX runs above
+(`local_bench --models mai-ui-2b-q8-gguf`; the harness picks the worker
+from the model's format). Model: `mradermacher/MAI-UI-2B-GGUF@27dd582`,
+Q8_0 + mmproj f16, pinned by SHA-256. Machine-readable:
+`results-gguf.json`. **This is Metal on an M4 Pro, not a Windows PC**: it
+shows that the GGUF conversion, the prompt template, the image
+preprocessing and the worker ground and act like the MLX path; Windows
+CPU/Vulkan speed is still unmeasured.
+
+| | MLX, MAI-UI-2B 6-bit (v3 above) | llama.cpp, MAI-UI-2B Q8_0 GGUF |
+|---|---|---|
+| Goals achieved | 17/22 | **17/22** |
+| Clean completion | 16/22 | 14/22 |
+| First-click grounding (hit, median error) | 9/10, 5 px | 8/10, 3 px |
+| Invalid output rate | 8.4 % | **0 %** |
+| Loop-brake stops | 2 | 5 |
+| Actions per task | 3.05 | 4.09 |
+| Step latency p50 / p95 | 3.24 / 3.93 s | 3.55 / 4.27 s |
+| Task duration p50 | 11.2 s | 13.7 s |
+| Worker memory after load / peak | 2.62 / 5.31 GB | **1.93 / 2.44 GB** |
+| Load / verify | 1.1 / 1.2 s | 1.0 / 1.1 s |
+| Disk | 2.23 GB | 2.65 GB |
+
+By category (GGUF): grounding 4/5, multi-step 2/3, navigation 3/3,
+precision 3/4, recovery 1/2, safety 1/1, text 3/4.
+
+Two shorter runs on six tasks (button, tabs, menu, dialog, focus_email,
+type_simple), one boot each: GGUF 6/6, MLX 4/6 — single runs, noise
+included. One earlier GGUF run aborted after two tasks when the guest
+kernel read its `vsock` module's code as zeros (the residual risk 16
+signature in `docs/THREAT_MODEL.md`, with the host at about 20 of 24 GB
+used); it did not recur in the three runs after it.
+
+Note on "first token": the llama.cpp worker times the image encoding
+and prompt prefill separately from the first generated token, while the
+MLX worker's first-token time includes them, so that column is not
+comparable and is left out.

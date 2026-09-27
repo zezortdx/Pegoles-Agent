@@ -5,7 +5,9 @@
 //! The worker runs on the HOST (never in the guest), keeps the model
 //! loaded between tasks, and only ever returns text: the local planner
 //! parses it into typed actions that go through Pegoles Policy like any
-//! other provider's.
+//! other provider's. Which worker depends on the model's format: MLX
+//! models run in the MLX worker (macOS), GGUF models in the llama.cpp
+//! worker (Windows; it also runs on macOS).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,9 +17,12 @@ use std::time::{Duration, Instant};
 use pegoles_agent::local::{LocalConfig, LocalPlanner, SharedBackend};
 use pegoles_inference::download::HttpsFetcher;
 use pegoles_inference::{
-    hardware, models_dir, Catalog, InstallPhase, InstallProgress, InstallState, MlxWorkerBackend,
-    MlxWorkerConfig, ModelSpec, ModelStore, StoreError, VerifiedModel,
+    hardware, models_dir, Catalog, InferenceBackend, InferenceError, InstallPhase, InstallProgress,
+    InstallState, LlamaWorkerBackend, LlamaWorkerConfig, ModelFormat, ModelSpec, ModelStore,
+    StoreError, VerifiedModel,
 };
+#[cfg(unix)]
+use pegoles_inference::{MlxWorkerBackend, MlxWorkerConfig};
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -32,6 +37,49 @@ fn data_dir() -> std::path::PathBuf {
 
 pub fn store() -> ModelStore {
     ModelStore::new(models_dir(&data_dir()))
+}
+
+/// Why Pegoles Local cannot run on this computer at all, in plain words.
+fn host_problem(hw: &hardware::HardwareProfile) -> Option<String> {
+    if cfg!(target_os = "macos") {
+        (!hw.apple_silicon).then(|| "Pegoles Local needs a Mac with Apple silicon.".into())
+    } else if cfg!(windows) {
+        (hw.arch != "x86_64")
+            .then(|| "Pegoles Local on Windows needs a 64-bit Intel or AMD PC.".into())
+    } else {
+        Some("Pegoles Local is not available on this system yet.".into())
+    }
+}
+
+#[cfg(not(unix))]
+fn mac_only() -> InferenceError {
+    InferenceError::RuntimeMissing("this model runs on a Mac only".into())
+}
+
+/// Whether the worker for `spec` is installed (cheap: nothing starts).
+fn runtime_check(spec: &ModelSpec) -> Result<(), InferenceError> {
+    match spec.format {
+        #[cfg(unix)]
+        ModelFormat::Mlx => MlxWorkerConfig::discover(&data_dir()).map(|_| ()),
+        #[cfg(not(unix))]
+        ModelFormat::Mlx => Err(mac_only()),
+        ModelFormat::Gguf => LlamaWorkerConfig::discover(&data_dir()).map(|_| ()),
+    }
+}
+
+/// A new (not yet started) worker for `spec`'s format.
+fn new_backend(spec: &ModelSpec) -> Result<Box<dyn InferenceBackend>, InferenceError> {
+    Ok(match spec.format {
+        #[cfg(unix)]
+        ModelFormat::Mlx => Box::new(MlxWorkerBackend::new(MlxWorkerConfig::discover(
+            &data_dir(),
+        )?)),
+        #[cfg(not(unix))]
+        ModelFormat::Mlx => return Err(mac_only()),
+        ModelFormat::Gguf => Box::new(LlamaWorkerBackend::new(LlamaWorkerConfig::discover(
+            &data_dir(),
+        )?)),
+    })
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -63,6 +111,8 @@ struct Inner {
     job: Option<(String, Arc<AtomicBool>)>,
     status: Option<InstallStatus>,
     backend: Option<SharedBackend>,
+    /// The model format `backend` runs.
+    backend_format: Option<ModelFormat>,
     /// Models whose bytes were fully verified in this app session.
     verified: HashMap<String, VerifiedModel>,
     runs: u32,
@@ -104,7 +154,8 @@ pub struct LocalModelPayload {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LocalRuntimePayload {
-    /// The inference runtime (MLX worker) is set up on this Mac.
+    /// The inference runtime (MLX worker on macOS, llama.cpp worker on
+    /// Windows) is set up on this computer.
     pub runtime_ready: bool,
     pub runtime_problem: Option<String>,
     /// The worker is running with this model loaded.
@@ -212,8 +263,9 @@ impl LocalModels {
     pub fn payload(&self) -> LocalRuntimePayload {
         let catalog = Catalog::builtin();
         let store = store();
-        let runtime = MlxWorkerConfig::discover(&data_dir());
+        let runtime = runtime_check(catalog.default_spec());
         let hw = hardware::detect();
+        let host_problem = host_problem(&hw);
         let (install, backend) = {
             let inner = self.inner();
             (inner.status.clone(), inner.backend.clone())
@@ -234,12 +286,9 @@ impl LocalModels {
                 )
             });
         LocalRuntimePayload {
-            runtime_ready: runtime.is_ok() && hw.apple_silicon,
-            runtime_problem: if !hw.apple_silicon {
-                Some("Pegoles Local needs a Mac with Apple silicon.".into())
-            } else {
-                runtime.err().map(|e| runtime_problem_text(&e))
-            },
+            runtime_ready: runtime.is_ok() && host_problem.is_none(),
+            runtime_problem: host_problem
+                .or_else(|| runtime.err().map(|e| runtime_problem_text(&e))),
             loaded_model,
             worker_footprint_bytes: footprint,
             default_model: catalog.default_model.clone(),
@@ -263,8 +312,8 @@ impl LocalModels {
         let Some(spec) = Catalog::builtin().get(model).cloned() else {
             return false;
         };
-        hardware::detect().apple_silicon
-            && MlxWorkerConfig::discover(&data_dir()).is_ok()
+        host_problem(&hardware::detect()).is_none()
+            && runtime_check(&spec).is_ok()
             && store().state(&spec) == InstallState::Installed
     }
 
@@ -438,17 +487,25 @@ impl LocalModels {
                 v
             }
         };
-        let backend = {
-            let mut inner = self.inner();
-            match &inner.backend {
-                Some(b) => b.clone(),
-                None => {
-                    let cfg = MlxWorkerConfig::discover(&data_dir()).map_err(|e| e.to_string())?;
-                    let b: SharedBackend =
-                        Arc::new(Mutex::new(Box::new(MlxWorkerBackend::new(cfg))));
-                    inner.backend = Some(b.clone());
-                    b
-                }
+        let reuse = {
+            let inner = self.inner();
+            inner
+                .backend
+                .clone()
+                .filter(|_| inner.backend_format == Some(spec.format))
+        };
+        let backend = match reuse {
+            Some(b) => b,
+            None => {
+                // A model of another format: stop the other worker first.
+                self.shutdown();
+                let b: SharedBackend = Arc::new(Mutex::new(
+                    new_backend(&spec).map_err(|e| runtime_problem_text(&e))?,
+                ));
+                let mut inner = self.inner();
+                inner.backend = Some(b.clone());
+                inner.backend_format = Some(spec.format);
+                b
             }
         };
         Ok(LocalPlanner::new(LocalConfig::for_model(verified), backend))
@@ -488,7 +545,11 @@ impl LocalModels {
 
     /// Stop the worker (app exit, or to free memory).
     pub fn shutdown(&self) {
-        let backend = self.inner().backend.take();
+        let backend = {
+            let mut inner = self.inner();
+            inner.backend_format = None;
+            inner.backend.take()
+        };
         if let Some(b) = backend {
             if let Ok(mut g) = b.try_lock() {
                 g.shutdown();
