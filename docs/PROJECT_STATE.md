@@ -170,16 +170,21 @@ bash scripts/release/verify-artifact.sh target/release-artifacts/Pegoles_<v>_arm
 1. Official binary distribution (deferred): Developer ID certificate and
    notary credentials, then `PEGOLES_BINARY_RELEASES` and the release
    workflow (`docs/GITHUB_RELEASE_CHECKLIST.md` §4–5).
-2. Measure on 8 GB and 16 GB Macs and set a minimum RAM; only a 24 GB
+2. Internet for the agent's computer, after 0.1 (asked for by early
+   testers): opt-in per task with a native confirmation, egress only
+   through a host-side proxy with a domain allowlist and a log, a browser
+   in a new sealed image, and policy rules for what may be typed into
+   pages. Today the VM has no network device by design.
+3. Measure on 8 GB and 16 GB Macs and set a minimum RAM; only a 24 GB
    M4 Pro was available.
-3. Root-cause the one guest kernel panic seen under host memory
+4. Root-cause the one guest kernel panic seen under host memory
    pressure (`crates/pegoles-computer/examples/guest_memory_repro.rs`);
    visual QA of the consent alerts.
-4. Run the Claude planner live (needs a key).
-5. Local model quality: MAI-UI's remaining failures are habits (one
+5. Run the Claude planner live (needs a key).
+6. Local model quality: MAI-UI's remaining failures are habits (one
    character per step, answering by typing, re-toggling) and 13-px
    targets; also occasional invalid replies on a fresh screen.
-6. Separate guest users for GUI apps and the runtime (today: same user;
+7. Separate guest users for GUI apps and the runtime (today: same user;
    mitigated by reserved-port auth + non-dumpable runtime).
-7. Native VM view + human input (take control).
-8. Windows: compile and run on real hardware before claiming anything.
+8. Native VM view + human input (take control).
+9. Windows: compile and run on real hardware before claiming anything.
