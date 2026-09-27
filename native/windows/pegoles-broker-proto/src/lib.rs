@@ -28,6 +28,8 @@ pub const CLIENT_EXE: &str = "pegoles-vm-host.exe";
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Longest request or response line.
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
+/// The guest's screen (its compositor's output mode, as on macOS).
+pub const GUEST_SCREEN: (u32, u32) = (1440, 900);
 /// Compute systems one user may have at once.
 pub const MAX_COMPUTERS_PER_USER: usize = 2;
 pub const MIN_VCPUS: u8 = 1;
@@ -249,7 +251,11 @@ pub fn hvsocket_sddl(user_sid: &str) -> String {
 /// UEFI boot from the computer's own VHDX (removable-path boot loader,
 /// no NVRAM to keep), COM1 to the helper's pipe, HvSocket limited to
 /// SYSTEM and the user, and — deliberately — no network adapter, no
-/// shared folders (Plan 9 / SMB), no video, no keyboard or mouse.
+/// shared folders (Plan 9 / SMB), no keyboard or mouse. The one display
+/// device is Hyper-V's synthetic video: the guest's own screen (its
+/// compositor needs a DRM device, and Debian's kernel has no virtual
+/// one), which Pegoles never shows on the host and which carries no
+/// input; screenshots and input travel the guest channel as on macOS.
 /// `ShouldTerminateOnLastHandleClosed` ties the VM to the broker.
 pub fn hcs_document(spec: &CreateSpec, disk: &str, user_sid: &str) -> String {
     let sddl = hvsocket_sddl(user_sid);
@@ -277,6 +283,10 @@ pub fn hcs_document(spec: &CreateSpec, disk: &str, user_sid: &str) -> String {
                     }
                 },
                 "ComPorts": { "0": { "NamedPipe": serial_pipe(&spec.computer_id) } },
+                "VideoMonitor": {
+                    "HorizontalResolution": GUEST_SCREEN.0,
+                    "VerticalResolution": GUEST_SCREEN.1
+                },
                 "HvSocket": {
                     "HvSocketConfig": {
                         "DefaultBindSecurityDescriptor": sddl,
@@ -418,14 +428,16 @@ mod tests {
     }
 
     #[test]
-    fn the_hcs_document_has_no_network_no_shares_and_a_locked_socket() {
+    fn the_hcs_document_has_no_network_no_shares_no_input_and_a_locked_socket() {
         let s = spec();
         let doc: serde_json::Value = serde_json::from_str(&hcs_document(&s, &s.disk, SID)).unwrap();
         let vm = &doc["VirtualMachine"];
         let devices = vm["Devices"].as_object().unwrap();
         let mut names: Vec<&String> = devices.keys().collect();
         names.sort();
-        assert_eq!(names, ["ComPorts", "HvSocket", "Scsi"]);
+        assert_eq!(names, ["ComPorts", "HvSocket", "Scsi", "VideoMonitor"]);
+        assert_eq!(vm["Devices"]["VideoMonitor"]["HorizontalResolution"], 1440);
+        assert!(vm["Devices"].get("Keyboard").is_none() && vm["Devices"].get("Mouse").is_none());
         assert!(vm.get("GuestState").is_none());
         assert_eq!(doc["ShouldTerminateOnLastHandleClosed"], true);
         assert_eq!(vm["ComputeTopology"]["Memory"]["SizeInMB"], 2048);

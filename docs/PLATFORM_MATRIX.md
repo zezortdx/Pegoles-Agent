@@ -31,7 +31,7 @@ real Windows but not a consumer PC.
 | Broker service (`PegolesVmBroker`) + typed pipe protocol | IMPLEMENTED (protocol and HCS document unit-tested; cross-compiled and linted for Windows); CI: pending first run |
 | Unprivileged VM helper (`pegoles-vm-host.exe`, same JSONL as macOS) | IMPLEMENTED (dispatch unit-tested); CI: pending first run |
 | HCS VM boot (UEFI from VHDX, COM1 log, no network) | CI smoke with an empty disk: pending first run |
-| x64 guest image (Debian 13 amd64, runtime in listen mode, vkms) | Build script written (`build-x64.sh`, CI job); **not published** — setup on Windows reports "not available yet" |
+| x64 guest image (Debian 13 amd64, runtime in listen mode, Hyper-V drivers) | Build script written (`build-x64.sh`, CI job); **not published** — setup on Windows reports "not available yet" |
 | Guest channel (AF_HYPERV → guest listener on vsock 850) | IMPLEMENTED; CI boot of the real image: pending first run |
 | Pegoles Local (llama.cpp, GGUF Q8, Vulkan/CPU) in AppContainer + job | Worker VERIFIED on macOS (Metal) against the real VM (`local_bench`); Windows sandbox IMPLEMENTED; CI start test pending |
 | Onboarding (system check, turning on virtualization, restart and resume) | IMPLEMENTED (UI tested with fixtures; Windows facts from real APIs, cross-compiled); never run on Windows |

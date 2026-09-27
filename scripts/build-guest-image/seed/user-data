@@ -153,14 +153,15 @@ runcmd:
   # (ttyS0) under Hyper-V (amd64).
   # amd64 (Windows) also: the host connects to the runtime, which listens
   # on its privileged vsock port (pegoles.transport=listen, see
-  # docs/WINDOWS_ARCHITECTURE.md); hv_sock is the vsock transport; vkms
-  # gives Weston a DRM seat (the VM has no video device), so agent input
-  # reaches clients through libinput as on macOS; the Hyper-V storage and
-  # bus drivers are in the initramfs (the root disk is SCSI there).
+  # docs/WINDOWS_ARCHITECTURE.md); hv_sock is the vsock transport; the
+  # Hyper-V storage and bus drivers are in the initramfs (the root disk is
+  # SCSI there). Weston gets its DRM seat from Hyper-V's synthetic video
+  # (hyperv_drm, loaded by the bus), so agent input reaches clients
+  # through libinput as on macOS.
   - |
     if [ "$(dpkg --print-architecture)" = amd64 ]; then
       grep -q 'pegoles.transport=listen' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=ttyS0,115200 pegoles.transport=listen"/' /etc/default/grub
-      printf 'hv_sock\nvkms\n' > /etc/modules-load.d/pegoles-hyperv.conf
+      printf 'hv_sock\n' > /etc/modules-load.d/pegoles-hyperv.conf
       printf 'hv_vmbus\nhv_storvsc\nhv_sock\n' >> /etc/initramfs-tools/modules
       update-initramfs -u
     else

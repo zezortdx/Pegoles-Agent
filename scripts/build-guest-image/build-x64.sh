@@ -9,7 +9,7 @@
 #        amd64 .deb bundle, the same user-data and units as arm64
 #     -> booted once under QEMU (KVM on Linux, TCG elsewhere; no network):
 #        cloud-init installs everything, applies the Hyper-V specifics
-#        (listen mode, COM1 console, hv_sock, vkms, initramfs drivers; see
+#        (listen mode, COM1 console, hv_sock, initramfs drivers; see
 #        seed/user-data), disables itself and powers off
 #     -> patch-image.sh (runtime, units, masked services; no boot)
 #     -> sanitize-image.sh (host keys, random seed)
