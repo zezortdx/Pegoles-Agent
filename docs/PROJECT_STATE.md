@@ -120,6 +120,14 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
   guest stops responding, "mac_o_s", unreadable setup errors, installer
   issues. One guest kernel panic under severe host memory pressure is
   unexplained (THREAT_MODEL residual risk 16).
+- Released: repository public (rulesets, secret scanning with push
+  protection, CodeQL uploads, private vulnerability reporting), annotated
+  tag `v0.1.0` on `58616be`, immutable GitHub release with
+  `build-manifest.json`, a CycloneDX SBOM and `SHA256SUMS`. Final
+  acceptance on that commit from an anonymous clone with fresh data: the
+  image downloaded from the public release, the model from Hugging Face,
+  a keyless task, Stop, Reset, quit/relaunch, corrupted-model refusal and
+  repair.
 
 ## Implemented, not verified live
 
@@ -177,14 +185,17 @@ bash scripts/release/verify-artifact.sh target/release-artifacts/Pegoles_<v>_arm
    pages. Today the VM has no network device by design.
 3. Measure on 8 GB and 16 GB Macs and set a minimum RAM; only a 24 GB
    M4 Pro was available.
-4. Root-cause the one guest kernel panic seen under host memory
+4. Settings shows Pegoles Local as "Ready" when a model file is corrupted
+   (the status checks the layout only; loading verifies every file and
+   refuses). Surface the verification failure there and offer the repair.
+5. Root-cause the one guest kernel panic seen under host memory
    pressure (`crates/pegoles-computer/examples/guest_memory_repro.rs`);
    visual QA of the consent alerts.
-5. Run the Claude planner live (needs a key).
-6. Local model quality: MAI-UI's remaining failures are habits (one
+6. Run the Claude planner live (needs a key).
+7. Local model quality: MAI-UI's remaining failures are habits (one
    character per step, answering by typing, re-toggling) and 13-px
    targets; also occasional invalid replies on a fresh screen.
-7. Separate guest users for GUI apps and the runtime (today: same user;
+8. Separate guest users for GUI apps and the runtime (today: same user;
    mitigated by reserved-port auth + non-dumpable runtime).
-8. Native VM view + human input (take control).
-9. Windows: compile and run on real hardware before claiming anything.
+9. Native VM view + human input (take control).
+10. Windows: compile and run on real hardware before claiming anything.

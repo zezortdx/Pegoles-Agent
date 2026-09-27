@@ -23,11 +23,12 @@ the build.
 ```bash
 git clone https://github.com/zezortdx/Pegoles-Agent.git
 cd Pegoles-Agent
+git checkout v0.1.0
 ./scripts/install.sh
 ```
 
-This builds Pegoles from source on your Mac and installs
-`~/Applications/Pegoles.app` (under 5 minutes on an M4 Pro on the first
+This builds the 0.1.0 release from source on your Mac and installs
+`~/Applications/Pegoles.app` (about 5 minutes on an M4 Pro on the first
 run). The build tools (Rust, Node.js, pnpm, the model runtime) are
 downloaded into the checkout's `target/` directory, each pinned by version
 and checksum; nothing is installed system-wide (package managers only use
@@ -130,8 +131,9 @@ without a native macOS confirmation.
   runaway runs.
 - The Claude planner is unit-tested but was not run against the live API
   for this release.
-- No auto-update: pull and run `./scripts/install.sh` again for a new
-  version. Task history is kept in memory only.
+- No auto-update: for a new version, `git fetch --tags`, check out its
+  tag and run `./scripts/install.sh` again. Task history is kept in
+  memory only.
 
 ## Development
 
