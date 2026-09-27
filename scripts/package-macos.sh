@@ -55,11 +55,13 @@ done
 
 build() {
   # No developer paths in shipped binaries (panic locations, debug info):
-  # the checkout and the home directory are remapped. Rust applies the last
-  # matching mapping, so the more specific checkout comes after HOME.
+  # the home directory, the checkout and the cargo home (dependency sources;
+  # inside the checkout for scripts/install.sh) are remapped. Rust applies
+  # the last matching mapping, so more specific prefixes come later.
   # CARGO_ENCODED_RUSTFLAGS (0x1f-separated) because the checkout path may
   # contain spaces.
-  CARGO_ENCODED_RUSTFLAGS="$(printf '%s\x1f%s' "--remap-path-prefix=$HOME=/home" "--remap-path-prefix=$ROOT=/pegoles")"
+  CARGO_ENCODED_RUSTFLAGS="$(printf '%s\x1f%s\x1f%s' "--remap-path-prefix=$HOME=/home" \
+    "--remap-path-prefix=$ROOT=/pegoles" "--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo")"
   export CARGO_ENCODED_RUSTFLAGS
   unset RUSTFLAGS
   bash scripts/local-model/build-runtime.sh "$ROOT/target/pegoles-runtime"
