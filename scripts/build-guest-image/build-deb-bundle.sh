@@ -13,7 +13,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$ROOT/scripts/build-guest-image/common.sh"
 OUT="$(out_dir "${1:-}")"
 
-# Minimal graphical stack (trixie arm64, 2026-09). Chromium is NOT
+# Minimal graphical stack (trixie, 2026-09; arm64 or amd64 per
+# PEGOLES_GUEST_ARCH). Chromium is NOT
 # included (Phase 5.1 needs no browser). The top-level packages are pinned
 # to exact versions: when the archive has moved on, apt fails instead of
 # silently taking a newer build; bump deliberately with a manifest note.
@@ -21,7 +22,7 @@ OUT="$(out_dir "${1:-}")"
 # time and is recorded, per .deb, in VERSIONS.txt (sealed with the image).
 TOP_PKGS="weston=14.0.2-1 foot=1.21.0-2 fonts-dejavu-core=2.37-8 xkb-data=2.42-1"
 
-docker run --rm --platform linux/arm64 -v "$OUT:/out" "$DEBIAN_IMAGE" bash -c "
+docker run --rm --platform "$DOCKER_PLATFORM" -v "$OUT:/out" "$DEBIAN_IMAGE" bash -c "
   set -euo pipefail
   apt-get update -q
   rm -f /out/*.deb

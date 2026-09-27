@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Cross-compile pegoles-guest-runtime for aarch64 Linux (BUILD TIME ONLY).
+# Cross-compile pegoles-guest-runtime for the guest (aarch64 or x86_64 Linux,
+# PEGOLES_GUEST_ARCH; BUILD TIME ONLY).
 # Uses Docker (rust image, native arm64 on Apple Silicon) so the macOS app
 # never needs a cross toolchain, QEMU, or libguestfs. The end user needs
 # none of this: they boot the derived image we publish.
@@ -13,11 +14,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$ROOT/scripts/build-guest-image/common.sh"
 OUT="$(out_dir "${1:-}")"
 
-docker run --rm --platform linux/arm64 \
+docker run --rm --platform "$DOCKER_PLATFORM" \
   -v "$ROOT:/work:ro" -v "$OUT:/out" -w /work "$RUST_IMAGE" bash -c "
     cargo build -p pegoles-guest-runtime --release --locked \
-      --target aarch64-unknown-linux-gnu --target-dir /tmp/gt &&
-    cp /tmp/gt/aarch64-unknown-linux-gnu/release/pegoles-guest-runtime /out/ &&
+      --target $RUST_TARGET --target-dir /tmp/gt &&
+    cp /tmp/gt/$RUST_TARGET/release/pegoles-guest-runtime /out/ &&
     /out/pegoles-guest-runtime --version
   "
 echo "runtime staged at $OUT/pegoles-guest-runtime"

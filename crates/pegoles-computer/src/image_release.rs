@@ -962,6 +962,16 @@ mod tests {
         install(dir, image, src, &mut |_, _, _| {}, &|| false)
     }
 
+    /// The Windows image is not published yet: the host sees no release
+    /// entry for it, so setup reports it unavailable instead of installing
+    /// the arm64 image.
+    #[test]
+    fn the_x64_image_is_not_offered_until_published() {
+        assert!(release_image(crate::image::PEGOLES_BASE_IMAGE_ID_X64).is_none());
+        assert!(catalog().unwrap().iter().all(|i| i.architecture == "arm64"));
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn builtin_catalog_is_valid_and_pins_the_product_image() {
         let images = catalog().unwrap();

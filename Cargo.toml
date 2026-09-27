@@ -9,6 +9,8 @@ members = [
   "crates/pegoles-inference",
   "guest/runtime",
   "native/windows/pegoles-vm-host",
+  "native/windows/pegoles-broker-proto",
+  "native/windows/pegoles-broker",
   "native/macos/pegoles-macos-embed",
   "apps/desktop/src-tauri",
 ]

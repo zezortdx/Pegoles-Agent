@@ -41,5 +41,9 @@ if [ "$EXTRA" -eq 1 ]; then
 fi
 
 rm -f "$OUT_ISO"
-hdiutil makehybrid -iso -joliet -o "$OUT_ISO" -default-volume-name cidata "$WORK" >/dev/null
+if command -v hdiutil >/dev/null; then
+  hdiutil makehybrid -iso -joliet -o "$OUT_ISO" -default-volume-name cidata "$WORK" >/dev/null
+else
+  xorriso -as mkisofs -quiet -V cidata -J -r -o "$OUT_ISO" "$WORK"
+fi
 echo "seed ISO at $OUT_ISO ($(du -h "$OUT_ISO" | cut -f1))"

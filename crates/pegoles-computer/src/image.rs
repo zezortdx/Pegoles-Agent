@@ -94,9 +94,19 @@ pub const PEGOLES_IMAGE_VERSION_V2: &str = "0.2";
 /// instead of the dev fixture, network/remote-login services disabled.
 pub const PEGOLES_BASE_IMAGE_ID_V3: &str = "pegoles-base-0.3";
 pub const PEGOLES_IMAGE_VERSION_V3: &str = "0.3";
-/// The image a normal create boots. Older images predate the runtime
+/// The x64 image for Windows (Hyper-V): Debian 13 amd64 provisioned by
+/// `scripts/build-guest-image/build-x64.sh`, a VHDX, runtime in listen
+/// mode. Not in the release catalog until it is published, so setup on
+/// Windows reports the image as unavailable (fails closed) until then.
+pub const PEGOLES_BASE_IMAGE_ID_X64: &str = "pegoles-base-x64-0.1";
+/// The image a normal create boots on this host: the arm64 image on
+/// macOS, the x64 one on Windows. Older arm64 images predate the runtime
 /// authentication the host now requires and cannot connect.
-pub const PEGOLES_PRODUCT_IMAGE_ID: &str = PEGOLES_BASE_IMAGE_ID_V3;
+pub const PEGOLES_PRODUCT_IMAGE_ID: &str = if cfg!(windows) {
+    PEGOLES_BASE_IMAGE_ID_X64
+} else {
+    PEGOLES_BASE_IMAGE_ID_V3
+};
 /// Env override selecting the boot image (dev/provisioning). Unset →
 /// the product image. Unknown values fail closed (missing dir →
 /// `Missing`, never a silent fallback to another image).

@@ -17,6 +17,12 @@ pub const GUEST_SOURCE_PORT_MAX: u32 = 1023;
 /// Lowest reserved source port the runtime tries (it walks down from
 /// `GUEST_SOURCE_PORT_MAX` while ports are still held by old sockets).
 pub const GUEST_SOURCE_PORT_MIN: u32 = 960;
+/// Listen transport: on hosts that cannot see a guest peer's source port,
+/// the runtime LISTENS on this privileged vsock port and the host
+/// connects to it. Only a CAP_NET_BIND_SERVICE holder can bind a port
+/// <= 1023, so owning this listener authenticates the runtime exactly
+/// like the reserved source port does in the dial transport.
+pub const PEGOLES_GUEST_LISTEN_PORT: u32 = 850;
 
 /// Wire protocol version spoken by this host release.
 pub const GUEST_PROTOCOL_VERSION: u32 = 1;

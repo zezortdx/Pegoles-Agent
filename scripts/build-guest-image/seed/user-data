@@ -148,9 +148,24 @@ runcmd:
   - udevadm control --reload-rules && udevadm trigger --subsystem-match=misc || true
   - systemctl daemon-reload
   - systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-workspace.service seatd.service || systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-workspace.service
-  # Serial console on the virtio-console (hvc0) for boot diagnostics.
-  # GuestReady never depends on serial; this is diagnostics only.
-  - grep -q 'console=hvc0' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=hvc0"/' /etc/default/grub
+  # Serial console for boot diagnostics (GuestReady never depends on it):
+  # the virtio-console (hvc0) under Virtualization.framework (arm64), COM1
+  # (ttyS0) under Hyper-V (amd64).
+  # amd64 (Windows) also: the host connects to the runtime, which listens
+  # on its privileged vsock port (pegoles.transport=listen, see
+  # docs/WINDOWS_ARCHITECTURE.md); hv_sock is the vsock transport; vkms
+  # gives Weston a DRM seat (the VM has no video device), so agent input
+  # reaches clients through libinput as on macOS; the Hyper-V storage and
+  # bus drivers are in the initramfs (the root disk is SCSI there).
+  - |
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then
+      grep -q 'pegoles.transport=listen' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=ttyS0,115200 pegoles.transport=listen"/' /etc/default/grub
+      printf 'hv_sock\nvkms\n' > /etc/modules-load.d/pegoles-hyperv.conf
+      printf 'hv_vmbus\nhv_storvsc\nhv_sock\n' >> /etc/initramfs-tools/modules
+      update-initramfs -u
+    else
+      grep -q 'console=hvc0' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=hvc0"/' /etc/default/grub
+    fi
   - update-grub
   # cloud-init did its one job: disable it for every later boot,
   # then power off for snapshot. NOTE: runcmd `poweroff` is refused

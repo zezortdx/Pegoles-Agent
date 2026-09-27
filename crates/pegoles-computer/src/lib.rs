@@ -50,8 +50,9 @@ pub use image::{
     DerivedManifest, DerivedManifestInput, GraphicalImageInfo, GuestKernelCapabilities,
     ImageFamily, ImageSpec, ImageStatus, KernelConfigState, PlatformArtifact, PrepareStage,
     GENERIC_DEBIAN_13_AMD64, GENERIC_DEBIAN_13_ARM64, IMAGE_ID_ENV, PEGOLES_BASE_IMAGE_ID,
-    PEGOLES_BASE_IMAGE_ID_V2, PEGOLES_BASE_IMAGE_ID_V3, PEGOLES_IMAGE_VERSION,
-    PEGOLES_IMAGE_VERSION_V2, PEGOLES_IMAGE_VERSION_V3, PEGOLES_PRODUCT_IMAGE_ID,
+    PEGOLES_BASE_IMAGE_ID_V2, PEGOLES_BASE_IMAGE_ID_V3, PEGOLES_BASE_IMAGE_ID_X64,
+    PEGOLES_IMAGE_VERSION, PEGOLES_IMAGE_VERSION_V2, PEGOLES_IMAGE_VERSION_V3,
+    PEGOLES_PRODUCT_IMAGE_ID,
 };
 pub use input::{
     action_to_input_ops, base64_png, chunk_bytes, drag_step_count, encode_png_rgb_fast,
@@ -71,6 +72,6 @@ pub use platform::{
 pub use traits::{ComputerBackend, ComputerInstance};
 pub use transport::{FakeGuestTransport, GuestTransport, TransportEvent};
 pub use windows::{
-    hyperv_service_guid_for_port, pegoles_hyperv_service_guid, probe_windows_host,
-    WindowsHcsBackend, WindowsHostCapabilities, WindowsSupport, HV_SOCKET_REGISTRY_PATH,
+    hyperv_service_guid_for_port, pegoles_hyperv_service_guid, VirtualizationReadiness,
+    WindowsHcsBackend, WindowsReadiness,
 };
