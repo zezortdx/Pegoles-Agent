@@ -5,7 +5,7 @@
 # Policy tripwire fixtures: truncated, non-functional key headers and the
 # AWS documentation example prefix, typed at the policy to prove it denies
 # key material. They are not keys and never were.
-b11394b124329eb42939584007abbb8da9c7ae0f:crates/pegoles-policy/tests/escape_matrix.rs:private-key:412
-38399572a5fef9e9590dbbf1bf9687687d81a178:crates/pegoles-agent/tests/security_matrix.rs:private-key:359
-38399572a5fef9e9590dbbf1bf9687687d81a178:crates/pegoles-agent/tests/security_matrix.rs:generic-api-key:361
-38399572a5fef9e9590dbbf1bf9687687d81a178:crates/pegoles-agent/tests/security_matrix.rs:private-key:594
+d7b4d33b98b7ccd86bbed8fb56c6aa63d8fd82d0:crates/pegoles-policy/tests/escape_matrix.rs:private-key:412
+1698c7d8ad2371e80f14fc6874b5703ed76d5e0d:crates/pegoles-agent/tests/security_matrix.rs:private-key:359
+1698c7d8ad2371e80f14fc6874b5703ed76d5e0d:crates/pegoles-agent/tests/security_matrix.rs:generic-api-key:361
+1698c7d8ad2371e80f14fc6874b5703ed76d5e0d:crates/pegoles-agent/tests/security_matrix.rs:private-key:594
