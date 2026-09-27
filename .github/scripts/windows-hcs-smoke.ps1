@@ -17,6 +17,8 @@ param(
   [string]$Disk = ''
 )
 $ErrorActionPreference = 'Stop'
+# PowerShell variable names ignore case: the computer's own disk is $vhdx
+# so that it never aliases the -Disk parameter.
 
 $vmp = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
 Write-Output "VirtualMachinePlatform: $($vmp.State)"
@@ -28,15 +30,15 @@ if ($vmp.State -ne 'Enabled') {
 $id = [guid]::NewGuid().ToString()
 $dir = Join-Path $env:LOCALAPPDATA "Pegoles\computers\$id"
 New-Item -ItemType Directory -Force (Join-Path $dir 'logs') | Out-Null
-$disk = Join-Path $dir 'disk.vhdx'
+$vhdx = Join-Path $dir 'disk.vhdx'
 if ($Disk) {
-  Copy-Item -LiteralPath $Disk -Destination $disk
+  Copy-Item -LiteralPath $Disk -Destination $vhdx
 } else {
   $script = Join-Path $env:RUNNER_TEMP 'pegoles-vhd.txt'
-  "create vdisk file=`"$disk`" maximum=64 type=expandable" | Set-Content -Encoding ascii $script
+  "create vdisk file=`"$vhdx`" maximum=64 type=expandable" | Set-Content -Encoding ascii $script
   diskpart /s $script | Out-Null
 }
-if (-not (Test-Path $disk)) { throw 'could not create the test VHDX' }
+if (-not (Test-Path $vhdx)) { throw 'could not create the test VHDX' }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = Join-Path $InstallDir 'pegoles-vm-host.exe'
@@ -61,7 +63,7 @@ function Send([hashtable]$request) {
 
 $params = @{
   computer_id     = $id
-  disk_path       = $disk
+  disk_path       = $vhdx
   efi_vars_path   = (Join-Path $dir 'efi-vars.bin')
   machine_id_path = (Join-Path $dir 'machine-id.bin')
   serial_log_path = (Join-Path $dir 'logs\serial.log')
