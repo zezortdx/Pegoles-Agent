@@ -6,7 +6,7 @@
 #   ./scripts/install.sh
 #
 # Needs: a Mac with Apple silicon, macOS 14 or later, the Xcode Command Line
-# Tools (`xcode-select --install`), an internet connection and about 15 GB
+# Tools (`xcode-select --install`), an internet connection and about 8 GB
 # of free disk space for the build. Nothing else: the build tools (Rust,
 # Node.js, pnpm, the Pegoles Local Python runtime) are downloaded into this
 # checkout's target/ directory, each pinned by version and SHA-256, and are
@@ -77,7 +77,7 @@ PNPM_SHA512="68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd
 CARGO_ABOUT_VERSION="0.9.2"
 
 MIN_MACOS_MAJOR=14
-MIN_FREE_GB=15
+MIN_FREE_GB=8
 BUNDLE_ID="ai.pegoles.agent"
 APP_NAME="Pegoles.app"
 
