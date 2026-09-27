@@ -28,14 +28,14 @@ real Windows but not a consumer PC.
 
 | Area | Status |
 |---|---|
-| Broker service (`PegolesVmBroker`) + typed pipe protocol | IMPLEMENTED (protocol and HCS document unit-tested; cross-compiled and linted for Windows); CI: pending first run |
-| Unprivileged VM helper (`pegoles-vm-host.exe`, same JSONL as macOS) | IMPLEMENTED (dispatch unit-tested); CI: pending first run |
+| Broker service (`PegolesVmBroker`) + typed pipe protocol | IMPLEMENTED; CI: linted and unit-tested on Windows |
+| Unprivileged VM helper (`pegoles-vm-host.exe`, same JSONL as macOS) | IMPLEMENTED; CI: linted and unit-tested on Windows |
 | HCS VM boot (UEFI from VHDX, COM1 log, no network) | CI smoke with an empty disk: pending first run |
-| x64 guest image (Debian 13 amd64, runtime in listen mode, Hyper-V drivers) | Build script written (`build-x64.sh`, CI job); **not published** — setup on Windows reports "not available yet" |
+| x64 guest image (Debian 13 amd64, runtime in listen mode, Hyper-V drivers) | CI: built and provisioned under KVM; boots under QEMU/UEFI with its services started; **not published** — setup on Windows reports "not available yet" |
 | Guest channel (AF_HYPERV → guest listener on vsock 850) | IMPLEMENTED; CI boot of the real image: pending first run |
 | Pegoles Local (llama.cpp, GGUF Q8, Vulkan/CPU) in AppContainer + job | Worker VERIFIED on macOS (Metal) against the real VM (`local_bench`); Windows sandbox IMPLEMENTED; CI start test pending |
 | Onboarding (system check, turning on virtualization, restart and resume) | IMPLEMENTED (UI tested with fixtures; Windows facts from real APIs, cross-compiled); never run on Windows |
-| Webview network containment (WebView2 switches) | IMPLEMENTED; CI egress probe pending first run |
+| Webview network containment (WebView2 switches) | CI: egress probe on Windows — 0 TCP / 0 UDP contained (33 / 353 without) |
 | Installer (NSIS, per machine, `Pegoles-Setup-x64.exe`) | Scripted; CI silent install/uninstall pending first run; unsigned |
 | Cloud planner | NOT AVAILABLE on Windows (fails closed: no native confirmation window yet) |
 | Windows on ARM | NOT IMPLEMENTED |

@@ -160,16 +160,16 @@ runs as an administrator. Consumer-hardware E2E (Home, a standard user,
 DPI scaling, real GPUs, a restart during setup, a full task in a booted
 guest) stays a separate gate (`docs/RELEASE_GATES.md`).
 
-## Implementation status (2026-09-27)
+## Implementation status (2026-09-27, CI run 36346739833)
 
 | Part | State |
 |---|---|
-| Broker service + protocol (`native/windows/pegoles-broker*`) | Written; compiles and lints for Windows; protocol unit-tested |
-| VM helper (`native/windows/pegoles-vm-host`) | Written; dispatch unit-tested; compiles for Windows |
+| Broker service + protocol (`native/windows/pegoles-broker*`) | Written; linted and unit-tested on Windows in CI; hardened after an independent review (path race, admin-only folder) |
+| VM helper (`native/windows/pegoles-vm-host`) | Written; linted and unit-tested on Windows in CI |
 | Guest runtime listening on vsock 850 | Written (`--listen` / kernel command line); not yet in a sealed image |
-| x64 guest image (Debian 13 amd64, UEFI, Hyper-V drivers) | **Not built yet** — the blocker for a real Windows task |
+| x64 guest image (Debian 13 amd64, UEFI, Hyper-V drivers) | Built and provisioned in CI (`guest-image-x64`); boots under QEMU/UEFI with its services up; **not published** (the blocker for a real Windows task) |
 | llama.cpp worker + AppContainer/job sandbox | Written; worker runs on macOS against the real VM; Windows sandbox compiles; CI start test pending its first run |
-| Desktop shell, onboarding, WebView2 containment | Compiles for Windows; egress probe pending its first CI run |
+| Desktop shell, onboarding, WebView2 containment | Linted and tested on Windows in CI; egress probe on Windows: 0 TCP / 0 UDP contained |
 | Installer (NSIS, per machine), silent install/uninstall | Scripted and wired into CI (pending its first run); unsigned |
 | Consumer hardware | **Never run** (no Windows PC available to the project yet) |
 

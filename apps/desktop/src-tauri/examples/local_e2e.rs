@@ -9,9 +9,11 @@
 //! cargo build --release -p pegoles-desktop --example local_e2e
 //! cp native/macos/pegoles-vm-host/.build/release/pegoles-vm-host target/release/examples/
 //! ./target/release/examples/local_e2e
-//! # whole process tree without network (offline guarantee):
-//! sandbox-exec -p '(version 1)(allow default)(deny network*)' ./target/release/examples/local_e2e
 //! ```
+//! It also counts internet sockets held by Pegoles' processes (0 expected).
+//! Wrapping it in `sandbox-exec` does not work: the model worker applies
+//! its own sandbox, which macOS refuses inside another one; to check the
+//! offline guarantee end to end, turn the network off instead.
 //!
 //! Scenario: (1) no cloud key, provider = local, model installed;
 //! (2) a natural-language task runs to completion and is verified inside

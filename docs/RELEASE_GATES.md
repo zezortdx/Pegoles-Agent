@@ -90,12 +90,12 @@ PC.
 
 | # | Gate | Status | Evidence / what it needs |
 |---|---|---|---|
-| W1 | Windows crates build, lint and test on Windows | PENDING (CI) | `ci.yml` job `windows` |
-| W2 | Webview has no network under WebView2 | PENDING (CI) | `webview_egress_probe` control + contained in `windows` |
+| W1 | Windows crates build, lint and test on Windows | PASS (CI) | `ci.yml` job `windows`, run 36346739833: clippy `-D warnings` and 502 tests across the 11 Windows crates, 0 failures (fixes it forced: host path separators in tests, the model store renaming a folder with an open file, the desktop test binary missing its Common Controls manifest) |
+| W2 | Webview has no network under WebView2 | PASS (CI) | `webview_egress_probe` on Windows: without the switches the page reached the listeners (33 TCP connections, 353 UDP packets); with them 0 and 0, while IPC worked and the navigation was blocked |
 | W3 | Installer builds; silent per-machine install registers the broker; uninstall leaves nothing | PENDING (CI) | `windows-installer` |
 | W4 | HCS VM boots through the helper and the broker (empty disk) | PENDING (CI) | `windows-hcs-smoke.ps1` in `windows-installer` |
 | W5 | Model worker starts inside its AppContainer and job from the install folder | PENDING (CI) | `the_real_worker_starts_confined` in `windows-installer` |
-| W6 | x64 guest image built and provisioned from pinned inputs | PENDING (CI) | `guest-image-x64` |
+| W6 | x64 guest image built and provisioned from pinned inputs | PASS (CI) | `guest-image-x64` (KVM): 515 packages, weston 14.0.2-1, foot 1.21.0-2, listen mode on the kernel command line, Hyper-V drivers in the initramfs; the same image boots under QEMU/UEFI with weston, the runtime and the workspace terminal started |
 | W7 | Guest runtime reachable over AF_HYPERV in a booted x64 guest | PENDING (CI) | `windows-guest-boot` |
 | W8 | x64 image published with pins in `catalog/images.json` | NOT DONE | Publishing a release asset needs the owner's approval |
 | W9 | Local model quality on the GGUF path (MAI-UI-2B Q8_0, llama.cpp) | PASS on macOS (Metal), not on Windows | `local_bench` on the real VM: 17/22 goals, the same as MLX 6-bit; 0 % invalid outputs; worker peak 2.4 GB (`benchmarks/local-models/README.md`, `results-gguf.json`) |
@@ -104,6 +104,21 @@ PC.
 | W12 | Authenticode signing of the installer and binaries | DEFERRED | A certificate: SignPath Foundation (free for OSS, application needed) or Azure Artifact Signing (individual accounts: US/Canada only today) |
 | W13 | SmartScreen / Smart App Control with a signed build | NOT RUN | Follows W12; unsigned builds are blocked by Smart App Control and warned by SmartScreen, and Pegoles never asks anyone to turn either off |
 | W14 | WinGet | DRAFT | `packaging/winget/` (not submitted; needs a published release) |
+
+### macOS regression checks on the 0.2 branch
+
+On the test Mac (M4 Pro, 24 GB), 2026-09-27: `scripts/check.sh` green
+(frontend, fmt, clippy, every workspace test, Swift helper);
+`webview_egress_probe` unchanged (contained 0 TCP / 0 UDP); `local_bench`
+MLX control 4/6 on a six-task subset; `local_e2e` (the desktop code
+driving the MLX worker and the real VM): Stop 2.3 s, worker killed and
+recovered, clean teardown, no internet sockets, in every run. Its first
+task ("create hello.txt containing pegoles local, then cat it") was
+verified in the guest in 0 of 5 runs on the branch and 1 of 3 runs of
+`main` built the same day: the 2B model sometimes types the text as a
+command or omits the redirect. The planner and the MLX request path are
+byte-identical to `main` (the worker's stream helpers only moved), so this
+is recorded as model variance, not a regression.
 
 ## Supply chain and provenance
 
