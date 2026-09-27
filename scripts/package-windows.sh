@@ -9,6 +9,9 @@
 # Needs: Rust (MSVC toolchain), Node + pnpm, CMake, LLVM (libclang for
 # llama.cpp's bindings; set LIBCLANG_PATH if it is not found) and the
 # Vulkan SDK (VULKAN_SDK set: llama.cpp compiles its shaders with glslc).
+# Run it from an "x64 Native Tools" environment (MSVC and Ninja on PATH):
+# llama.cpp's Vulkan shader generator does not install under the Visual
+# Studio generator, so the worker is built with Ninja.
 #
 # Install layout (per machine, "C:\Program Files\Pegoles Agent\", which
 # only administrators can write):
@@ -58,6 +61,12 @@ REMAP="$(printf '%s\x1f%s\x1f%s' "--remap-path-prefix=$(win "$HOME")=/home" \
   "--remap-path-prefix=$(win "$ROOT")=/pegoles" "--remap-path-prefix=$(win "${CARGO_HOME:-$HOME/.cargo}")=/cargo")"
 STATIC_CRT="$(printf '%s\x1f%s' "$REMAP" "-Ctarget-feature=+crt-static")"
 unset RUSTFLAGS
+
+command -v ninja >/dev/null && command -v cl >/dev/null || {
+  echo "run from an x64 Native Tools environment (needs cl.exe and ninja.exe on PATH)" >&2
+  exit 1
+}
+export CMAKE_GENERATOR=Ninja
 
 # --- native parts ----------------------------------------------------------
 CARGO_ENCODED_RUSTFLAGS="$STATIC_CRT" cargo build --release --locked -p pegoles-broker -p pegoles-vm-host-windows

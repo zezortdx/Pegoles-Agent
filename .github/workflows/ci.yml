@@ -278,6 +278,20 @@ jobs:
           "$RUNNER_TEMP/vulkansdk.exe" --root 'C:\VulkanSDK' --accept-licenses --default-answer --confirm-command install
           printf '%s\n' 'VULKAN_SDK=C:\VulkanSDK' 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
           printf '%s\n' 'C:\VulkanSDK\Bin' >> "$GITHUB_PATH"
+      # llama.cpp's Vulkan shader generator is a nested CMake project that
+      # the Visual Studio generator fails to install; build with Ninja (as
+      # llama.cpp's own Windows CI does), which needs the MSVC developer
+      # environment.
+      - name: MSVC developer environment and the Ninja generator
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsRedistDir|VCToolsVersion|WindowsSdkDir|WindowsSdkBinPath|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir|VSINSTALLDIR|DevEnvDir)=(.*)$') {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       # A short target directory: llama.cpp's nested Vulkan shader build
       # overflows the 260-character path limit under the checkout.
       - run: cargo clippy --locked --manifest-path workers/llama/Cargo.toml --all-targets -- -D warnings
