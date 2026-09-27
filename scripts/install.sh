@@ -247,7 +247,8 @@ build_pnpm() {
 
 build_cargo_about() {
   # From crates.io, with the lockfile it was published with.
-  cargo install --quiet --locked --root "$1" "cargo-about@$CARGO_ABOUT_VERSION"
+  cargo install --quiet --locked --features cli --root "$1" "cargo-about@$CARGO_ABOUT_VERSION"
+  [ -x "$1/bin/cargo-about" ] || die "cargo-about did not build"
 }
 
 bootstrap() {
@@ -272,7 +273,7 @@ EOF
   export XDG_CACHE_HOME="$TOOLS/cache"
   export NEXT_TELEMETRY_DISABLED=1
   if [ ! -f "$TOOLS/cargo-about/.pegoles-stamp" ]; then say "build cargo-about $CARGO_ABOUT_VERSION (license notices)"; fi
-  install_tool cargo-about "$CARGO_ABOUT_VERSION:$RUST_VERSION" build_cargo_about
+  install_tool cargo-about "$CARGO_ABOUT_VERSION:cli:$RUST_VERSION" build_cargo_about
   say "rustc $("$TOOLS/rust/bin/rustc" --version | cut -d' ' -f2), node $(node --version), pnpm $(pnpm --version)"
 }
 
