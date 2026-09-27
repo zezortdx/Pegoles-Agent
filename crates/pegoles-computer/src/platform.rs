@@ -502,8 +502,14 @@ mod tests {
 
     #[test]
     fn host_platform_wire_names() {
-        assert_eq!(serde_json::to_string(&HostPlatform::MacOS).unwrap(), "\"macos\"");
-        assert_eq!(serde_json::to_string(&HostPlatform::Windows).unwrap(), "\"windows\"");
+        assert_eq!(
+            serde_json::to_string(&HostPlatform::MacOS).unwrap(),
+            "\"macos\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HostPlatform::Windows).unwrap(),
+            "\"windows\""
+        );
         let old: HostPlatform = serde_json::from_str("\"mac_o_s\"").unwrap();
         assert_eq!(old, HostPlatform::MacOS);
     }
