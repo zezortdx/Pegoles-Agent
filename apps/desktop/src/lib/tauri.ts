@@ -283,6 +283,8 @@ export interface LocalRuntime {
   readonly chip: string | null;
   readonly memory_bytes: number;
   readonly apple_silicon: boolean;
+  /** This computer can run Pegoles Local at all (Apple silicon Mac, x64 PC). */
+  readonly host_supported: boolean;
 }
 
 /** Everything about who plans, as Core reports it. Never contains a secret. */

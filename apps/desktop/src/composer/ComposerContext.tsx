@@ -1,6 +1,7 @@
 import type { ComputerModel } from "../state/computerModel";
 import { MachineScreen } from "../computer/MachineScreen";
 import { AlertCircleIcon, ModelIcon, ShieldIcon } from "../ui/icons";
+import { HOST } from "../lib/host";
 
 export interface ComposerStripProps {
   readonly computer: ComputerModel;
@@ -18,7 +19,7 @@ export function ComposerStrip({ computer, computerOpen, onComputer }: ComposerSt
         <span className="strip-item__label">Pegoles Computer</span>
         <span className="strip-item__state" data-phase={computer.phase}>{computer.chip}</span>
       </button>
-      <span className="strip-note">Isolated from your Mac</span>
+      <span className="strip-note">Isolated from your {HOST}</span>
     </>
   );
 }

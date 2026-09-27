@@ -7,6 +7,7 @@ import { hostLabel, shortcutModifier } from "../lib/format";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { IntelligenceSection } from "./IntelligenceSection";
 import { Row, Section } from "./settingsParts";
+import { HOST } from "../lib/host";
 
 export type QualityChoice = "auto" | "full" | "reduced";
 /** A section another surface points at (Home's safety line, the composer's model chip, a task waiting for a model). */
@@ -45,7 +46,7 @@ export interface SettingsViewProps {
  */
 const SECURITY_RULES: readonly { label: string; value: string; tone: "on" | "blocked" }[] = [
   { label: "Computer isolation", value: "On", tone: "on" },
-  { label: "Your Mac’s files, apps and screen", value: "No access", tone: "blocked" },
+  { label: `Your ${HOST}’s files, apps and screen`, value: "No access", tone: "blocked" },
   { label: "Typing private keys", value: "Blocked", tone: "blocked" },
   { label: "Clicking, typing and scrolling on its computer", value: "Within safety limits", tone: "on" },
 ];
@@ -83,7 +84,7 @@ export function SettingsView(props: SettingsViewProps) {
       <IntelligenceSection id="settings-intelligence" native={props.native} intelligence={props.intelligence} model={props.model} />
 
       <Section id="settings-appearance" title="Appearance">
-        <Row label="Motion quality" hint={props.quality === "auto" ? `Auto is using ${props.resolvedQuality === "full" ? "Full" : "Reduced"} on this Mac.` : "Full renders Pegoles in 3D. Reduced keeps it light."}>
+        <Row label="Motion quality" hint={props.quality === "auto" ? `Auto is using ${props.resolvedQuality === "full" ? "Full" : "Reduced"} on this ${HOST}.` : "Full renders Pegoles in 3D. Reduced keeps it light."}>
           <SegmentedControl id="quality" label="Motion quality" segments={QUALITY_SEGMENTS} value={props.quality} onChange={props.onQuality} />
         </Row>
         <Row label="Reduce motion" hint="Follows your system accessibility setting.">

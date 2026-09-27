@@ -1,3 +1,4 @@
+import { HOST } from "../lib/host";
 /**
  * The product talks to people; diagnostics talk to engineers. Every raw
  * Core/IPC error becomes one calm sentence, an optional hint and the
@@ -28,8 +29,6 @@ interface Rule {
 const COMPUTER_TITLE = "Computer couldn’t start.";
 const START_TITLE = "Pegoles couldn’t start its computer.";
 
-/** "Mac" or "PC", for sentences about the machine people are on. */
-const HOST = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent) ? "PC" : "Mac";
 
 /**
  * Who plans. Before the computer rules: an integrity failure mentions

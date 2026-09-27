@@ -167,6 +167,8 @@ pub struct LocalRuntimePayload {
     pub chip: Option<String>,
     pub memory_bytes: u64,
     pub apple_silicon: bool,
+    /// This computer can run Pegoles Local at all (the UI's "unsupported").
+    pub host_supported: bool,
 }
 
 fn model_payload(store: &ModelStore, spec: &ModelSpec) -> LocalModelPayload {
@@ -266,6 +268,7 @@ impl LocalModels {
         let runtime = runtime_check(catalog.default_spec());
         let hw = hardware::detect();
         let host_problem = host_problem(&hw);
+        let host_supported = host_problem.is_none();
         let (install, backend) = {
             let inner = self.inner();
             (inner.status.clone(), inner.backend.clone())
@@ -304,6 +307,7 @@ impl LocalModels {
             chip: hw.chip,
             memory_bytes: hw.total_memory_bytes,
             apple_silicon: hw.apple_silicon,
+            host_supported,
         }
     }
 

@@ -345,7 +345,7 @@ export function installShellLab(hash: string): void {
       runtime_problem: lw.appleSilicon ? (lw.runtimeReady ? null : "local model runtime is not installed: the Pegoles Local runtime is not set up on this Mac") : "Pegoles Local needs a Mac with Apple silicon.",
       loaded_model: lw.loaded, worker_footprint_bytes: lw.footprint, default_model: DEFAULT_MODEL,
       models: lw.models.map((candidate) => ({ ...candidate })), install: lw.install,
-      chip: lw.appleSilicon ? "Apple M3 Pro" : "Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz", memory_bytes: 18 * 2 ** 30, apple_silicon: lw.appleSilicon,
+      chip: lw.appleSilicon ? "Apple M3 Pro" : "Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz", memory_bytes: 18 * 2 ** 30, apple_silicon: lw.appleSilicon, host_supported: lw.appleSilicon,
     },
   });
   const emit = (payload: ModelInstallStatus) => {
