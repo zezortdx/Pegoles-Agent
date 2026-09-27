@@ -64,6 +64,7 @@ fn set_dacl(service: &Service) -> Result<(), String> {
 
 /// Register (or update) the broker service to run this binary.
 pub fn install_service() -> Result<(), String> {
+    super::util::require_admin_only_folder()?;
     let command = format!("\"{}\" service", own_path()?);
     let name = wide(pegoles_broker_proto::SERVICE_NAME);
     let display = wide(pegoles_broker_proto::SERVICE_DISPLAY_NAME);

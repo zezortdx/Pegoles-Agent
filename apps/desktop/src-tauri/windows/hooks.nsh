@@ -29,9 +29,9 @@
   ; the broker and the helpers do); then stop what is left of Pegoles.
   nsExec::Exec '"$INSTDIR\pegoles-broker.exe" uninstall-service'
   Pop $0
-  nsExec::Exec 'taskkill /F /T /IM pegoles-vm-host.exe'
-  Pop $0
-  nsExec::Exec 'taskkill /F /T /IM pegoles-llm-worker.exe'
+  ; Only Pegoles' own processes: matched by their full path in this
+  ; install folder, never by name (another program could use the name).
+  nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$$d = [IO.Path]::GetFullPath($\'$INSTDIR$\'); Get-Process pegoles-vm-host, pegoles-llm-worker -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and [IO.Path]::GetDirectoryName($$_.Path) -eq $$d } | Stop-Process -Force"'
   Pop $0
 !macroend
 

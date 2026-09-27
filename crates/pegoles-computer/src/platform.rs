@@ -390,8 +390,9 @@ mod tests {
     #[test]
     fn macos_paths_use_application_support() {
         let root = resolve_root(HostPlatform::MacOS, "/home/testuser", None, None, None);
+        // Separators are the test host's own (this also runs on Windows).
         assert_eq!(
-            root.to_string_lossy(),
+            root.to_string_lossy().replace('\\', "/"),
             "/home/testuser/Library/Application Support/Pegoles"
         );
         let paths = PegolesPaths { root };
@@ -439,9 +440,10 @@ mod tests {
             None,
             Some("/home/ana/.xdg/data".to_string()),
         );
-        assert_eq!(root.to_string_lossy(), "/home/ana/.xdg/data/pegoles");
+        let unix = |p: std::path::PathBuf| p.to_string_lossy().replace('\\', "/");
+        assert_eq!(unix(root), "/home/ana/.xdg/data/pegoles");
         let fallback = resolve_root(HostPlatform::Linux, "/home/ana", None, None, None);
-        assert_eq!(fallback.to_string_lossy(), "/home/ana/.local/share/pegoles");
+        assert_eq!(unix(fallback), "/home/ana/.local/share/pegoles");
     }
 
     #[test]

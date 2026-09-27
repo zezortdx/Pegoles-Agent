@@ -278,9 +278,17 @@ jobs:
           "$RUNNER_TEMP/vulkansdk.exe" --root 'C:\VulkanSDK' --accept-licenses --default-answer --confirm-command install
           printf '%s\n' 'VULKAN_SDK=C:\VulkanSDK' 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
           printf '%s\n' 'C:\VulkanSDK\Bin' >> "$GITHUB_PATH"
+      # A short target directory: llama.cpp's nested Vulkan shader build
+      # overflows the 260-character path limit under the checkout.
       - run: cargo clippy --locked --manifest-path workers/llama/Cargo.toml --all-targets -- -D warnings
+        env:
+          CARGO_TARGET_DIR: C:\pl
       - run: cargo test --locked --manifest-path workers/llama/Cargo.toml
+        env:
+          CARGO_TARGET_DIR: C:\pl
       - run: bash scripts/package-windows.sh
+        env:
+          PEGOLES_LLAMA_TARGET_DIR: /c/pl
       - name: Install silently (per machine)
         shell: pwsh
         run: |

@@ -32,7 +32,11 @@ TAURI_DIR="$ROOT/apps/desktop/src-tauri"
 BIN="$TAURI_DIR/binaries"
 GENERATED="$TAURI_DIR/tauri.windows.bundle.generated.json"
 OUT="$ROOT/target/release-artifacts"
-LLAMA_TARGET="$ROOT/workers/llama/target/release"
+# llama.cpp's Vulkan shader generator is a nested CMake build whose
+# paths overflow Windows' 260-character limit under a deep checkout:
+# build the worker in a short target directory.
+LLAMA_TARGET_DIR="${PEGOLES_LLAMA_TARGET_DIR:-/c/pl}"
+LLAMA_TARGET="$LLAMA_TARGET_DIR/release"
 
 # Python as installed on Windows ("python3" may be a Store alias there).
 PY="$(command -v python || command -v python3)" || { echo "python not found" >&2; exit 1; }
@@ -57,7 +61,8 @@ unset RUSTFLAGS
 
 # --- native parts ----------------------------------------------------------
 CARGO_ENCODED_RUSTFLAGS="$STATIC_CRT" cargo build --release --locked -p pegoles-broker -p pegoles-vm-host-windows
-CARGO_ENCODED_RUSTFLAGS="$REMAP" cargo build --release --locked --manifest-path workers/llama/Cargo.toml
+CARGO_ENCODED_RUSTFLAGS="$REMAP" CARGO_TARGET_DIR="$(win "$LLAMA_TARGET_DIR")" \
+  cargo build --release --locked --manifest-path workers/llama/Cargo.toml
 
 rm -rf "$BIN" "$GENERATED"
 mkdir -p "$BIN/llama"

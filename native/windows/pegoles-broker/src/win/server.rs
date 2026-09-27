@@ -133,6 +133,7 @@ fn create_instance(first: bool, sd: &SecurityDescriptor) -> Result<Owned, String
 }
 
 fn expected_client() -> Result<PathBuf, String> {
+    super::util::require_admin_only_folder()?;
     let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
     let dir = exe.parent().ok_or("own folder")?;
     Ok(dir.join(proto::CLIENT_EXE))
@@ -203,6 +204,8 @@ fn write_line(pipe: HANDLE, text: &str) -> bool {
 struct Vm {
     system: hcs::System,
     disk: String,
+    /// Keeps the computer's folders pinned while the VM exists.
+    _lease: files::DiskLease,
 }
 
 /// One helper's connection. Its VMs end when it does (the lease).
@@ -359,9 +362,10 @@ fn create(
             "the disk must be the computer's own disk.vhdx in the user's Pegoles folder",
         );
     }
-    if let Err(e) = files::check_disk(client, &spec.computer_id, &disk) {
-        return proto::Response::fail("forbidden", e);
-    }
+    let lease = match files::check_disk(client, &spec.computer_id, &disk) {
+        Ok(lease) => lease,
+        Err(e) => return proto::Response::fail("forbidden", e),
+    };
     {
         let Ok(mut counts) = per_user().lock() else {
             return proto::Response::fail("internal", "quota lock");
@@ -415,7 +419,14 @@ fn create(
         undo_count();
         return proto::Response::fail("hcs", "HCS did not report the VM's runtime id");
     };
-    vms.insert(spec.computer_id.clone(), Vm { system, disk });
+    vms.insert(
+        spec.computer_id.clone(),
+        Vm {
+            system,
+            disk,
+            _lease: lease,
+        },
+    );
     proto::Response {
         runtime_id: Some(runtime_id),
         state: Some("created".into()),

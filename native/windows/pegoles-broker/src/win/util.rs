@@ -64,3 +64,70 @@ impl Drop for Owned {
 
 // SAFETY: kernel handles may be used from any thread.
 unsafe impl Send for Owned {}
+
+/// The broker trusts the helper beside it, and the service runs this
+/// binary as SYSTEM: both are sound only in a folder that only
+/// administrators can write. Release builds refuse to run outside
+/// Program Files (the per-machine installer's location).
+pub fn require_admin_only_folder() -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
+    use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+    let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
+    // SAFETY: known folder lookup for this process.
+    let path = unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, None) }
+        .map_err(|e| format!("cannot find Program Files: {e}"))?;
+    // SAFETY: NUL-terminated string from the shell, freed once below.
+    let program_files = unsafe { from_pwstr(path) };
+    unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(path.0 as *const _)) };
+    if inside(&exe.to_string_lossy(), &program_files) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Pegoles must be installed in {program_files} (found in {}); reinstall it with the installer",
+            exe.display()
+        ))
+    }
+}
+
+/// `path` is strictly inside `folder` (case-insensitive, whole components).
+fn inside(path: &str, folder: &str) -> bool {
+    let folder = folder.trim_end_matches('\\').to_lowercase();
+    let path = path.to_lowercase();
+    !folder.is_empty()
+        && path.len() > folder.len() + 1
+        && path.starts_with(&folder)
+        && path.as_bytes()[folder.len()] == b'\\'
+        && !path.contains("\\..\\")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inside;
+
+    #[test]
+    fn only_paths_inside_the_folder_count() {
+        let pf = r"C:\Program Files";
+        assert!(inside(
+            r"C:\Program Files\Pegoles Agent\pegoles-broker.exe",
+            pf
+        ));
+        assert!(inside(
+            r"c:\program files\Pegoles Agent\pegoles-broker.exe",
+            r"C:\Program Files\"
+        ));
+        assert!(!inside(
+            r"C:\Program Files (x86)\Pegoles\pegoles-broker.exe",
+            pf
+        ));
+        assert!(!inside(r"C:\Program FilesX\pegoles-broker.exe", pf));
+        assert!(!inside(r"C:\Users\ana\Pegoles\pegoles-broker.exe", pf));
+        assert!(!inside(
+            r"C:\Program Files\..\Users\ana\pegoles-broker.exe",
+            pf
+        ));
+        assert!(!inside(r"C:\Program Files", pf));
+        assert!(!inside(r"C:\x.exe", ""));
+    }
+}

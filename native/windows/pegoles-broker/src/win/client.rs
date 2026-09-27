@@ -38,13 +38,22 @@ impl Client {
         // SAFETY: a valid impersonation token we own.
         unsafe { ImpersonateLoggedOnUser(self.token.raw()) }
             .map_err(|e| format!("cannot act as the user: {e}"))?;
-        let result = f();
+        // Reverts when `f` returns or unwinds.
+        let _revert = Revert;
+        f()
+    }
+}
+
+/// Ends an impersonation on this thread when dropped.
+struct Revert;
+
+impl Drop for Revert {
+    fn drop(&mut self) {
         // SAFETY: undo the impersonation on this thread.
         if unsafe { RevertToSelf() }.is_err() {
             // Never keep serving with a user's identity on this thread.
             std::process::abort();
         }
-        result
     }
 }
 
