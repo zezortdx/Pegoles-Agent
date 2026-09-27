@@ -26,7 +26,7 @@
         "bytes": 561846260,
         "sha256": "a938365cf6b47a3df43cd0b529a1e791b757e2251963b182b8bfc4b400d1a2b1",
         "urls": [
-          "https://github.com/UNPUBLISHED/pegoles-agent/releases/download/guest-image-0.3/pegoles-base-0.3-arm64.raw.gz"
+          "https://github.com/zezortdx/Pegoles-Agent/releases/download/guest-image-0.3/pegoles-base-0.3-arm64.raw.gz"
         ]
       },
       "provenance": {
