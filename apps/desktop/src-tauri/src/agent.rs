@@ -208,7 +208,9 @@ pub enum KeySource {
     Environment,
 }
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "dev.pegoles.agent";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "anthropic-api-key";
 
 /// Shape check only (the API is the authority). Rejects anything that

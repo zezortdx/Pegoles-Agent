@@ -64,6 +64,10 @@ const INTELLIGENCE_RULES: readonly Rule[] = [
  * generic computer rules: Windows reports these as HRESULTs.
  */
 const HOST_RULES: readonly Rule[] = [
+  { test: /has no release download in this build/i, scope: "computer",
+    title: `Pegoles’ computer isn’t available for this ${HOST} yet.`,
+    hint: "The isolated computer Pegoles uses on Windows hasn’t been published yet. Nothing was changed on this PC; check for a newer Pegoles later.",
+    retryable: false },
   { test: /0x80370102|HCS_E_HYPERV_NOT_INSTALLED|virtualization (is )?(disabled|not enabled|turned off)|VirtualMachinePlatform/i, scope: "computer",
     title: "Virtualization needs to be turned on.",
     hint: "Pegoles uses hardware virtualization to give the AI its own isolated computer. Restart Pegoles to check this PC and turn it on.", retryable: false },

@@ -84,6 +84,9 @@ pub fn run() {
             ))));
             #[cfg(debug_assertions)]
             grant_debug_commands(app)?;
+            // Pegoles is open again: the one-time "resume after the
+            // setup restart" entry has done its job (no-op elsewhere).
+            pegoles_computer::windows::clear_resume_after_restart();
             // The only window, with navigation kept on the app origin and
             // new windows refused (see nav_guard.rs).
             let boot = {

@@ -52,6 +52,11 @@ describe("humanizeError", () => {
   it("explains a refused reset or removal, and a missing computer image", () => {
     expect(humanizeError("stop the running task before resetting the computer", "general")).toMatchObject({ scope: "general", title: "Stop the running task first." });
     expect(humanizeError("computer image missing: no sealed image", "computer")).toMatchObject({ title: "Pegoles’ computer image isn’t ready." });
+    // Windows before its image is published: say so, don't suggest a retry.
+    const unpublished = humanizeError("computer image missing: pegoles-base-x64-0.1 has no release download in this build", "computer");
+    expect(unpublished).toMatchObject({ retryable: false });
+    expect(unpublished.title).toMatch(/isn’t available for this (Mac|PC) yet/);
+    expect(unpublished.hint).toMatch(/hasn’t been published yet/);
   });
 
   it("says Windows and guest failures as sentences people can act on, detail kept", () => {

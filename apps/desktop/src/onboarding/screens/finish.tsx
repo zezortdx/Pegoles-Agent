@@ -41,7 +41,9 @@ export function IntelligenceScreen({ headingRef, go, computer, intelligence, loc
         <summary className="ob-details__summary">Cloud models <ChevronDownIcon size={12} /></summary>
         <div className="ob-details__text">
           <p>Pegoles can also use Anthropic’s Claude with your own API key. Cloud models can be more capable, but each step’s screenshot of Pegoles’ computer is sent to Anthropic.</p>
-          <p>You can switch any time in Settings → Intelligence. More providers are planned.</p>
+          {computer === "PC"
+            ? <p>On Windows, cloud models aren’t available yet: switching needs a confirmation window that web pages can’t fake, and that isn’t built for Windows. Pegoles Local does everything here.</p>
+            : <p>You can switch any time in Settings → Intelligence. More providers are planned.</p>}
         </div>
       </details>
       {intelligence.error?.op === "provider" && <p className="ob-muted" role="alert">Couldn’t switch to Pegoles Local. {intelligence.error.text}</p>}

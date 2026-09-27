@@ -286,10 +286,10 @@ impl NativeConsent {
 #[cfg(not(target_os = "macos"))]
 impl Consent for NativeConsent {
     fn allow_cloud_planner(&self, _provider: Provider) -> Result<bool, String> {
-        Err("cloud planners need the macOS confirmation dialog.".into())
+        Err("cloud models aren't available on this system yet: they need a native confirmation window, which exists only on macOS so far. Pegoles Local keeps planning.".into())
     }
     fn api_key(&self, _replacing: bool) -> Result<Option<String>, String> {
-        Err("adding a key needs the macOS key dialog; set ANTHROPIC_API_KEY instead.".into())
+        Err("adding a key needs a native key window, which exists only on macOS so far.".into())
     }
 }
 
