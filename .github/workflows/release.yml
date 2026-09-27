@@ -16,6 +16,13 @@ name: release
 #   publish  attests and creates a DRAFT release; a human publishes it.
 # No caches are restored or saved; dependencies install from lockfiles.
 # Every job checks out the exact commit that triggered the run.
+#
+# Source-first releases (0.1.x) publish no binary: users build with
+# scripts/install.sh, and the maintainer creates the GitHub release by hand
+# (docs/GITHUB_RELEASE_CHECKLIST.md). This pipeline therefore runs only when
+# the repository variable PEGOLES_BINARY_RELEASES is "true"; set it once the
+# Developer ID certificate and notary key are in the `release` environment.
+# Without it, a v* tag leaves every job skipped.
 
 on:
   push:
@@ -46,7 +53,7 @@ env:
 jobs:
   build:
     name: Build and gate (macOS arm64, no secrets)
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && vars.PEGOLES_BINARY_RELEASES == 'true'
     runs-on: macos-15
     timeout-minutes: 150
     permissions:
