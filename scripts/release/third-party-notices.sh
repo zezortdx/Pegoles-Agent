@@ -76,7 +76,10 @@ for d in dists:
 PY
 
 # --- Frontend (bundled into the web UI) ------------------------------------------
-pnpm --silent --filter @pegoles/desktop licenses list --prod --json > "$TMP/npm.json"
+if ! pnpm --silent --filter @pegoles/desktop licenses list --prod --json > "$TMP/npm.json"; then
+  echo "pnpm licenses list failed: $(head -c 600 "$TMP/npm.json")" >&2
+  exit 1
+fi
 python3 - "$TMP/npm.json" > "$TMP/npm.md" <<'PY'
 import json, sys, os
 data = json.load(open(sys.argv[1]))

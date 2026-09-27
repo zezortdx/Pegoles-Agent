@@ -316,8 +316,12 @@ EOF
 
   export CARGO_HOME="$TOOLS/cargo-home"
   export PATH="$TOOLS/bin:$TOOLS/rust/bin:$TOOLS/node/bin:$TOOLS/cargo-about/bin:$PATH"
-  # pnpm's content store and caches stay inside the checkout.
-  export npm_config_store_dir="$TOOLS/pnpm-store"
+  # pnpm's content store stays inside the checkout, unless this checkout
+  # already has node_modules from another store (a developer checkout):
+  # pnpm needs that store's index for the license notices.
+  if [ ! -f "$ROOT/node_modules/.modules.yaml" ]; then
+    export npm_config_store_dir="$TOOLS/pnpm-store"
+  fi
   export npm_config_cache="$TOOLS/npm-cache"
   export XDG_CACHE_HOME="$TOOLS/cache"
   export NEXT_TELEMETRY_DISABLED=1
