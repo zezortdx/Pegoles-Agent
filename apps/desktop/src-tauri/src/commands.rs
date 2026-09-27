@@ -648,6 +648,14 @@ pub async fn read_boot_log(state: tauri::State<'_, SharedState>) -> Result<BootL
     .map_err(|e| e.to_string())?
 }
 
+/// A setup failure as a sentence for the UI: the reason without internal
+/// prefixes, bounded, and what to do next.
+fn setup_failure_message(error: &str) -> String {
+    let detail = error.trim().trim_start_matches("backend error:").trim();
+    let detail: String = detail.chars().take(160).collect();
+    format!("Setup didn’t finish ({detail}). Try again; it picks up where it stopped.")
+}
+
 /// Download, verify and install the Pegoles computer image this build
 /// boots (the pinned release image). Returns at once; progress arrives on
 /// `pegoles://image-progress` and in `get_status().image_setup`.
@@ -748,7 +756,7 @@ fn run_image_install(
         Err(_) if cancelled => {
             Some("Setup was cancelled. It resumes where it stopped.".to_string())
         }
-        Err(e) => Some(e.to_string()),
+        Err(e) => Some(setup_failure_message(&e.to_string())),
     };
     {
         let mut s = lock_state(&shared);
@@ -1400,6 +1408,21 @@ pub async fn cancel_task(
         s.tasks.cancel_task(&task).map(|_| ()).map_err(err)
     })
     .await
+}
+
+#[cfg(test)]
+mod setup_message_tests {
+    use super::setup_failure_message;
+
+    #[test]
+    fn setup_failures_read_as_sentences() {
+        assert_eq!(
+            setup_failure_message("backend error: image download failed: http status: 404"),
+            "Setup didn’t finish (image download failed: http status: 404). Try again; it picks up where it stopped."
+        );
+        let long = setup_failure_message(&"x".repeat(1000));
+        assert!(long.chars().count() < 240, "{long}");
+    }
 }
 
 #[cfg(test)]
