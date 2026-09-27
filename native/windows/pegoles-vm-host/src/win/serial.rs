@@ -12,7 +12,7 @@ use windows::Win32::Security::Authorization::{
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE,
-    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_INBOUND,
+    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
@@ -54,11 +54,14 @@ impl SerialPump {
             lpSecurityDescriptor: sd.0,
             bInheritHandle: false.into(),
         };
+        // Duplex because Hyper-V opens its end of a COM port pipe for
+        // reading and writing (an inbound-only pipe refuses it); this side
+        // only ever reads.
         // SAFETY: NUL-terminated name, valid attributes; one instance.
         let pipe = unsafe {
             CreateNamedPipeW(
                 pcwstr(&name),
-                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 4096,

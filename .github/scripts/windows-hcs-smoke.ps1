@@ -49,13 +49,13 @@ $helper = [System.Diagnostics.Process]::Start($psi)
 
 function Send([hashtable]$request) {
   $line = $request | ConvertTo-Json -Compress -Depth 5
-  Write-Output ">> $line"
+  Write-Host ">> $line"
   $helper.StandardInput.WriteLine($line)
   $helper.StandardInput.Flush()
   while ($true) {
     $reply = $helper.StandardOutput.ReadLine()
     if ($null -eq $reply) { throw 'the helper exited' }
-    Write-Output "<< $reply"
+    Write-Host "<< $reply"
     $value = $reply | ConvertFrom-Json
     if ($null -ne $value.id -and $value.id -eq $request.id) { return $value }
   }
@@ -99,7 +99,7 @@ try {
   if (-not $helper.WaitForExit(20000)) { $helper.Kill(); throw 'the helper did not exit' }
   $log = Join-Path $dir 'logs\serial.log'
   if (Test-Path $log) {
-    Write-Output '--- COM1 ---'
+    Write-Output "--- COM1 ($((Get-Item $log).Length) bytes) ---"
     Get-Content $log -Tail 80
   }
 }
