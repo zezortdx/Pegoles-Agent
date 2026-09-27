@@ -36,7 +36,7 @@ real Windows but not a consumer PC.
 | Pegoles Local (llama.cpp, GGUF Q8, Vulkan/CPU) in AppContainer + job | Worker VERIFIED on macOS (Metal) against the real VM (`local_bench`); Windows: builds with Vulkan in CI; sandbox escape probes pass in CI; inference on Windows not run yet |
 | Onboarding (system check, turning on virtualization, restart and resume) | IMPLEMENTED (UI tested with fixtures; Windows facts from real APIs, cross-compiled); never run on Windows |
 | Webview network containment (WebView2 switches) | CI: egress probe on Windows — 0 TCP / 0 UDP contained (33 / 353 without) |
-| Installer (NSIS, per machine, `Pegoles-Setup-x64.exe`) | Scripted; CI silent install/uninstall pending first run; unsigned |
+| Installer (NSIS, per machine, `Pegoles-Setup-x64.exe`) | CI: built from source, installed silently, service registered, HCS VM started through the installed broker, installed worker started confined, uninstalled cleanly; unsigned |
 | Cloud planner | NOT AVAILABLE on Windows (fails closed: no native confirmation window yet) |
 | Windows on ARM | NOT IMPLEMENTED |
 

@@ -170,7 +170,7 @@ guest) stays a separate gate (`docs/RELEASE_GATES.md`).
 | x64 guest image (Debian 13 amd64, UEFI, Hyper-V drivers) | Built and provisioned in CI (`guest-image-x64`); boots under QEMU/UEFI with its services up; **not published** (the blocker for a real Windows task) |
 | llama.cpp worker + AppContainer/job sandbox | Worker runs on macOS against the real VM and builds with Vulkan on Windows; escape probes pass on Windows (file, network, process all blocked) |
 | Desktop shell, onboarding, WebView2 containment | Linted and tested on Windows in CI; egress probe on Windows: 0 TCP / 0 UDP contained |
-| Installer (NSIS, per machine), silent install/uninstall | Scripted and wired into CI (pending its first run); unsigned |
+| Installer (NSIS, per machine), silent install/uninstall | Exercised end to end in CI (build, install, service, HCS boot, confined worker, uninstall); unsigned |
 | Consumer hardware | **Never run** (no Windows PC available to the project yet) |
 
 ## Sources
