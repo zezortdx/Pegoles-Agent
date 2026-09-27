@@ -34,6 +34,12 @@ the tag (the release workflow refuses a mismatch).
   were re-verified.
 - The guest runtime's `memfd_create` call compiled only on aarch64 (found
   by the x86_64 CI job).
+- Found by the installed-app end-to-end runs: a guest that stopped
+  responding left the app on "Starting…" forever (it now becomes an error
+  after 60 s without a reconnect); Settings showed "Runs on mac_o_s";
+  image setup errors were unreadable; the installer broke license notices
+  in a developer checkout without a message, and asked for 15 GB of disk
+  (the build peaks at about 5 GB; it now asks for 8 GB).
 
 ### Changed
 

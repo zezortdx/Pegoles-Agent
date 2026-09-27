@@ -1,96 +1,94 @@
-# Release gates: 0.1.0-rc.1
+# Release gates: 0.1.0 (source-first)
 
 Every gate for the first public release, with its status and the evidence
-behind it. Status is one of **PASS**, **FAIL**, **BLOCKED** (cannot be run
-without something external, named in the row), or **NOT TESTED**. Nothing
-is marked PASS without evidence from this repository or a run on this
-machine (M4 Pro, 24 GB, macOS 26.5.2, 2026-09-26/27). Commands are in
-`CLAUDE.md` and the files named below.
+behind it. 0.1.0 is a **source-first** release: users build and install
+with `./scripts/install.sh`; no binary is published. Status is one of
+**PASS**, **FAIL**, **PENDING** (runs only after an external step, named in
+the row), or **DEFERRED** (not a source-first requirement). Nothing is
+marked PASS without evidence from this repository, GitHub, or a run on the
+test Mac (Apple M4 Pro, 24 GB, macOS 26.5.2, 2026-09-26/27).
 
-**Verdict: not ready for a public release.** The engineering gates pass;
-the distribution gates (Developer ID signing, notarization, Gatekeeper on
-a quarantined download, a clean-machine install) are blocked on Apple
-credentials that do not exist yet, and on the GitHub repository
-(`zezortdx/Pegoles-Agent`, private on GitHub Free) becoming public. This
-tree is a release candidate to be signed and published by the release
-workflow once they are in place.
-
-## P0 gates
+## Source-first P0 gates
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| 1 | Real Pegoles Local E2E (no API key, product path, real VM) | PASS (3 of 5 runs, incl. the last run on the final code) | `apps/desktop/src-tauri/examples/local_e2e.rs`, release build, bundled-runtime layout: the task completed and was verified in the guest (38.7 s, 53.0 s, and 36.1 s on the final code); Stop 2.2–2.5 s; worker `kill -9` mid-task → recovered, task completed; teardown leaves no VM or worker; 0 internet sockets. The 2 failed runs were the 2B model's own mistakes, stopped by the deterministic brakes: 3 invalid replies in a row on the first screen, and a mistyped command (`cd ~touch hello.txt`) followed by a loop the loop brake ended. `agent_e2e` (scripted planner, same product path) passes on the final code. |
-| 2 | Real packaged app | PASS (ad-hoc) / NOT TESTED (UI flow) | `scripts/package-macos.sh` → `Pegoles Agent.app` + 170 MB DMG; `verify-artifact.sh` passes (62 Mach-O signed, exact entitlements, runtime, worker, notices, no developer paths); the packaged app launches and quits cleanly with no helper, VM or worker left. The UI was not driven end to end in the packaged app (the Mac was in use; a live visual pass is still to do). |
-| 3 | Local MLX runtime bundled | PASS | `scripts/local-model/build-runtime.sh`: pinned CPython 3.12.14 (python-build-standalone 20260924, SHA-256) + 33 hash-locked wheels, no pip at run time; two builds into different directories give the same tree digest `304eab88…`; both offered models run real inference with it under the sandbox; the bundle carries it in `Contents/Resources/runtime`. |
-| 4 | Guest image distribution verified | PASS (mechanism) / BLOCKED (hosting) | `crates/pegoles-computer/src/image_release.rs` + `catalog/images.json`; 14 unit tests (tampered, oversized, other-bytes, corrupt, resume, mirror fallback, cancel, tampered install, symlinked disk, unpublished URL) + pin enforcement test; the real 562 MB archive installs through the product installer in 11.2 s, byte-identical to the sealed disk. Download from a real host: blocked until the archive is uploaded to the GitHub repository (catalog URL still says UNPUBLISHED; the release workflow refuses to build until it is replaced). |
-| 5 | No critical/high security defect unresolved | PASS | Round 1: 7 independent adversarial reviewers, every medium+ finding checked by two verifiers (trace, refute): 71 findings, 0 critical, the one high (a guest hello-flood crashing the app) fixed with a regression test, all verified mediums fixed. Round 2, after the fixes: 4 red-team attackers on the final tree (host/VM, AI/policy, web/Tauri, supply chain): 0 critical, 0 high, one confirmed medium (webview network egress via preconnect/WebRTC) fixed and proven with a probe; lows fixed or recorded with the accepted residuals in `docs/THREAT_MODEL.md`. |
-| 6 | Clean dependency scans | PASS | `cargo audit`: 0 vulnerabilities (warnings: unmaintained `proc-macro-error` and `unic-*` via Tauri build tooling, unsound `glib` in the Linux-only GTK tree, none in the macOS app); `cargo deny check`: advisories, bans (wildcards denied), licenses, sources ok; `pnpm audit` and `pnpm audit --prod`: no known vulnerabilities. |
-| 7 | CI green | PASS (GitHub) | PR #1 on `zezortdx/Pegoles-Agent`, head `0744f6b`: every `ci.yml` job green on GitHub-hosted runners: Rust on macOS arm64 (fmt, clippy `-D warnings`, 549 tests), release-profile tests and release build, Swift helper, frontend (lint, typecheck, tests, build), guest aarch64 check, portability on ubuntu-24.04 (505 tests incl. 23 guest-runtime tests on x86_64) and windows-2025, supply chain (cargo-deny, cargo-audit, pnpm audit, lockfile rules), hygiene (script, actionlint, shellcheck), gitleaks over the full history. The first run found one real defect, a guest-runtime `memfd_create` call that only type-checked where `c_char` is unsigned (aarch64); fixed in `0744f6b`. Dependency review is skipped while the repository is private (unsupported there). |
-| 8 | Developer ID signing valid | BLOCKED | No Developer ID Application certificate on this Mac (`security find-identity -v -p codesigning` → 0 identities). The ad-hoc build is not distributable. |
-| 9 | Hardened runtime valid | BLOCKED (partly verified) | App and helper are signed with the hardened runtime (flags `runtime`) even ad-hoc; the bundled interpreter can only use it with a Team ID (ad-hoc library validation refuses its own libraries: verified), so the full check needs the Developer ID build (`verify-artifact.sh --signed`). |
-| 10 | Notarization accepted | BLOCKED | Needs the Developer ID build and App Store Connect notary credentials (`scripts/release/notarize.sh`). |
-| 11 | Gatekeeper accepts the quarantined downloaded artifact | BLOCKED | `spctl --assess` rejects the ad-hoc build, as it must. Needs the notarized DMG downloaded through a browser. |
-| 12 | Release artifact hashes generated | PASS (script) | `scripts/release/provenance.sh` on the ad-hoc DMG: `SHA256SUMS`, `build-manifest.json` (commit, toolchains, runtime tree digest, image pin, model revision), CycloneDX SBOM (816 components). The release workflow runs it in the build and sign jobs. |
-| 13 | No secret exposure | PASS | Before the first push: gitleaks 8.30.1 over every commit of `main` and `release/v0.1.0` found only four policy tripwire fixtures (truncated key headers typed at the policy in tests), listed by exact fingerprint in `.gitleaksignore`; a scan of every blob in that history for personal paths, hostnames, emails, tokens and private artifacts found stray `__pycache__` bytecode with an absolute home path, purged from history with `git filter-repo` (every other commit verified unchanged). The `secrets` CI job repeats the full-history scan on every run. Working-tree scan: only third-party strings inside `target/` build caches. `.gitignore` covers keys, certificates, provisioning profiles, keychains, `.env`; the bundle verifier refuses keys, weights, venvs; the published guest image has no SSH host keys or authorized keys (`sanitize-image.sh`). |
-| 14 | Git tree clean and recoverable | PASS | All work is committed and pushed to `zezortdx/Pegoles-Agent` (`main`, `release/v0.1.0`, nothing else); local backup refs (including the pre-purge history) are kept and never pushed. |
-| 15 | README matches reality | PASS | Rewritten against the verified state; claims limited to what was run on this Mac. |
+| 1 | Secrets and history scan | PASS | Before the first push, and again after rewriting commit emails to the GitHub noreply address: gitleaks 8.30.1 over every commit of `main` and `release/v0.1.0` finds only four policy tripwire fixtures (truncated key headers in tests), listed by exact fingerprint in `.gitleaksignore`. A scan of every blob found stray `__pycache__` bytecode with an absolute home path, purged with `git filter-repo`, and nothing else (no tokens, keys, personal paths or private artifacts). The `secrets` CI job rescans the full history on every run. |
+| 2 | License | PASS | MIT (`LICENSE`, every crate's `license = "MIT"`); the built app carries `THIRD_PARTY_NOTICES.md` for everything it redistributes. |
+| 3 | Clean Git state | PASS | Everything is committed and pushed; only `main`, `release/v0.1.0` and the image tag exist on GitHub. |
+| 4 | CI | PASS (private) / PENDING (public) | Every `ci.yml` job green on GitHub-hosted runners (PR #9): Rust on macOS arm64 (fmt, clippy `-D warnings`, tests), release profile, Swift helper, frontend, guest aarch64, portability on Ubuntu and Windows, supply chain, hygiene, full-history gitleaks. Rerun after the switch to public. |
+| 5 | CodeQL | PASS (private) / PENDING (public) | `security-extended`, 5 languages (actions, JS/TS, Python, Rust, Swift): 0 results. While private the SARIF is gated in the job (no upload); after the switch, results upload to code scanning. |
+| 6 | Dependency audits | PASS | `cargo deny` (advisories, bans, licenses, sources), `cargo audit` (0 vulnerabilities), `pnpm audit --prod` (0), lockfile and wheel-hash rules, in CI. One Dependabot alert (glib 0.18 unsoundness) is dismissed as not used: it is only in Tauri's Linux GTK tree, absent from the macOS build (same reasoning as `deny.toml`). Dependabot's major-version upgrade PRs are deferred past 0.1.0. |
+| 7 | `install.sh` security | PASS | Adversarial review by an independent reviewer; valid findings fixed (cargo applies `.cargo/config.toml` from every directory above the build, so configurations another user could have planted are refused; the clean-environment marker is no longer trusted alone; atomic stale-lock takeover; glob characters in paths refused; packaging refuses to strip quarantine). The review also found verification pipelines that could pass on a match under `pipefail`; fixed everywhere, and the shipped app and published image re-verified. Tested: paths with spaces, a fresh HOME, a symlinked invocation from a hostile working directory with a hostile environment (PATH shims, `RUSTFLAGS`, `CARGO_TARGET_DIR`, `NODE_OPTIONS`, `.npmrc`, a cargo `rustc-wrapper`: none took effect), SIGINT and SIGTERM mid-build (lock released, previous app intact, no orphans), a tampered checksum and a failed download (refused, no partial files), reruns, replacing an installation, refusing a running app, a foreign `Pegoles.app`, a symlinked destination and a writable `~/Applications`, a symlinked `~/Applications`, a quarantined checkout, injection-prone checkout paths, a Rosetta shell, too little disk space. |
+| 8 | Clean clone | PASS | A fresh `git clone` from GitHub (no `node_modules`, no `target`, no venv, no model, no image) into a path with a space: `./scripts/install.sh` → `~/Applications/Pegoles.app` in 4 min 38 s on the first run (tools, build, runtime, signing, verification). Final run on the tagged commit: see gate 12. |
+| 9 | Local build | PASS | `verify-artifact.sh` on every installer build: strict ad-hoc signature, 62 Mach-O files signed, the helper carries only the virtualization entitlement, the app and interpreter none, runtime/worker/lock match the checkout, no weights, keys, venvs or build paths. |
+| 10 | Installed app independent of the repo | PASS | With the clone moved away, the installed app launched, set up Pegoles Local and ran a task; the helper and worker ran from inside the bundle; no string in the binaries or bundle references the checkout, `target/`, `node_modules`, a venv, `/tmp` or the build user's home. |
+| 11 | Model real download + verification | PASS | From the installed app, keyless: MAI-UI-2B 6-bit from `huggingface.co/mlx-community/MAI-UI-2B-6bit-v2` at the pinned revision `cb57cf2f…`; quitting mid-download kept the partial file at 939,524,096 bytes and the relaunched app resumed from there; installed atomically; all 13 files match their pinned SHA-256 and size, nothing extra. Corruption, tampering, oversize and resume are also unit-tested (`pegoles-inference` store tests). |
+| 12 | Guest image real download + verification | PENDING (public) | The image is published as the immutable release asset `guest-image-0.3`; GitHub reports SHA-256 `a938365c…` for it, equal to the pin. The app's download path (HTTPS only, range resume, archive SHA-256, bounded decompression with disk SHA-512, atomic install) is unit-tested and was exercised against the private URL (HTTP 404 handled). Anonymous download through the installed app runs after the switch to public. |
+| 13 | VM boot | PASS | From the installed app: ready in 3.3–3.6 s, including after a guest crash and after Reset. |
+| 14 | Keyless local-model E2E | PASS (installed app, private phase) / PENDING (final) | Installed app, no API key, Pegoles Local: "create hello.txt containing pegoles local, then cat it" completed and the VM screen shows `cat hello.txt` → `pegoles local` (twice: 20 actions in under a minute, and on the fixed build). Final run: from a clean clone of the tag with the image downloaded from GitHub. |
+| 15 | Stop | PASS (installed app, dead guest) / PENDING (healthy guest, GUI) | The Stop button ended a run within 0.5 s. That run's guest had just crashed (see below), so the healthy-guest Stop through the GUI is repeated in the final run. On a healthy guest, `local_e2e` measured Stop in 2.2–2.5 s. |
+| 16 | Reset | PASS | The Reset button (with an in-app confirmation) replaced the computer's disk with a fresh clone of the sealed image (new inode, the image's timestamp); the computer then started normally. |
+| 17 | Quit / relaunch | PASS | Quit mid-download, and quit with a crashed guest: the app, VM helper and model worker all exit. Relaunch: the model is still installed and Ready, the computer Off, and a partial download resumes. |
+| 18 | No orphan processes | PASS | After every quit: no `pegoles-desktop`, `pegoles-vm-host` or worker process left. |
+| 19 | Screenshot soak | PASS | `capture_soak`: 2212 captures, guest memory flat; `guest_memory_repro`: about 19 minutes of file-heavy guest work with a capture every 5 s, with and without concurrent model inference, no guest fault. |
+| 20 | Hostile model, prompt-injection and IPC abuse tests | PASS | CI: `crates/pegoles-policy/tests` (escape matrix, property tests), `crates/pegoles-agent/tests/security_matrix.rs` (prompt-injected planners through the real executor and policy), local parser fail-closed tests, the Tauri ACL test (`ipc_acl.rs`: the capability equals the invoked command set). |
+| 21 | Frontend / XSS / CSP | PASS | CI: `apps/desktop/src/security/*.test.*` (hostile strings render inert, no HTML sinks, only the `api` layer calls the backend); `webview_egress_probe` (the webview reaches no network: 0 TCP, 0 UDP) |
+| 22 | Docs accuracy | PASS | README, SECURITY, PRIVACY, ARCHITECTURE, THREAT_MODEL, CONTRIBUTING, CHANGELOG checked against the code and these results; claims limited to what was run. |
 
-## Security regression gates
+### Found by the installed-app runs, and fixed
+
+- A guest that stopped responding left the app on "Starting…" forever;
+  the session now becomes an error after 60 s without a reconnect
+  (unit-tested), and Stop or Reset recovers the computer.
+- Settings showed "Runs on mac_o_s" (serde naming); image setup errors
+  ran the raw backend message into the size note.
+- The installer's pnpm store broke license notices in a developer
+  checkout, silently; its disk-space requirement (15 GB) was a guess (the
+  build peaks at about 5 GB; it now asks for 8 GB).
+- One guest kernel panic (ext4 code pages read as zeros in guest memory)
+  under severe host memory pressure; not reproduced; image verified
+  intact. Recorded as residual risk 16 in `docs/THREAT_MODEL.md`.
+
+## Deferred: official signed binary distribution
+
+Not source-first requirements. The binary release workflow stays in the
+tree and runs only when `PEGOLES_BINARY_RELEASES` is enabled.
+
+| Gate | Status | What it needs |
+|---|---|---|
+| Developer ID signing | DEFERRED | A "Developer ID Application" certificate (Apple Developer Program) in the `release` environment (`docs/GITHUB_RELEASE_CHECKLIST.md` §4). |
+| Notarization | DEFERRED | An App Store Connect API key for `scripts/release/notarize.sh`. |
+| Stapling | DEFERRED | Follows notarization. |
+| Official notarized DMG | DEFERRED | The three above; then Gatekeeper on a quarantined download and a clean-machine install. |
+| Build provenance attestation | DEFERRED | Part of the binary release workflow (`actions/attest-build-provenance`). |
+
+## Security regression gates (unchanged, in CI)
 
 | Gate | Status | Evidence |
 |---|---|---|
-| Policy hostile-model regression | PASS | `crates/pegoles-policy/tests` escape matrix + property tests; `crates/pegoles-agent/tests/security_matrix.rs` (prompt-injected planner through the real executor and policy) |
 | Model output parser fails closed | PASS | `local/parse.rs` tests + property tests (never panics, bounded) |
-| Guest malformed/flooding IPC | PASS | `pegoles-computer` tests incl. the 20k-hello flood on a 2 MiB stack (it crashed the app before the fix); bounded helper lines and bytes; handshake per connection |
-| MLX worker isolation | PASS | `worker::tests::sandbox_blocks_escapes`: 17 probes (fork, exec, TCP, DNS socket, home read/write, shared temp, LaunchServices, lsd, Apple Events, pasteboard, Keychain ×2, WindowServer, cfprefsd, signal, process inspection) succeed unsandboxed and fail sandboxed with the real runtime |
-| Model hash verification | PASS | `pegoles-inference` store tests; re-verification before every (re)load |
-| Guest image hash verification | PASS | gate 4 |
-| Webview network containment | PASS | `examples/webview_egress_probe.rs` against the real page and release CSP: uncontained control reaches local listeners (preconnect TCP, navigations, WebRTC UDP); contained reaches nothing (0 TCP, 0 UDP) while IPC works; the packaged release app starts with it in force |
-| CSP / XSS / IPC surface | PASS | `apps/desktop/src/security/*.test.*` (inert rendering of hostile strings, no HTML sinks, product calls only `api`), `src-tauri/src/ipc_acl.rs` (capability equals the invoked set through Tauri's ACL) |
-| Native consent for cloud planner and key | PASS (logic) / NOT TESTED (visual) | `consent.rs` tests with an injected decider and the decline backoff; the AppKit alert itself was not clicked through in this phase |
-| cargo audit / cargo deny / pnpm audit | PASS | gate 6 |
-| CodeQL | PASS (GitHub, private mode) | `codeql.yml` with `security-extended` on PR #1: actions, JavaScript/TypeScript, Python, Rust (no build) and Swift (traced build of the helper) analyzed; 0 results in every language. While private, results cannot be uploaded to code scanning: the SARIF is kept as a run artifact and `.github/scripts/codeql-gate.py` fails on high/critical or error-level alerts |
-| Long-run capture soak | PASS (with one transient error) | `capture_soak`: 2212 captures, guest memory flat (1256 → 1292 MiB); one capture timed out after 5 s in the guest compositor (reported, not a leak) |
-| Lifecycle / resource soak | PASS | `release_soak`: 12 VM lifecycles, 1200 observations, 60 inferences with 2 forced worker kills; nothing left after each destroy; descriptors flat; host footprint falling |
-| Crash recovery | PASS | guest runtime killed → ready in 2.9 s (`agent_e2e`); worker killed mid-task → task completed (`local_e2e`); packaged app quit → no helper/VM/worker left |
+| Guest malformed/flooding IPC | PASS | `pegoles-computer` tests incl. the 20k-hello flood; bounded helper lines and bytes; handshake per connection |
+| MLX worker isolation | PASS | `worker::tests::sandbox_blocks_escapes`: 17 probes succeed unsandboxed and fail sandboxed |
+| Model and image hash verification | PASS | store and image tests; re-verification before every (re)load and boot |
+| Webview network containment | PASS | `webview_egress_probe` (gate 21) |
+| Native consent for cloud planner and key | PASS (logic) | `consent.rs` tests with an injected decider and the decline backoff |
+| Lifecycle / resource soak | PASS | `release_soak`: 12 VM lifecycles, 1200 observations, 60 inferences with 2 forced worker kills; nothing left after each destroy |
 
 ## Supply chain and provenance
 
 | Item | Status | Evidence |
 |---|---|---|
-| Model pins | PASS | `crates/pegoles-inference/catalog/models.json`: MAI-UI-2B 6-bit `mlx-community/MAI-UI-2B-6bit-v2` at revision `cb57cf2f…`, SHA-256 per file |
-| Guest image pins | PASS | `catalog/images.json`: archive SHA-256 `a938365c…` (561,846,260 bytes), disk SHA-512 `766188e5…` (3 GiB); package manifest `scripts/build-guest-image/manifests/pegoles-base-0.3.packages.txt` (511 packages) |
-| Runtime provenance | PASS | `runtime-manifest.json` in the bundle (interpreter release + digest, lock digest, package list, tree digest) |
-| Actions pinned to commit SHAs | PASS | every `uses:` in `.github/workflows/*` (hygiene script enforces); the repository also requires full-SHA pins and allows only GitHub-created actions plus `dtolnay/rust-toolchain` and `pnpm/action-setup` |
-| Release secrets only in the protected sign job | PASS (by construction) / BLOCKED (plan: environment reviewers) | `release.yml`: `build` has no secrets; `sign` (environment `release`) runs only first-party scripts and Apple tools, takes only named files, checks the worker/lock/manifest against the checkout; `publish` uploads and attests an exact asset list; PR workflows have none ; on GitHub the `release` environment exists with a single `v*` tag rule, no administrator bypass and no secrets; required reviewers are refused on a private GitHub Free repository, so no secret may be added before the switch to public |
-| SBOM | PASS (script) | CycloneDX via syft (816 components) |
-| Build provenance attestation | BLOCKED (plan) | `actions/attest-build-provenance` in `release.yml`; artifact attestations need a public repository on GitHub Free |
-| Third-party licenses | PASS | `THIRD_PARTY_NOTICES.md` in the bundle (Python runtime incl. OpenSSL 3.5.8, SQLite, mpdecimal, bzip2, liblzma, libffi; frontend; 240 Rust crates) |
-| Updater | N/A | No auto-updater ships in 0.1 (no signing key needed) |
+| Model pins | PASS | `crates/pegoles-inference/catalog/models.json`: MAI-UI-2B 6-bit at revision `cb57cf2f…`, SHA-256 per file |
+| Guest image pins | PASS | `catalog/images.json`: archive SHA-256 `a938365c…` (561,846,260 bytes), disk SHA-512 `766188e5…`; URL the immutable release asset `guest-image-0.3`; package manifest (511 packages) |
+| Installer toolchain pins | PASS | `scripts/install.sh`: Rust 1.97.1 components, Node.js 24.21.0 and pnpm 9.15.9 by SHA-256/SHA-512; python-build-standalone by SHA-256; wheels by hash |
+| Actions pinned to commit SHAs | PASS | hygiene script; the repository requires full-SHA pins and allows only GitHub-created actions plus two named ones |
+| Release artifacts | PENDING (release) | `SHA256SUMS`, CycloneDX SBOM and `build-manifest.json` from the clean-clone build of the tag, attached to the GitHub release |
+| Third-party licenses | PASS | `THIRD_PARTY_NOTICES.md` in the built app |
+| Updater | N/A | No auto-updater in 0.1 |
 
 ## Hardware actually tested
 
-One Mac: Apple M4 Pro, 24 GB, macOS 26.5.2 (build 25F84). Nothing was run
-on 8 GB or 16 GB machines, on other chips, or on older macOS; the app
-declares macOS 14.0 as its minimum without having been tested there.
-
-## Blockers and the exact actions they need
-
-1. **Developer ID.** Join the Apple Developer Program (if not already),
-   create a "Developer ID Application" certificate, and either install it
-   in this Mac's login keychain (local signing) or export it as .p12 for
-   the `release` environment secrets. Create an App Store Connect API key
-   for notarization. Steps: `docs/GITHUB_RELEASE_CHECKLIST.md` §4.
-2. **GitHub repository.** `zezortdx/Pegoles-Agent` exists (private) with
-   every setting GitHub Free allows on a private repository (checklist §3).
-   Still to do, all after the switch to public: the `main` and tag
-   rulesets, required reviewers on the `release` environment, secret
-   scanning with push protection, private vulnerability reporting, fork PR
-   approval; then upload `pegoles-base-0.3-arm64.raw.gz` to a
-   `guest-image-0.3` release and replace `UNPUBLISHED` in
-   `crates/pegoles-computer/catalog/images.json`. (GitHub Pro would allow
-   rulesets while private; required reviewers on a private repository's
-   environment need GitHub Enterprise.)
-3. **Release run.** Tag `v0.1.0-rc.1` on `main` after the PR merges;
-   approve the `release` deployment; then run the draft's checks and a
-   clean-machine install (checklist §7) before publishing.
+One Mac: Apple M4 Pro, 24 GB, macOS 26.5.2 (build 25F84), Command Line
+Tools only (no Xcode). Nothing was run on 8 GB or 16 GB machines, on other
+chips, or on older macOS; the app declares macOS 14.0 as its minimum
+without having been tested there.

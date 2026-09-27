@@ -211,18 +211,20 @@ Notarization key (App Store Connect API):
 Rotate both if a machine that held them is lost; revoke the certificate
 at developer.apple.com and the key in App Store Connect.
 
-## 5. First release dry run (repository public, before announcing)
+## 5. Binary release workflow (deferred)
 
-- [ ] The release `build` job runs `scripts/local-model/build-runtime.sh`
-  (via `package-macos.sh build`), whose smoke test requires Metal on the
-  build machine. Confirm on the first run
-  that GitHub's hosted `macos-15` arm64 runner passes it. If it does not,
-  decide explicitly (e.g. a dedicated runner used only by the protected
-  `release` environment, never by pull requests); do not weaken the smoke
-  test silently.
+0.1.x is source-first: `release.yml` runs only when the repository
+variable `PEGOLES_BINARY_RELEASES` is `true`. Before enabling it:
+
+- [ ] Signing and notary credentials in the `release` environment (§4),
+  with its required reviewer.
+- [ ] The release `build` job runs `scripts/local-model/build-runtime.sh`,
+  whose smoke test requires Metal. Confirm that GitHub's hosted `macos-15`
+  arm64 runner passes it; if it does not, decide explicitly (e.g. a
+  dedicated runner used only by the protected `release` environment, never
+  by pull requests); do not weaken the smoke test silently.
 - [x] The Xcode path pinned in the workflows (`/Applications/Xcode_26.2.app`)
-  exists on the `macos-15` arm64 image (runner-images readme; the CI Swift
-  and CodeQL Swift jobs build with it). When it is retired, bump it in
+  exists on the `macos-15` arm64 image. When it is retired, bump it in
   `ci.yml`, `codeql.yml` and `release.yml` together.
 
 ## 6. Guest image hosting
@@ -231,40 +233,37 @@ The app downloads exactly the image pinned in
 `crates/pegoles-computer/catalog/images.json` (archive SHA-256, disk
 SHA-512).
 
-- [ ] Create a release `guest-image-0.3` (tag on `main`), upload
-  `pegoles-base-0.3-arm64.raw.gz`, and check its SHA-256 against the
-  catalog before publishing it.
-- [ ] Replace `UNPUBLISHED` in the catalog URL with `zezortdx/Pegoles-Agent`
-  and merge that change before tagging an app release. Assets of a
-  private repository cannot be downloaded by the app, so this happens
-  after the switch to public.
+- [x] Release `guest-image-0.3` (tag on `main`), with
+  `pegoles-base-0.3-arm64.raw.gz` uploaded as a draft, its digest checked
+  (GitHub reports the pinned SHA-256), then published (immutable, not
+  "latest").
+- [x] The catalog URL is that asset. It downloads anonymously once the
+  repository is public.
+- A new image is a new release `guest-image-<version>` and new pins; an
+  existing image release is never edited.
 
-## 7. Cutting a release
+## 7. Cutting a source-first release
 
-1. [ ] Set the version (e.g. `0.1.0-rc.1`) in all four places:
+1. [ ] Set the version in all four places:
    `apps/desktop/src-tauri/tauri.conf.json`,
    `apps/desktop/src-tauri/Cargo.toml` (then `cargo metadata` to refresh
-   `Cargo.lock`), `apps/desktop/package.json`, `package.json`. The release
-   workflow refuses a tag that differs from any of them. After the build,
-   check the bundle version macOS shows for a pre-release version.
+   `Cargo.lock`), `apps/desktop/package.json`, `package.json`.
 2. [ ] Move the `Unreleased` entries in `CHANGELOG.md` under the version
    with today's date.
 3. [ ] Merge through a PR with every required check green.
-4. [ ] Tag the merge commit on `main` and push only that tag:
-   `git tag -a v0.1.0-rc.1 -m "Pegoles Agent 0.1.0-rc.1" && git push origin v0.1.0-rc.1`.
-5. [ ] Actions -> release -> approve the `release` deployment.
-6. [ ] Review the **draft** release:
-   - download every asset; `shasum -a 256 -c SHA256SUMS`;
-   - `gh attestation verify Pegoles_<version>_arm64.dmg --repo zezortdx/Pegoles-Agent`;
-   - `spctl --assess --type open --context context:primary-signature -v <dmg>`
-     and `xcrun stapler validate <dmg>`;
-   - `bash scripts/release/verify-artifact.sh <dmg> --distribution`;
-   - read `build-manifest.json` (commit = the tag, toolchains, guest image,
-     default model) and skim the SBOM;
-   - install on a clean Mac (or a fresh macOS user), let it download the
-     guest image and the default model, and run a task with Pegoles Local.
-7. [ ] Edit the release notes if needed and **publish** the draft (manual;
-   the workflow never publishes). With release immutability on, the tag
-   and assets are frozen from then on. Mark `-rc` versions as pre-releases
-   (the workflow already does).
+4. [ ] On the merge commit: a fresh `git clone`, `./scripts/install.sh`,
+   then the acceptance run in the installed app (fresh data: set up
+   Pegoles Local and the computer from their real sources, a task, Stop,
+   Reset, quit and relaunch).
+5. [ ] Tag that exact commit and push only the tag:
+   `git tag -a v<version> -m "Pegoles Agent <version>" <commit> && git push origin v<version>`.
+6. [ ] From the clean-clone build of the tag, generate `SHA256SUMS`, the
+   CycloneDX SBOM and `build-manifest.json`
+   (`scripts/release/provenance.sh --no-dmg`, then `shasum -a 256` over
+   the attached files into `SHA256SUMS`), and create a **draft**
+   release for the tag with them attached; the source archives GitHub
+   generates are the primary artifact. No DMG is attached unless it is
+   clearly labeled as unsigned and not notarized.
+7. [ ] Review the draft, then **publish** it. With release immutability on,
+   the tag and assets are frozen from then on.
 8. [ ] A bad release is never edited in place: publish a new version.
