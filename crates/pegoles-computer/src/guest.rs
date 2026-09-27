@@ -329,6 +329,10 @@ pub struct GuestSession {
     /// Start of the current handshake window: VM start, then each new
     /// connection. A reconnect long after boot gets a fresh 60 s budget.
     handshake_started_at: Option<Instant>,
+    /// First tick that saw the session Disconnected: a guest that does not
+    /// reconnect within `GUEST_READY_TIMEOUT` (it crashed or hung) becomes
+    /// Error instead of looking like it is still starting.
+    disconnected_at: Option<Instant>,
     ready_at: Option<Instant>,
     last_activity_at: Option<Instant>,
     last_ping_at: Option<Instant>,
@@ -358,6 +362,7 @@ impl GuestSession {
             info: None,
             vm_started_at: None,
             handshake_started_at: None,
+            disconnected_at: None,
             ready_at: None,
             last_activity_at: None,
             last_ping_at: None,
@@ -497,6 +502,9 @@ impl GuestSession {
         let from = self.state;
         if from == to {
             return;
+        }
+        if to != GuestRuntimeState::Disconnected {
+            self.disconnected_at = None;
         }
         self.state = to;
         self.detail = detail.clone();
@@ -875,6 +883,16 @@ impl GuestSession {
                     self.set_state(
                         GuestRuntimeState::Disconnected,
                         Some("heartbeat missed".to_string()),
+                        &mut out,
+                    );
+                }
+            }
+            GuestRuntimeState::Disconnected => {
+                let since = *self.disconnected_at.get_or_insert(now);
+                if now.duration_since(since) >= GUEST_READY_TIMEOUT {
+                    self.set_state(
+                        GuestRuntimeState::Error,
+                        Some("guest stopped responding (no reconnect in 60 s)".to_string()),
                         &mut out,
                     );
                 }
@@ -1319,6 +1337,37 @@ mod tests {
         s.on_connected(again);
         s.tick(again + GUEST_READY_TIMEOUT + Duration::from_secs(1));
         assert_eq!(s.state(), GuestRuntimeState::Error);
+    }
+
+    #[test]
+    fn a_guest_that_never_reconnects_becomes_error_and_can_still_recover() {
+        // Found on hardware: after a guest kernel panic the session stayed
+        // Disconnected forever and the app showed "Starting..." for good.
+        let mut s = GuestSession::new();
+        let now = t0();
+        s.on_vm_started(now);
+        handshake(&mut s, now);
+        let dead = now + HEARTBEAT_INTERVAL * HEARTBEAT_MISS_LIMIT + Duration::from_secs(1);
+        s.tick(dead);
+        assert_eq!(s.state(), GuestRuntimeState::Disconnected);
+        s.tick(dead + Duration::from_secs(1));
+        s.tick(dead + GUEST_READY_TIMEOUT - Duration::from_secs(1));
+        assert_eq!(s.state(), GuestRuntimeState::Disconnected);
+        s.tick(dead + GUEST_READY_TIMEOUT + Duration::from_secs(2));
+        assert_eq!(s.state(), GuestRuntimeState::Error);
+        // A late reconnect (e.g. after a long pause) still recovers.
+        let back = dead + Duration::from_secs(600);
+        s.on_connected(back);
+        assert_eq!(s.state(), GuestRuntimeState::Connecting);
+        s.on_frame(&hello(1), back);
+        s.on_frame(&encode_guest(&GuestMessage::Ready), back);
+        assert_eq!(s.state(), GuestRuntimeState::Ready);
+        // And a new outage times out again from its own start.
+        s.on_disconnected("gone".to_string());
+        let again = back + Duration::from_secs(5);
+        s.tick(again);
+        s.tick(again + GUEST_READY_TIMEOUT - Duration::from_secs(1));
+        assert_eq!(s.state(), GuestRuntimeState::Disconnected);
     }
 
     #[test]
