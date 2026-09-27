@@ -25,6 +25,13 @@ Setting up needs the network once:
 
 These requests send what any HTTPS download sends (your IP address, a
 TLS handshake, the file being requested); nothing about you or your tasks.
+
+Building from source (`./scripts/install.sh`) downloads its pinned build
+tools and dependencies once: Rust from `static.rust-lang.org`, Node.js
+from `nodejs.org`, pnpm and the frontend packages from
+`registry.npmjs.org`, Rust crates from `crates.io`, the Python runtime
+from GitHub (python-build-standalone) and its wheels from PyPI. The app
+itself never contacts these.
 Everything downloaded is checked against digests built into the app.
 After setup, Pegoles Local works with the network off.
 

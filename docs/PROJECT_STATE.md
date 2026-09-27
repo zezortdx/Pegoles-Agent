@@ -2,7 +2,7 @@
 
 Canonical, concise engineering state. Update it when reality changes; do
 not turn it into a diary. Last full audit and RC pass: 2026-09-26; local-first model phase: 2026-09-26;
-release hardening for 0.1.0-rc.1: 2026-09-26 (gates and evidence: `docs/RELEASE_GATES.md`).
+release hardening for 0.1.0-rc.1: 2026-09-26; source-first 0.1.0: 2026-09-27 (gates and evidence: `docs/RELEASE_GATES.md`).
 
 ## What Pegoles is
 
@@ -90,8 +90,8 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
 - Guest image distribution: pinned archive/disk digests compiled in,
   in-app "Set up computer" with resumable verified download, release
   builds boot only the pinned image. The published image is sanitized
-  (no SSH host keys). The archive is not hosted yet (catalog URL says
-  UNPUBLISHED until it is uploaded to the public repository).
+  (no SSH host keys). The archive is the immutable GitHub release asset
+  `guest-image-0.3`.
 - Security review and red team across host/VM, AI/policy, Tauri/web,
   supply chain; every verified finding fixed or recorded as residual
   (`docs/THREAT_MODEL.md`).
@@ -104,8 +104,22 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
 - Packaging: inside-out signing, DMG, artifact verifier, third-party
   notices in the bundle; release workflow split so no dependency code
   runs while the signing identity is available.
-- Not done (external): Developer ID signing, notarization, Gatekeeper
-  on a quarantined download, a clean-machine test, publishing.
+- Not done (deferred): Developer ID signing, notarization, a notarized
+  download.
+
+### Source-first 0.1.0 (2026-09-27)
+
+- `./scripts/install.sh` builds from a clone into
+  `~/Applications/Pegoles.app` with only the Xcode Command Line Tools
+  (pinned Rust, Node.js, pnpm and cargo-about downloaded into
+  `target/bootstrap`); edge cases and an adversarial review in
+  `docs/RELEASE_GATES.md`.
+- Installed-app runs through the GUI: real model download with resume,
+  keyless tasks on the real VM, Stop, Reset, quit/relaunch, independence
+  from the checkout. They found and fixed: an endless "Starting" after the
+  guest stops responding, "mac_o_s", unreadable setup errors, installer
+  issues. One guest kernel panic under severe host memory pressure is
+  unexplained (THREAT_MODEL residual risk 16).
 
 ## Implemented, not verified live
 
@@ -153,17 +167,14 @@ bash scripts/release/verify-artifact.sh target/release-artifacts/Pegoles_<v>_arm
 
 ## Remaining, prioritized
 
-1. Release blockers (external): Developer ID certificate and notary
-   credentials; `zezortdx/Pegoles-Agent` is private on GitHub Free, so
-   rulesets, environment reviewers, secret scanning and attestations wait
-   for the switch to public; then host the guest image archive and
-   replace UNPUBLISHED in the image catalog; run the release workflow;
-   Gatekeeper and a clean-machine test on the exact notarized DMG
-   (`docs/GITHUB_RELEASE_CHECKLIST.md`).
+1. Official binary distribution (deferred): Developer ID certificate and
+   notary credentials, then `PEGOLES_BINARY_RELEASES` and the release
+   workflow (`docs/GITHUB_RELEASE_CHECKLIST.md` §4–5).
 2. Measure on 8 GB and 16 GB Macs and set a minimum RAM; only a 24 GB
    M4 Pro was available.
-3. Visual QA of the packaged app with a live VM (computer image setup,
-   Intelligence settings, consent alerts).
+3. Root-cause the one guest kernel panic seen under host memory
+   pressure (`crates/pegoles-computer/examples/guest_memory_repro.rs`);
+   visual QA of the consent alerts.
 4. Run the Claude planner live (needs a key).
 5. Local model quality: MAI-UI's remaining failures are habits (one
    character per step, answering by typing, re-toggling) and 13-px

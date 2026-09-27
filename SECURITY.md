@@ -9,14 +9,14 @@ break that promise seriously.
 
 | Version | Supported |
 |---|---|
-| 0.1.x (pre-release) | Yes: fixes land on `main` and in the next 0.1.x build |
+| 0.1.x | Yes: fixes land on `main` and in the next 0.1.x release |
 | anything older | No |
 
-Only builds published on this repository's GitHub Releases page (Developer
-ID signed, notarized, with `SHA256SUMS` and a build provenance attestation)
-are supported. Verify a download with `gh attestation verify <dmg> --repo
-<this repository>` before reporting a problem with a binary obtained
-elsewhere.
+0.1.x is distributed as source: the supported build is the one
+`./scripts/install.sh` makes from a release tag of this repository (or
+from `main`). No binaries are published for 0.1.x; an app obtained
+elsewhere is not from this project. A Developer ID signed, notarized
+download is planned for a later release.
 
 ## Reporting a vulnerability
 
@@ -27,7 +27,7 @@ maintainers, and we can collaborate on a fix and an advisory there.
 
 Please include:
 
-- the affected version (tag or DMG name) and macOS version / Mac model;
+- the affected version (release tag or commit) and macOS version / Mac model;
 - the boundary you crossed (see below) and the impact on the host;
 - a minimal reproduction: planner output, guest-side program, file or web
   content, or IPC call sequence, and the exact steps;
@@ -68,7 +68,8 @@ are in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). In short:
 - **Secrets.** The optional Anthropic API key lives in the macOS Keychain
   and never reaches the webview, logs, model context, guest or worker.
 - **Supply chain and release.** Lockfiles with hashes, pinned models and
-  guest image, SHA-pinned CI actions, signed and notarized releases.
+  guest image, digest-pinned build tools in the installer, SHA-pinned CI
+  actions, immutable releases.
 
 Anything that crosses one of these boundaries is a vulnerability we want
 to hear about.
