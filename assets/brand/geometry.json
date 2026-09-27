@@ -10,393 +10,394 @@
     "edge_threshold": 300.0
   },
   "outer": {
-    "cx": 626.021,
-    "hw": 313.335,
-    "y0": 300.393,
-    "y1": 886.853,
-    "tx": 139.912,
-    "ty": 154.743,
-    "bx": 132.375,
-    "by": 138.464,
-    "rt1": 180.4,
-    "rt2": 144.74,
-    "rb1": 164.544,
-    "rb2": 139.287
+    "cx": 625.906,
+    "hw": 313.67,
+    "y0": 299.028,
+    "y1": 887.378,
+    "tx": 141.059,
+    "ty": 155.316,
+    "bx": 132.867,
+    "by": 138.345,
+    "rt1": 172.205,
+    "rt2": 144.42,
+    "rb1": 161.772,
+    "rb2": 141.387
   },
   "inner": {
-    "cx": 626.726,
-    "hw": 255.616,
-    "y0": 398.819,
-    "y1": 814.621,
-    "rxt": 163.48,
-    "ryt": 141.323,
-    "rxb": 168.31,
-    "ryb": 145.358,
-    "kxt": 0.906,
-    "kyt": 0.29,
-    "kxb": 0.909,
-    "kyb": 0.282
+    "cx": 627.027,
+    "hw": 255.999,
+    "y0": 398.312,
+    "y1": 814.895,
+    "rxt": 160.416,
+    "ryt": 135.284,
+    "rxb": 164.542,
+    "ryb": 141.817,
+    "kxt": 0.946,
+    "kyt": 0.152,
+    "kxb": 0.92,
+    "kyb": 0.211
   },
   "eyes": [
     {
-      "cx": 512.99,
-      "cy": 606.791,
-      "w": 63.905,
-      "h": 142.988
+      "cx": 513.018,
+      "cy": 606.455,
+      "w": 63.798,
+      "h": 143.308
     },
     {
-      "cx": 741.319,
-      "cy": 606.763,
-      "w": 63.953,
-      "h": 143.04
+      "cx": 741.442,
+      "cy": 606.481,
+      "w": 64.092,
+      "h": 143.31
     }
   ],
   "fit_residuals": {
     "outer": {
       "points": 3600,
-      "mean_px": 0.294,
-      "p95_px": 0.961,
-      "max_px": 1.342
+      "mean_px": 0.273,
+      "p95_px": 0.891,
+      "max_px": 1.344
     },
     "inner": {
       "points": 3600,
-      "mean_px": 0.276,
-      "p95_px": 0.762,
-      "max_px": 1.116
+      "mean_px": 0.196,
+      "p95_px": 0.59,
+      "max_px": 0.912
     },
     "eye_l": {
       "points": 1440,
-      "mean_px": 0.026,
-      "p95_px": 0.088,
-      "max_px": 0.277
+      "mean_px": 0.03,
+      "p95_px": 0.096,
+      "max_px": 0.215
     },
     "eye_r": {
       "points": 1440,
-      "mean_px": 0.037,
-      "p95_px": 0.101,
-      "max_px": 0.256
+      "mean_px": 0.042,
+      "p95_px": 0.103,
+      "max_px": 0.213
     }
   },
   "colors": {
     "ring_rim": [
       {
         "offset": 0.018,
-        "color": "#E0F8FD"
+        "color": "#FAFAFA"
       },
       {
         "offset": 0.113,
-        "color": "#CBF5FD"
+        "color": "#F9F9FA"
       },
       {
-        "offset": 0.19,
-        "color": "#BFF0FC"
+        "offset": 0.189,
+        "color": "#F9F9F9"
       },
       {
         "offset": 0.265,
-        "color": "#C4F0FC"
+        "color": "#F8F9F9"
       },
       {
         "offset": 0.342,
-        "color": "#BCECFC"
+        "color": "#F8F7F8"
       },
       {
-        "offset": 0.421,
-        "color": "#A4E8FC"
+        "offset": 0.42,
+        "color": "#EAEBEC"
       },
       {
-        "offset": 0.497,
-        "color": "#92E4FC"
+        "offset": 0.496,
+        "color": "#E8E8E9"
       },
       {
-        "offset": 0.574,
-        "color": "#91E2FC"
+        "offset": 0.573,
+        "color": "#EAEAEC"
       },
       {
-        "offset": 0.651,
-        "color": "#A2E7FA"
+        "offset": 0.65,
+        "color": "#F5F5F7"
       },
       {
-        "offset": 0.729,
-        "color": "#A0E4FB"
+        "offset": 0.728,
+        "color": "#F6F6F7"
       },
       {
-        "offset": 0.806,
-        "color": "#91DEFB"
+        "offset": 0.804,
+        "color": "#F3F4F5"
       },
       {
-        "offset": 0.881,
-        "color": "#72D0FC"
+        "offset": 0.879,
+        "color": "#E8E9EA"
       },
       {
-        "offset": 0.966,
-        "color": "#4AB0FA"
+        "offset": 0.962,
+        "color": "#CECFD0"
       },
       {
-        "offset": 0.998,
-        "color": "#1773D9"
+        "offset": 0.997,
+        "color": "#D5D5D5"
       }
     ],
     "ring_depth_10": [
       {
         "offset": 0.026,
-        "color": "#90E0FD"
+        "color": "#E7E9EB"
       },
       {
         "offset": 0.113,
-        "color": "#84D7FD"
+        "color": "#E9EBEC"
       },
       {
         "offset": 0.19,
-        "color": "#74CCFD"
+        "color": "#DEE0E2"
       },
       {
         "offset": 0.266,
-        "color": "#78CFFD"
+        "color": "#DFE2E3"
       },
       {
         "offset": 0.343,
-        "color": "#56BCFD"
+        "color": "#C7C9CA"
       },
       {
-        "offset": 0.421,
-        "color": "#34A2FE"
+        "offset": 0.42,
+        "color": "#A8AAAB"
       },
       {
-        "offset": 0.497,
-        "color": "#228EFD"
+        "offset": 0.496,
+        "color": "#959798"
       },
       {
-        "offset": 0.574,
-        "color": "#1C88FD"
+        "offset": 0.573,
+        "color": "#949697"
       },
       {
-        "offset": 0.651,
-        "color": "#2491FE"
+        "offset": 0.649,
+        "color": "#A4A6A7"
       },
       {
-        "offset": 0.728,
-        "color": "#2E9FFE"
+        "offset": 0.726,
+        "color": "#B6B8B9"
       },
       {
-        "offset": 0.805,
-        "color": "#2695FD"
+        "offset": 0.803,
+        "color": "#B0B2B3"
       },
       {
-        "offset": 0.882,
-        "color": "#1277FD"
+        "offset": 0.879,
+        "color": "#999B9C"
       },
       {
-        "offset": 0.973,
-        "color": "#0046D9"
+        "offset": 0.972,
+        "color": "#6D6F6F"
       }
     ],
     "ring_depth_23": [
       {
         "offset": 0.043,
-        "color": "#49B5FD"
+        "color": "#B5B7B9"
       },
       {
-        "offset": 0.111,
-        "color": "#54BAFD"
+        "offset": 0.112,
+        "color": "#C8CACB"
       },
       {
         "offset": 0.19,
-        "color": "#40AAFD"
+        "color": "#B5B7B8"
       },
       {
-        "offset": 0.266,
-        "color": "#43ACFD"
+        "offset": 0.265,
+        "color": "#BBBDBE"
       },
       {
-        "offset": 0.344,
-        "color": "#2895FD"
+        "offset": 0.343,
+        "color": "#979899"
       },
       {
-        "offset": 0.421,
-        "color": "#1277FD"
+        "offset": 0.42,
+        "color": "#707273"
       },
       {
-        "offset": 0.497,
-        "color": "#0660F8"
+        "offset": 0.496,
+        "color": "#575859"
       },
       {
-        "offset": 0.574,
-        "color": "#0156EF"
+        "offset": 0.573,
+        "color": "#515253"
       },
       {
-        "offset": 0.651,
-        "color": "#0359F4"
+        "offset": 0.649,
+        "color": "#5F6060"
       },
       {
-        "offset": 0.729,
-        "color": "#0562FC"
+        "offset": 0.727,
+        "color": "#737475"
       },
       {
-        "offset": 0.805,
-        "color": "#0156F3"
+        "offset": 0.803,
+        "color": "#6E6F70"
       },
       {
-        "offset": 0.882,
-        "color": "#0044D8"
+        "offset": 0.88,
+        "color": "#5B5C5D"
       },
       {
-        "offset": 0.955,
-        "color": "#002FA5"
+        "offset": 0.954,
+        "color": "#404143"
       }
     ],
     "ring_body": [
       {
-        "offset": 0.066,
-        "color": "#1D87FD"
+        "offset": 0.067,
+        "color": "#7D7F80"
       },
       {
-        "offset": 0.107,
-        "color": "#2F9BFD"
+        "offset": 0.108,
+        "color": "#A0A2A3"
       },
       {
         "offset": 0.19,
-        "color": "#2A97FD"
+        "color": "#A0A2A3"
       },
       {
         "offset": 0.265,
-        "color": "#2792FD"
+        "color": "#9FA1A2"
       },
       {
         "offset": 0.343,
-        "color": "#157BFD"
+        "color": "#797B7C"
       },
       {
-        "offset": 0.421,
-        "color": "#0760F4"
+        "offset": 0.42,
+        "color": "#535455"
       },
       {
-        "offset": 0.497,
-        "color": "#014CDE"
+        "offset": 0.496,
+        "color": "#373738"
       },
       {
-        "offset": 0.574,
-        "color": "#0041CD"
+        "offset": 0.573,
+        "color": "#2D2E2F"
       },
       {
-        "offset": 0.651,
-        "color": "#003EC9"
+        "offset": 0.649,
+        "color": "#363638"
       },
       {
-        "offset": 0.729,
-        "color": "#0040CF"
+        "offset": 0.727,
+        "color": "#454647"
       },
       {
-        "offset": 0.805,
-        "color": "#0038BD"
+        "offset": 0.803,
+        "color": "#414243"
       },
       {
-        "offset": 0.885,
-        "color": "#002EA1"
+        "offset": 0.882,
+        "color": "#353637"
       },
       {
-        "offset": 0.932,
-        "color": "#00237C"
+        "offset": 0.931,
+        "color": "#242526"
       }
     ],
     "ring_inner_edge": [
       {
         "offset": 0.178,
-        "color": "#4DB1FD"
+        "color": "#9D9F9F"
       },
       {
         "offset": 0.264,
-        "color": "#52B5FD"
+        "color": "#CECECF"
       },
       {
-        "offset": 0.342,
-        "color": "#4BB3FC"
+        "offset": 0.341,
+        "color": "#A6A8AA"
       },
       {
-        "offset": 0.42,
-        "color": "#4098F0"
+        "offset": 0.419,
+        "color": "#747676"
       },
       {
         "offset": 0.497,
-        "color": "#2084F0"
+        "color": "#555658"
       },
       {
-        "offset": 0.573,
-        "color": "#246EE1"
+        "offset": 0.572,
+        "color": "#474A4A"
       },
       {
-        "offset": 0.652,
-        "color": "#1275E5"
+        "offset": 0.65,
+        "color": "#525253"
       },
       {
-        "offset": 0.73,
-        "color": "#0558E2"
+        "offset": 0.727,
+        "color": "#505152"
       },
       {
-        "offset": 0.808,
-        "color": "#0140C3"
+        "offset": 0.805,
+        "color": "#4A4B4C"
       },
       {
-        "offset": 0.871,
-        "color": "#022D8C"
+        "offset": 0.872,
+        "color": "#343437"
       }
     ],
     "eye_vertical_ramp": [
       {
         "offset": 0.0,
-        "color": "#E2F2F8"
+        "color": "#F7F7F7"
       },
       {
         "offset": 0.25,
-        "color": "#A2DFFD"
+        "color": "#E6E9EA"
       },
       {
         "offset": 0.5,
-        "color": "#7DCFFD"
+        "color": "#C0C2C4"
       },
       {
         "offset": 0.75,
-        "color": "#5AC3FD"
+        "color": "#9DA0A0"
       },
       {
         "offset": 1.0,
-        "color": "#5CCAF6"
+        "color": "#EEEFF0"
       }
     ],
     "glow_outside": [
       {
         "distance_px": 2,
-        "color": "#032883"
+        "color": "#3E3F41"
       },
       {
         "distance_px": 6,
-        "color": "#00236F"
+        "color": "#353637"
       },
       {
         "distance_px": 12,
-        "color": "#001E5F"
+        "color": "#2D2D2E"
       },
       {
         "distance_px": 24,
-        "color": "#00194E"
+        "color": "#242526"
       },
       {
         "distance_px": 48,
-        "color": "#00143F"
+        "color": "#1B1C1D"
       },
       {
         "distance_px": 96,
-        "color": "#000D2A"
+        "color": "#111112"
       },
       {
         "distance_px": 160,
-        "color": "#000718"
+        "color": "#080809"
       },
       {
         "distance_px": 240,
-        "color": "#00020C"
+        "color": "#020203"
       }
     ],
-    "opening": "#000617",
-    "background_corner": "#000002"
+    "opening": "#080808",
+    "eye_halo": "#272829",
+    "background_corner": "#000000"
   }
 }
