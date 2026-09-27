@@ -113,8 +113,8 @@ Implemented, not yet run on a Windows PC (see `docs/WINDOWS_ARCHITECTURE.md`).
 |---|---|
 | Surface | `pegoles-llm-worker.exe`: llama.cpp parsing GGUF files and screenshots |
 | Mitigation | `pegoles-inference/src/sandbox_windows.rs`: an AppContainer with **no capabilities** (no network, no user files or registry beyond what AppContainers may read; read/execute granted only on the model store), a child-process-restricted policy, a job object (killed with Pegoles, one process, committed-memory cap, no desktop/clipboard/global atoms/system parameters, no error-reporting dialog), exactly the three pipe handles inherited, and an environment rebuilt from scratch (implicit Vulkan layers such as overlays disabled). Backend DLLs load only from the admin-only install folder. Same supervisor, protocol bounds, pre-load re-hash and text-only output as the MLX worker; the prompt is rebuilt from a strict subset with special-token text neutralized. |
-| Verification | Unit tests (protocol, prompt template, prep bounds); the worker runs under `sandbox-exec` on macOS against the real VM (`local_bench`); CI starts the installed worker inside its AppContainer and job (`the_real_worker_starts_confined`) |
-| Residual | GPU drivers run inside the worker (a driver bug is reachable from model input). Escape probes like the macOS `sandbox_blocks_escapes` do not exist for Windows yet. |
+| Verification | Unit tests (protocol, prompt template, prep bounds); the worker runs under `sandbox-exec` on macOS against the real VM (`local_bench`); on Windows CI, `a_confined_worker_cannot_read_files_reach_the_network_or_start_processes` (each probe succeeds unconfined and fails confined) |
+| Residual | GPU drivers run inside the worker (a driver bug is reachable from model input). The Windows escape probes cover files, network and processes; registry and named-object probes are not written yet. |
 
 ### Windows VM broker (privileged)
 

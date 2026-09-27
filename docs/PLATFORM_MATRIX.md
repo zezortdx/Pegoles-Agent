@@ -30,10 +30,10 @@ real Windows but not a consumer PC.
 |---|---|
 | Broker service (`PegolesVmBroker`) + typed pipe protocol | IMPLEMENTED; CI: linted and unit-tested on Windows |
 | Unprivileged VM helper (`pegoles-vm-host.exe`, same JSONL as macOS) | IMPLEMENTED; CI: linted and unit-tested on Windows |
-| HCS VM boot (UEFI from VHDX, no network) | CI: a firmware-only VM and the real x64 guest both boot through the broker and the helper (Windows Server 2025, nested); the COM1 log came back empty (fix pending in CI) |
+| HCS VM boot (UEFI from VHDX, no network) | CI: a firmware-only VM and the real x64 guest both boot through the broker and the helper (Windows Server 2025, nested); COM1 boot log captured |
 | x64 guest image (Debian 13 amd64, runtime in listen mode, Hyper-V drivers) | CI: built and provisioned under KVM; boots under QEMU/UEFI with its services started; **not published** — setup on Windows reports "not available yet" |
-| Guest channel (AF_HYPERV → guest listener on vsock 850) | CI: the helper reaches the booted guest runtime (transport level; the full handshake, frames and input on Windows are not exercised yet) |
-| Pegoles Local (llama.cpp, GGUF Q8, Vulkan/CPU) in AppContainer + job | Worker VERIFIED on macOS (Metal) against the real VM (`local_bench`); Windows sandbox IMPLEMENTED; CI start test pending |
+| Guest channel, screenshots and input through Core and Policy | CI (agent E2E on Hyper-V): handshake, click, typing, keys, scroll, drag, cancel, policy denial, runtime recovery, second boot — guest ready 30.3 s after VM start; a click, typing and Enter painted a red block verified in a fresh frame (140,400 red pixels); scroll, double-click and drag changed the screen; a cancel was honored in 42 ms; a forged out-of-screen click was blocked by policy; the guest runtime killed inside the guest was back in 4.2 s; a second boot was ready in 32.4 s; observe p50 0.69 s / p95 1.16 s (nested virtualization) |
+| Pegoles Local (llama.cpp, GGUF Q8, Vulkan/CPU) in AppContainer + job | Worker VERIFIED on macOS (Metal) against the real VM (`local_bench`); Windows: builds with Vulkan in CI; sandbox escape probes pass in CI; inference on Windows not run yet |
 | Onboarding (system check, turning on virtualization, restart and resume) | IMPLEMENTED (UI tested with fixtures; Windows facts from real APIs, cross-compiled); never run on Windows |
 | Webview network containment (WebView2 switches) | CI: egress probe on Windows — 0 TCP / 0 UDP contained (33 / 353 without) |
 | Installer (NSIS, per machine, `Pegoles-Setup-x64.exe`) | Scripted; CI silent install/uninstall pending first run; unsigned |

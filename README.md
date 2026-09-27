@@ -106,10 +106,10 @@ Home with the Virtual Machine Platform feature, which onboarding helps
 turn on), a small privileged service that only creates Pegoles' VMs, an
 offline Debian guest, and Pegoles Local on llama.cpp (Vulkan or CPU) in
 an AppContainer sandbox. On GitHub's Windows Server runners it builds,
-passes its tests, installs, and boots its own x64 guest through Hyper-V
-with the agent's channel reaching it, but **it has not run on a Windows
-PC yet**, its guest image is not published, and there is no Windows
-download. The GGUF model path it uses scored 17 of 22 on the
+passes its tests, installs, boots its own x64 guest through Hyper-V, and
+the agent operates that guest end to end (clicks, typing, screenshots,
+policy, cancel, recovery), but **it has not run on a Windows PC yet**,
+its guest image is not published, and there is no Windows download. The GGUF model path it uses scored 17 of 22 on the
 same real-VM benchmark on a Mac, like the MLX default. Status and
 evidence: [docs/PLATFORM_MATRIX.md](docs/PLATFORM_MATRIX.md),
 [docs/WINDOWS_ARCHITECTURE.md](docs/WINDOWS_ARCHITECTURE.md).
