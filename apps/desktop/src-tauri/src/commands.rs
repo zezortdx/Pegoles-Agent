@@ -1511,3 +1511,135 @@ mod tests {
         assert_eq!(g.animate_ms, 0, "animate_ms is optional");
     }
 }
+
+// ── First-run onboarding ─────────────────────────────────────────────
+
+/// The model and the computer image are both in place (someone who set
+/// Pegoles up before onboarding existed is not sent through it again).
+pub fn already_set_up(shared: &SharedState, local: &LocalModels) -> bool {
+    let model = crate::agent::load_settings().local_model;
+    local.ready(&model)
+        && matches!(
+            lock_state(shared).registry.image_status(),
+            ImageStatus::Ready
+        )
+}
+
+/// Where the person is in onboarding (persisted across restarts).
+#[tauri::command]
+pub async fn get_onboarding(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<crate::onboarding::OnboardingState, String> {
+    let shared = state.inner().clone();
+    let local = local.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        Ok(crate::onboarding::load(&data, || {
+            already_set_up(&shared, &local)
+        }))
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Remember the screen the person reached, so a restart resumes there.
+#[tauri::command]
+pub async fn set_onboarding_step(
+    step: crate::onboarding::Step,
+) -> Result<crate::onboarding::OnboardingState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        let mut next = crate::onboarding::load(&data, || false);
+        next.step = step;
+        // Reaching the check again means any requested restart happened.
+        if step == crate::onboarding::Step::Check {
+            next.restart_requested = false;
+        }
+        crate::onboarding::save(&data, &next)?;
+        Ok(next)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Onboarding is over: the main window from now on.
+#[tauri::command]
+pub async fn finish_onboarding() -> Result<crate::onboarding::OnboardingState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        let done = crate::onboarding::OnboardingState::finished();
+        crate::onboarding::save(&data, &done)?;
+        Ok(done)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Can this computer run Pegoles? OS, processor, virtualization, memory,
+/// disk, acceleration and the bundled runtime, plus what is already set up.
+#[tauri::command]
+pub async fn system_check(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<crate::onboarding::SystemCheck, String> {
+    let shared = state.inner().clone();
+    let local = local.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        let settings = crate::agent::load_settings();
+        let runtime = local.payload();
+        let catalog = pegoles_inference::Catalog::builtin();
+        let model_bytes = catalog
+            .get(&settings.local_model)
+            .map_or(0, pegoles_inference::ModelSpec::total_bytes);
+        let image_ready = matches!(
+            lock_state(&shared).registry.image_status(),
+            ImageStatus::Ready
+        );
+        let image_bytes =
+            pegoles_computer::image_release::release_image(&pegoles_computer::active_image_id())
+                .map_or(0, |pin| pin.archive.bytes + pin.disk.bytes);
+        let setup = crate::onboarding::SetupFacts {
+            runtime_ready: runtime.runtime_ready,
+            runtime_problem: runtime.runtime_problem.clone(),
+            model_ready: local.ready(&settings.local_model),
+            model_bytes,
+            image_ready,
+            image_bytes,
+            disk_free_bytes: pegoles_inference::store::free_disk_bytes(&data),
+        };
+        Ok(crate::onboarding::check(
+            crate::onboarding::host_facts(),
+            setup,
+        ))
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Turn on what Windows needs for Pegoles' computer. Windows asks for
+/// administrator approval in its own prompt (the onboarding explains why
+/// first); a restart usually follows. Refused where nothing can be fixed.
+#[tauri::command]
+pub async fn fix_virtualization() -> Result<crate::onboarding::FixOutcome, String> {
+    tauri::async_runtime::spawn_blocking(crate::onboarding::fix_virtualization)
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Restart Windows to finish turning virtualization on. Only after the
+/// person pressed "Restart now"; onboarding resumes after they sign in.
+#[tauri::command]
+pub async fn restart_to_finish_setup() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        let mut next = crate::onboarding::load(&data, || false);
+        next.step = crate::onboarding::Step::Check;
+        next.restart_requested = true;
+        crate::onboarding::save(&data, &next)?;
+        crate::onboarding::restart_host()
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}

@@ -44,6 +44,12 @@ ipc_commands! {
         capture_screen,
         install_computer_image,
         cancel_computer_image_install,
+        get_onboarding,
+        set_onboarding_step,
+        finish_onboarding,
+        system_check,
+        fix_virtualization,
+        restart_to_finish_setup,
     ],
     debug: [
         prepare_image,

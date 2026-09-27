@@ -93,16 +93,23 @@ export function SettingsView(props: SettingsViewProps) {
 
       <Section id="settings-computer" title="Computer" note="Pegoles’ own isolated computer. It never shares your desktop.">
         <Row label="Status"><span>{computer.chip}</span></Row>
-        {status && <Row label="System"><span className="mono">{status.spec_os} · {status.spec_arch}</span></Row>}
-        {status && <Row label="Resources"><span className="mono">{status.spec_vcpus} CPU · {+(status.spec_ram_mb / 1024).toFixed(1)} GB</span></Row>}
-        {status?.display_config && <Row label="Display"><span className="mono">{status.display_config.width_px} × {status.display_config.height_px}</span></Row>}
-        <Row label="Runs on"><span>{host ? hostLabel(host.platform, host.architecture) : "—"}</span></Row>
         {host?.required_setup.length ? (
           <div className="setting setting--stack" role="listitem">
             <span className="setting__label">Setup needed</span>
             <ul className="setting__list">{host.required_setup.map((step) => <li key={step}>{step}</li>)}</ul>
           </div>
         ) : null}
+        <details className="details advanced">
+          <summary>Advanced</summary>
+          <div className="advanced__body">
+            <div className="settings__group settings__group--dense" role="list" aria-label="Computer details">
+              {status && <Row label="System"><span className="mono">{status.spec_os} · {status.spec_arch}</span></Row>}
+              {status && <Row label="Resources"><span className="mono">{status.spec_vcpus} CPU · {+(status.spec_ram_mb / 1024).toFixed(1)} GB</span></Row>}
+              {status?.display_config && <Row label="Display"><span className="mono">{status.display_config.width_px} × {status.display_config.height_px}</span></Row>}
+              <Row label="Runs on"><span>{host ? hostLabel(host.platform, host.architecture) : "—"}</span></Row>
+            </div>
+          </div>
+        </details>
       </Section>
 
       <Section

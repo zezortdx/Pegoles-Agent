@@ -37,6 +37,8 @@ import { useModelSettings } from "./state/useModelSettings";
 import { intelligenceProblem, useIntelligence } from "./state/useIntelligence";
 import { localView } from "./state/localModel";
 import { ActivityView } from "./pages/ActivityView";
+import { Onboarding } from "./onboarding/Onboarding";
+import { useOnboarding } from "./onboarding/useOnboarding";
 import { SettingsView, type QualityChoice, type SettingsAnchor } from "./pages/SettingsView";
 
 type View = { readonly kind: "home" } | { readonly kind: "task"; readonly id: string } | { readonly kind: "place"; readonly place: Place };
@@ -101,6 +103,7 @@ export default function App() {
   const [peekHidden, setPeekHidden] = useState<ReadonlySet<string>>(new Set());
   /** The task the last start was for: its failure is shown on that task only. */
   const [startedFor, setStartedFor] = useState<string | null>(null);
+  const onboarding = useOnboarding(core.native);
   const modelSettings = useModelSettings(core.native && connected, core.refresh);
   const intelligence = useIntelligence(core.native && connected, core.refresh);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -405,7 +408,7 @@ export default function App() {
       onFocusChange={setFocused}
       onKeystroke={() => setNudge((value) => value + 1)}
       inputRef={composerRef}
-      placeholder={connected ? "Describe a job for Pegoles…" : "Waiting for Pegoles Core…"}
+      placeholder={connected ? "What should Pegoles do?" : "Waiting for Pegoles Core…"}
       disabled={!connected}
       busy={core.busy.task || handing}
       problem={core.errors.task ? `${core.errors.task.title} ${core.errors.task.hint ?? ""}`.trim() : null}
@@ -416,6 +419,29 @@ export default function App() {
       )}
     />
   );
+
+  // First run: onboarding owns the whole window until it's done.
+  if (onboarding.state) {
+    return (
+      <FluxGlassRoot tier={tier} busy={core.busy.computer}>
+        <PresenceQualityProvider quality={quality}>
+          <Onboarding
+            initialStep={onboarding.state.step}
+            resumedAfterRestart={onboarding.state.restart_requested}
+            status={status}
+            intelligence={intelligence}
+            local={local}
+            animated={animated}
+            refresh={core.refresh}
+            onFinish={async (prompt) => {
+              await onboarding.finish();
+              if (prompt) void submit(prompt);
+            }}
+          />
+        </PresenceQualityProvider>
+      </FluxGlassRoot>
+    );
+  }
 
   return (
     <FluxGlassRoot tier={tier} busy={core.busy.computer || !!status?.agent_busy || !!status?.active_task || liveWork}>

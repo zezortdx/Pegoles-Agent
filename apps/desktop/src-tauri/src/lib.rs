@@ -10,6 +10,7 @@ pub mod local;
 #[cfg(target_os = "macos")]
 mod native_display;
 pub mod nav_guard;
+pub mod onboarding;
 pub mod state;
 pub mod webview_egress;
 
@@ -85,7 +86,14 @@ pub fn run() {
             grant_debug_commands(app)?;
             // The only window, with navigation kept on the app origin and
             // new windows refused (see nav_guard.rs).
-            nav_guard::build_main_window(app)?;
+            let boot = {
+                let shared: SharedState = app.state::<SharedState>().inner().clone();
+                let local = app.state::<local::LocalModels>().inner().clone();
+                onboarding::boot_script(&pegoles_computer::pegoles_data_dir(), || {
+                    commands::already_set_up(&shared, &local)
+                })
+            };
+            nav_guard::build_main_window(app, boot)?;
             // Platform display adapter (macOS: in-process VM host + native
             // framebuffer view). Failure is recorded, never fatal, never
             // replaced by a fake display.

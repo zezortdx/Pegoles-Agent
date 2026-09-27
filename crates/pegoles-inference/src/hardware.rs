@@ -75,6 +75,12 @@ pub fn system_memory() -> Option<SystemMemory> {
     sys::system_memory()
 }
 
+/// The OS release as people know it ("15.5" on macOS). None when the OS
+/// does not say (other hosts report their version elsewhere).
+pub fn os_product_version() -> Option<String> {
+    sys::sysctl_string("kern.osproductversion")
+}
+
 pub fn process_memory(pid: i32) -> Option<ProcessMemory> {
     sys::process_memory(pid)
 }

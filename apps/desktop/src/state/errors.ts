@@ -26,6 +26,10 @@ interface Rule {
 }
 
 const COMPUTER_TITLE = "Computer couldn’t start.";
+const START_TITLE = "Pegoles couldn’t start its computer.";
+
+/** "Mac" or "PC", for sentences about the machine people are on. */
+const HOST = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent) ? "PC" : "Mac";
 
 /**
  * Who plans. Before the computer rules: an integrity failure mentions
@@ -35,10 +39,10 @@ const INTELLIGENCE_RULES: readonly Rule[] = [
   { test: /failed its integrity check/i, scope: "run", title: "Pegoles Local needs to be set up again.",
     hint: "Its files didn’t pass the integrity check. Remove it in Settings, then set it up again.", retryable: false, stop: true },
   { test: /Set up Pegoles Local/i, scope: "run", title: "Pegoles Local isn’t set up yet.",
-    hint: "Set it up in Settings (free, runs on this Mac), or connect a cloud model.", retryable: false },
+    hint: `Set it up in Settings (free, runs on this ${HOST}), or connect a cloud model.`, retryable: false },
   { test: /Connect a model/i, scope: "run", title: "Cloud mode needs an Anthropic key.",
-    hint: "Add one in Settings, or switch to Pegoles Local (free, runs on this Mac).", retryable: false },
-  { test: /local model runtime is not installed/i, scope: "run", title: "Pegoles Local can’t run on this Mac yet.",
+    hint: `Add one in Settings, or switch to Pegoles Local (free, runs on this ${HOST}).`, retryable: false },
+  { test: /local model runtime is not installed/i, scope: "run", title: `Pegoles Local can’t run on this ${HOST} yet.`,
     hint: "Its runtime isn’t set up. You can connect a cloud model in Settings instead.", retryable: false, stop: true },
   { test: /not enough memory to run the local model/i, scope: "run", title: "Not enough free memory for Pegoles Local.",
     hint: "Quit some apps to free memory, then try again.", stop: true },
@@ -55,8 +59,25 @@ const INTELLIGENCE_RULES: readonly Rule[] = [
     hint: "Check the key in Settings, or switch to Pegoles Local.", retryable: false, stop: true },
 ];
 
+/**
+ * The computer failing in ways people can do something about. Before the
+ * generic computer rules: Windows reports these as HRESULTs.
+ */
+const HOST_RULES: readonly Rule[] = [
+  { test: /0x80370102|HCS_E_HYPERV_NOT_INSTALLED|virtualization (is )?(disabled|not enabled|turned off)|VirtualMachinePlatform/i, scope: "computer",
+    title: "Virtualization needs to be turned on.",
+    hint: "Pegoles uses hardware virtualization to give the AI its own isolated computer. Restart Pegoles to check this PC and turn it on.", retryable: false },
+  { test: /0x8037011B|HCS_E_ACCESS_DENIED|pegoles-vm-broker|broker (is )?(not running|unavailable|not installed)/i, scope: "computer",
+    title: START_TITLE, hint: "Part of Pegoles that runs its computer isn’t available. Reinstalling Pegoles fixes it." },
+  { test: /handshake|guest (runtime )?(did not answer|stopped responding|not responding|timed? ?out)|guest_timeout/i, scope: "computer",
+    title: START_TITLE, hint: "Try restarting Pegoles. If the problem continues, open Technical details." },
+  { test: /\bOOM\b|out of memory|ERROR_NOT_ENOUGH_MEMORY|0x8007000E/i, scope: "computer",
+    title: "Pegoles ran out of available memory.", hint: "Close some applications and try again." },
+];
+
 const RULES: readonly Rule[] = [
   ...INTELLIGENCE_RULES,
+  ...HOST_RULES,
   { test: /vm-host binary not found|PEGOLES_VM_HOST/i, scope: "computer", title: COMPUTER_TITLE,
     hint: "The helper that runs Pegoles’ computer isn’t installed on this Mac." },
   { test: /not_entitled|entitlement|com\.apple\.security\.virtualization/i, scope: "computer", title: COMPUTER_TITLE,

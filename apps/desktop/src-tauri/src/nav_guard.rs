@@ -38,7 +38,7 @@ pub fn is_app_url(url: &Url, dev_url: Option<&Url>) -> bool {
 /// `webview_egress` attached before the webview exists. On that path the
 /// window appears once WebKit has compiled the list (a moment after
 /// setup); the app exits instead of showing an uncontained window.
-pub fn build_main_window(app: &tauri::App) -> tauri::Result<()> {
+pub fn build_main_window(app: &tauri::App, boot_script: String) -> tauri::Result<()> {
     let config = app
         .config()
         .app
@@ -59,7 +59,8 @@ pub fn build_main_window(app: &tauri::App) -> tauri::Result<()> {
     let make = move |builder: WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle>| {
         let builder = builder
             .on_navigation(move |url| is_app_url(url, dev_url.as_ref()))
-            .initialization_script_for_all_frames(crate::webview_egress::DISABLE_WEBRTC);
+            .initialization_script_for_all_frames(crate::webview_egress::DISABLE_WEBRTC)
+            .initialization_script(&boot_script);
         // WKWebView with no new-window handler already refuses window.open().
         // Installing one on macOS adds nothing and routes window.open() through
         // wry code that unwraps the window's screen (nil while the window is

@@ -50,6 +50,7 @@ beforeEach(() => {
   vi.spyOn(api, "suggestedEffects").mockResolvedValue({ tier: "reduced" });
   vi.spyOn(api, "accessibilityDisplay").mockResolvedValue({ reduce_transparency: false, increase_contrast: false });
   vi.spyOn(api, "captureScreen").mockRejectedValue(new Error("no screen in tests"));
+  vi.spyOn(api, "getOnboarding").mockResolvedValue({ version: 1, step: "ready", completed: true, restart_requested: false });
 });
 afterEach(() => {
   cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.mocked(listen).mockClear();
@@ -78,7 +79,7 @@ describe("desktop shell", () => {
   it("opens on a work surface: one question, the composer, and where the job will run", async () => {
     render(<App />);
     await ready();
-    expect(screen.getByRole("heading", { level: 1, name: "What should Pegoles do?" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Give Pegoles a task" })).toBeTruthy();
     expect(within(screen.getByRole("list", { name: "A few places to start" })).getAllByRole("button")).toHaveLength(3);
     // Local first: the way forward is setting up Pegoles Local, not a key.
     expect(screen.getByRole("button", { name: "Set up Pegoles Local. Open settings" })).toBeTruthy();
@@ -356,7 +357,7 @@ describe("desktop shell", () => {
     fireEvent.click(within(screen.getByRole("navigation", { name: "Tasks" })).getByRole("button", { name: /Organize my notes/ }));
     expect(await screen.findByRole("heading", { level: 1, name: "Organize my notes" })).toBeTruthy();
     fireEvent.keyDown(window, { key: "n", metaKey: true });
-    expect(await screen.findByRole("heading", { level: 1, name: "What should Pegoles do?" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Give Pegoles a task" })).toBeTruthy();
   });
 
   it("hides the sidebar and remembers it", async () => {

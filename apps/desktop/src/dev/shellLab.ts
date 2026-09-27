@@ -8,7 +8,7 @@
  */
 import {
   MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type AgentTask, type Intelligence, type LocalModelInfo, type ModelInstallStatus,
-  type ModelSettings, type Provider, type StatusPayload,
+  type ModelSettings, type OnboardingStep, type Provider, type StatusPayload, type SystemCheck,
 } from "../lib/tauri";
 import { installActive } from "../state/localModel";
 
@@ -19,8 +19,12 @@ type IntelligenceScenario =
   | "local-setup" | "local-downloading" | "local-verifying" | "local-ready" | "local-running" | "local-failed"
   | "local-paused" | "local-damaged" | "local-unsupported" | "cloud";
 
+/** First run (`#/dev/shell/onboarding[-variant][/step]`). */
+type OnboardingScenario =
+  | "onboarding" | "onboarding-windows" | "onboarding-firmware" | "onboarding-restart" | "onboarding-lowdisk" | "onboarding-cpu" | "onboarding-failure";
+
 type Scenario =
-  | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
+  | OnboardingScenario | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
   | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "image-setup" | "paused" | IntelligenceScenario;
 
 const now = Date.now();
@@ -151,6 +155,12 @@ function world(scenario: Scenario): World {
     };
     case "local-ready": case "local-running":
       return { status: { ...baseStatus, ...running }, tasks: history, events: [] };
+    case "onboarding": case "onboarding-windows": case "onboarding-firmware": case "onboarding-restart":
+    case "onboarding-lowdisk": case "onboarding-cpu": case "onboarding-failure":
+      return {
+        status: { ...baseStatus, image_status: "missing", image_setup: { available: true, installing: false, stage: null, done: 0, total: 0, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 } },
+        tasks: [], events: [],
+      };
     case "cloud":
       return { status: { ...baseStatus, provider: "anthropic" }, tasks: [...history, current("pending")], events: [{ type: "task_created", task_id: "t1", title: "Find duplicate files in Downloads and clean them up", at: iso(95) }] };
     default:
@@ -267,10 +277,44 @@ function fakeScreen(): string {
   return canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
 }
 
+const GIB = 2 ** 30;
+/** What Core's system check would report in each onboarding scenario. */
+function systemCheckOf(name: Scenario, fixed: { virtualization: boolean }): SystemCheck {
+  const mac: SystemCheck = {
+    platform: "macos", os_name: "macOS 15.5", os_supported: true, os_minimum: "macOS 14", architecture: "arm64", architecture_supported: true,
+    virtualization: { state: "ready", fixable: false, technical: "Apple Virtualization framework (built into macOS)" },
+    memory_bytes: 16 * GIB, memory_minimum_bytes: 8 * GIB, memory_recommended_bytes: 16 * GIB,
+    disk_free_bytes: 118e9, disk_needed_bytes: 5_900_000_000,
+    acceleration: { kind: "metal", device: "Apple M3 Pro", technical: "Metal (Apple silicon GPU), MLX runtime" },
+    runtime_ready: true, runtime_problem: null, model_ready: false, image_ready: false,
+  };
+  const win: SystemCheck = {
+    ...mac, platform: "windows", os_name: "Windows 11 Home (24H2)", os_minimum: "Windows 11", architecture: "x86_64",
+    virtualization: fixed.virtualization
+      ? { state: "restart_pending", fixable: false, technical: "VirtualMachinePlatform: Enabled (restart pending); hypervisor not running yet" }
+      : { state: "needs_enable", fixable: true, technical: "VirtualMachinePlatform: Disabled; vmcompute service: missing; firmware virtualization: enabled" },
+    acceleration: { kind: "vulkan", device: "NVIDIA GeForce RTX 4060 Laptop GPU", technical: "Vulkan 1.3 (driver 581.29), 8 GB dedicated; llama.cpp Vulkan backend" },
+    memory_bytes: 16 * GIB,
+  };
+  switch (name) {
+    case "onboarding-windows": return win;
+    case "onboarding-restart": return { ...win, virtualization: { state: "restart_pending", fixable: false, technical: "VirtualMachinePlatform: Enabled (restart pending)" } };
+    case "onboarding-firmware": return { ...win, virtualization: { state: "firmware_disabled", fixable: false, technical: "PF_VIRT_FIRMWARE_ENABLED=0; hypervisor present: no" } };
+    case "onboarding-lowdisk": return { ...mac, memory_bytes: 8 * GIB, disk_free_bytes: 3_400_000_000 };
+    case "onboarding-cpu": return { ...win, virtualization: { state: "ready", fixable: false, technical: "vmcompute running; hypervisor present" }, acceleration: { kind: "cpu", device: null, technical: "no Vulkan driver; AVX2 CPU backend" } };
+    default: return mac;
+  }
+}
+
 export function installShellLab(hash: string): void {
   const [, , , scenario, place] = hash.split("/");
   const name = (scenario || "home") as Scenario;
   const state = world(name);
+  const onboardingLab = name.startsWith("onboarding");
+  const labStep = (onboardingLab && place ? place : "welcome") as OnboardingStep;
+  let onboarding = { version: 1, step: labStep, completed: !onboardingLab, restart_requested: name === "onboarding-restart" };
+  const fixed = { virtualization: false };
+  if (onboardingLab) Object.defineProperty(window, "__PEGOLES_BOOT__", { value: Object.freeze({ onboarding }), configurable: true });
   // As in Core: a running task is the one agent run.
   const live = state.tasks.find((candidate) => candidate.status === "running");
   if (live && !state.status.active_task) state.status = { ...state.status, active_task: live.id };
@@ -365,7 +409,52 @@ export function installShellLab(hash: string): void {
   };
   const say = (taskId: string, kind: AgentMessageKind, text: string) => { state.events = [...state.events, note(taskId, kind, text, 0)]; };
 
+  // Simulated computer image setup (like Core's install_computer_image).
+  let imageTimer: number | null = null;
+  const imageProgress = () => {
+    for (const [id, listener] of listeners) {
+      if (listener.event === "pegoles://image-progress") callbacks.get(listener.handler)?.({ event: "pegoles://image-progress", id, payload: null });
+    }
+  };
+  const setImage = (patch: Partial<NonNullable<StatusPayload["image_setup"]>>, status?: StatusPayload["image_status"]) => {
+    const current = state.status.image_setup ?? { available: true, installing: false, stage: null, done: 0, total: 0, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 };
+    state.status = { ...state.status, image_setup: { ...current, ...patch }, ...(status ? { image_status: status } : {}) };
+    imageProgress();
+  };
+
   const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
+    get_onboarding: () => onboarding,
+    set_onboarding_step: (args) => { onboarding = { ...onboarding, step: args.step as OnboardingStep }; return onboarding; },
+    finish_onboarding: () => { onboarding = { ...onboarding, completed: true, step: "ready" }; return onboarding; },
+    system_check: () => new Promise((resolve) => window.setTimeout(() => resolve({
+      ...systemCheckOf(name, fixed),
+      model_ready: chosen().state === "installed", image_ready: state.status.image_status === "ready",
+    }), 500)),
+    fix_virtualization: () => new Promise((resolve) => window.setTimeout(() => { fixed.virtualization = true; resolve("restart_required"); }, 1600)),
+    restart_to_finish_setup: () => { throw "shell lab: a real restart would happen here"; },
+    install_computer_image: () => {
+      if (name === "onboarding-failure") {
+        window.setTimeout(() => setImage({ installing: false, stage: null, error: "network error: connection reset by peer (os error 54) while downloading pegoles-base-0.3-arm64.raw.gz" }), 2500);
+        setImage({ installing: true, stage: "downloading", done: 0, total: 561_846_260, error: null });
+        return state.status.image_setup;
+      }
+      let done = 0;
+      setImage({ installing: true, stage: "downloading", done: 0, total: 561_846_260, error: null });
+      imageTimer = window.setInterval(() => {
+        done = Math.min(561_846_260, done + 561_846_260 / 28);
+        if (done < 561_846_260) { setImage({ done: Math.round(done) }); return; }
+        if (imageTimer) window.clearInterval(imageTimer);
+        setImage({ stage: "verifying", done: 0, total: 3_221_225_472 });
+        window.setTimeout(() => setImage({ stage: "unpacking" }), 1400);
+        window.setTimeout(() => setImage({ installing: false, stage: null }, "ready"), 2800);
+      }, TICK_MS);
+      return state.status.image_setup;
+    },
+    cancel_computer_image_install: () => {
+      if (imageTimer) window.clearInterval(imageTimer);
+      window.setTimeout(() => setImage({ installing: false, stage: null, error: "cancelled" }), 200);
+      return state.status.image_setup;
+    },
     get_status: () => state.status,
     list_events: () => state.events,
     list_tasks: () => state.tasks,
