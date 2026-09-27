@@ -2189,7 +2189,7 @@ dependencies = [
 name = "pegoles-agent"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "flate2",
  "hex",
@@ -2213,7 +2213,7 @@ dependencies = [
 name = "pegoles-computer"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "flate2",
  "hex",
@@ -2298,7 +2298,7 @@ dependencies = [
 name = "pegoles-inference"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "hex",
  "libc",
  "ring",
