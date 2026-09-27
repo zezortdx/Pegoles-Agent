@@ -216,8 +216,16 @@ build_rust() {
     fetch "$RUST_DIST/$file" "$TOOLS/downloads/$file" sha256 "$sha"
     fresh_dir "$tmp"
     tar -xJf "$TOOLS/downloads/$file" -C "$tmp" --no-same-owner
-    /bin/bash "$tmp/$comp-$RUST_VERSION-aarch64-apple-darwin/install.sh" \
-      --prefix="$stage" --disable-ldconfig >/dev/null
+    # What the package's install.sh does (it cannot handle a prefix with
+    # spaces): merge each listed component's tree into the prefix.
+    local top="$tmp/$comp-$RUST_VERSION-aarch64-apple-darwin" c
+    [ -f "$top/components" ] || die "unexpected layout of $file"
+    while IFS= read -r c; do
+      case "$c" in '' | */* | .*) die "unexpected component name in $file" ;; esac
+      [ -d "$top/$c" ] || die "component $c missing from $file"
+      rm -f "$top/$c/manifest.in"
+      ditto "$top/$c" "$stage"
+    done <"$top/components"
   done
   rm -rf "$tmp"
   "$stage/bin/rustc" --version | grep -q "^rustc $RUST_VERSION " || die "unexpected rustc"
