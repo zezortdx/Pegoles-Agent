@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { MARK_RING_MASK } from "@pegoles/ui";
 import { GESTURE_MODES, PRESENCE_LABEL, WORK_MODES, type PresenceMode } from "./modes";
-import { PresenceSvg } from "./PresenceSvg";
+import { PresenceArt } from "./PresenceArt";
 import { poseVariables, presenceTargets } from "./targets";
 import "./presence.css";
 
@@ -16,8 +16,8 @@ export interface PresenceMarkProps {
 }
 
 /**
- * The same object as PegolesPresence, for 16–36 px spots: SVG only, no
- * WebGL claim, no idle-life timers, no pointer listeners, no thought field.
+ * The same mark as PegolesPresence, for 16–36 px spots: no idle-life
+ * timers, no pointer listeners, no thought field.
  * Its only continuous motion is the mode's CSS loop, gated like every other
  * presence loop (pg-work-anim while working, pg-ambient otherwise).
  */
@@ -31,7 +31,7 @@ export function PresenceMark({ mode, size, decorative = true, label, className }
   } as CSSProperties;
   const a11y = decorative ? { "aria-hidden": true as const } : { role: "img", "aria-label": label ?? PRESENCE_LABEL[mode] };
   return <div className={className ? `presence presence--mark ${className}` : "presence presence--mark"} data-mode={mode}
-    data-renderer="svg" data-small={size < 28 || undefined} style={style} {...a11y}>
-    <PresenceSvg pulse={0} field={false} loopClass={loopClass} />
+    data-small={size < 28 || undefined} style={style} {...a11y}>
+    <PresenceArt size={size} pulse={0} field={false} loopClass={loopClass} />
   </div>;
 }

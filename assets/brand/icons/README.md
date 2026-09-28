@@ -36,8 +36,10 @@ the title-bar icon.
 The glow cannot survive tiny sizes; a downscale turns the ring into a
 smudge. Those frames draw `pegoles-mark-glyph.svg` (the exact traced ring
 and eyes) as flat shapes: a silver ramp on the ring, white eyes, black
-field, 8x8 supersampled coverage. Same geometry and proportions, no
-lighting. Standalone copies: `pegoles-glyph-{16,24,32,48}.png`.
+field, 8x8 supersampled coverage, eyes snapped to whole pixels so they stay
+white. Same geometry and proportions, no lighting. Standalone copies:
+`pegoles-glyph-{16,24,32,48}.png` (dark tile) and
+`../raster/pegoles-mark-{16,24,32,48}.png` (bare mark on transparency).
 
 ## Installer art (NSIS)
 

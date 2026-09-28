@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { AnimatePresence, LayoutGroup, m } from "motion/react";
 import { FluxGlassRoot, type EffectsTier } from "@pegoles/ui";
-import { PresenceGpuShareProvider, PresenceQualityProvider } from "./presence";
 import { useCore } from "./state/useCore";
 import { actionSteps, globalPresence, modelConnected, taskActivity, type TaskActivity } from "./state/agentState";
 import { buildTranscript } from "./state/transcript";
@@ -419,170 +418,166 @@ export default function App() {
 
   return (
     <FluxGlassRoot tier={tier} busy={core.busy.computer || !!status?.agent_busy || !!status?.active_task || liveWork}>
-      <PresenceQualityProvider quality={quality}>
-        <PresenceGpuShareProvider shared={level !== null}>
-        <LayoutGroup id="pegoles-shell">
-          <div
-            className="shell"
-            style={shellStyle}
-            data-sidebar={sidebarMode}
-            data-computer={level ?? "closed"}
-            data-computer-phase={computer.phase}
-            data-view={view.kind}
-            data-resizing={resizing || undefined}
-          >
-            <a className="skip-link" href="#main-content">Skip to content</a>
-            <Sidebar
-              sections={sections}
-              glances={glances}
-              selectedTaskId={selected?.id ?? null}
-              place={view.kind === "place" ? view.place : null}
-              presence={presence}
+      <LayoutGroup id="pegoles-shell">
+        <div
+          className="shell"
+          style={shellStyle}
+          data-sidebar={sidebarMode}
+          data-computer={level ?? "closed"}
+          data-computer-phase={computer.phase}
+          data-view={view.kind}
+          data-resizing={resizing || undefined}
+        >
+          <a className="skip-link" href="#main-content">Skip to content</a>
+          <Sidebar
+            sections={sections}
+            glances={glances}
+            selectedTaskId={selected?.id ?? null}
+            place={view.kind === "place" ? view.place : null}
+            presence={presence}
+            computer={computer}
+            computerOpen={level !== null}
+            connected={connected}
+            mode={sidebarMode}
+            modifier={modifier}
+            onOpenTask={openTask}
+            onNewTask={newTask}
+            onSearch={() => setPaletteOpen(true)}
+            onPlace={(next) => openPlace(next)}
+            onComputer={toggleComputer}
+            onToggle={toggleSidebar}
+          />
+          {sidebarMode === "drawer" && <button type="button" className="scrim" aria-label="Close sidebar" onClick={() => setDrawerOpen(false)} />}
+
+          <main id="main-content" className="work" tabIndex={-1} aria-hidden={level === "full" || undefined}
+            {...(sidebarMode === "drawer" || level === "full" ? { inert: "" } : {})}>
+            <Toolbar
+              sidebarHidden={sidebarMode !== "shown"}
+              context={view.kind === "task" && selected && pill && !headingVisible ? { title: selected.title, tone: pill.tone, live: pill.live } satisfies ToolbarContext : null}
               computer={computer}
               computerOpen={level !== null}
-              connected={connected}
-              mode={sidebarMode}
+              showComputerToggle={level !== "full"}
               modifier={modifier}
-              onOpenTask={openTask}
+              onToggleSidebar={toggleSidebar}
               onNewTask={newTask}
-              onSearch={() => setPaletteOpen(true)}
-              onPlace={(next) => openPlace(next)}
-              onComputer={toggleComputer}
-              onToggle={toggleSidebar}
+              onToggleComputer={toggleComputer}
             />
-            {sidebarMode === "drawer" && <button type="button" className="scrim" aria-label="Close sidebar" onClick={() => setDrawerOpen(false)} />}
-
-            <main id="main-content" className="work" tabIndex={-1} aria-hidden={level === "full" || undefined}
-              {...(sidebarMode === "drawer" || level === "full" ? { inert: "" } : {})}>
-              <Toolbar
-                sidebarHidden={sidebarMode !== "shown"}
-                context={view.kind === "task" && selected && pill && !headingVisible ? { title: selected.title, tone: pill.tone, live: pill.live } satisfies ToolbarContext : null}
-                computer={computer}
-                computerOpen={level !== null}
-                showComputerToggle={level !== "full"}
-                modifier={modifier}
-                onToggleSidebar={toggleSidebar}
-                onNewTask={newTask}
-                onToggleComputer={toggleComputer}
-              />
-              <div className="work__views">
-                <AnimatePresence mode="popLayout" initial={false}>
-                  <m.div
-                    key={viewKey}
-                    className="view"
-                    data-view={view.kind}
-                    initial={view.kind === "task" && arriving ? { opacity: 1 } : animated ? { opacity: 0, y: 6 } : { opacity: 0 }}
-                    animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
-                    exit={{ opacity: 0, transition: { duration: duration.micro, ease: ease.exit } }}
-                  >
-                    {content}
+            <div className="work__views">
+              <AnimatePresence mode="popLayout" initial={false}>
+                <m.div
+                  key={viewKey}
+                  className="view"
+                  data-view={view.kind}
+                  initial={view.kind === "task" && arriving ? { opacity: 1 } : animated ? { opacity: 0, y: 6 } : { opacity: 0 }}
+                  animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
+                  exit={{ opacity: 0, transition: { duration: duration.micro, ease: ease.exit } }}
+                >
+                  {content}
+                </m.div>
+              </AnimatePresence>
+            </div>
+            <div className="workbar" data-empty={bar ? undefined : true}>
+              <AnimatePresence mode="popLayout" initial={false}>
+                {bar === "composer" && waiting && (
+                  <m.div key="needs-you" className="banner" data-tone="attention" role="status"
+                    initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
+                    exit={{ opacity: 0, transition: { duration: duration.micro, ease: ease.exit } }}>
+                    <span className="banner__dot" aria-hidden="true" />
+                    <span className="banner__text">
+                      <span className="banner__title">Pegoles needs your approval</span>
+                      <span className="banner__body">{waiting.title}</span>
+                    </span>
+                    <button type="button" className="btn btn--line btn--small" onClick={() => openTask(waiting)}>Open task</button>
                   </m.div>
-                </AnimatePresence>
-              </div>
-              <div className="workbar" data-empty={bar ? undefined : true}>
-                <AnimatePresence mode="popLayout" initial={false}>
-                  {bar === "composer" && waiting && (
-                    <m.div key="needs-you" className="banner" data-tone="attention" role="status"
-                      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
-                      exit={{ opacity: 0, transition: { duration: duration.micro, ease: ease.exit } }}>
-                      <span className="banner__dot" aria-hidden="true" />
-                      <span className="banner__text">
-                        <span className="banner__title">Pegoles needs your approval</span>
-                        <span className="banner__body">{waiting.title}</span>
-                      </span>
-                      <button type="button" className="btn btn--line btn--small" onClick={() => openTask(waiting)}>Open task</button>
-                    </m.div>
-                  )}
-                  {bar === "composer" && (
-                    <m.div key="composer" className="workbar__composer"
-                      initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
-                      exit={{ opacity: 0, y: 6, scale: 0.985, transition: { duration: duration.micro, ease: ease.exit } }}>
-                      {composer}
-                    </m.div>
-                  )}
-                  {bar === "dock" && selected && activity && pill && (
-                    <m.div key={`dock-${selected.id}`} className="workbar__dock"
-                      exit={{ opacity: 0, y: 6, transition: { duration: duration.micro, ease: ease.exit } }}>
-                      <StatusDock
-                        activity={activity}
-                        state={pill}
-                        elapsed={elapsed}
-                        arriving={arriving === selected.id}
-                        interruptible={activity.live && (selectedRunning || (!!status?.agent_busy && !status?.active_task))}
-                        interrupting={core.busy.general}
-                        computerOpen={level !== null}
-                        modifier={modifier}
-                        onInterrupt={() => stopTask(selectedRunning ? selected.id : null)}
-                        onWatch={() => openComputer()}
-                        onNewTask={newTask}
-                        settingUp={local.stage === "preparing"}
-                      />
-                    </m.div>
-                  )}
-                </AnimatePresence>
-              </div>
-              <AnimatePresence>
-                {peekVisible && selected && activity && (
-                  <ComputerPeek
-                    key="peek"
-                    model={computer}
-                    snapshot={snapshot}
-                    caption={activity.detail ? `${activity.headline} · ${activity.detail}` : activity.headline}
-                    onOpen={() => openComputer()}
-                    onDismiss={() => setPeekHidden((previous) => new Set([...previous, selected.id]))}
-                  />
+                )}
+                {bar === "composer" && (
+                  <m.div key="composer" className="workbar__composer"
+                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out } }}
+                    exit={{ opacity: 0, y: 6, scale: 0.985, transition: { duration: duration.micro, ease: ease.exit } }}>
+                    {composer}
+                  </m.div>
+                )}
+                {bar === "dock" && selected && activity && pill && (
+                  <m.div key={`dock-${selected.id}`} className="workbar__dock"
+                    exit={{ opacity: 0, y: 6, transition: { duration: duration.micro, ease: ease.exit } }}>
+                    <StatusDock
+                      activity={activity}
+                      state={pill}
+                      elapsed={elapsed}
+                      arriving={arriving === selected.id}
+                      interruptible={activity.live && (selectedRunning || (!!status?.agent_busy && !status?.active_task))}
+                      interrupting={core.busy.general}
+                      computerOpen={level !== null}
+                      modifier={modifier}
+                      onInterrupt={() => stopTask(selectedRunning ? selected.id : null)}
+                      onWatch={() => openComputer()}
+                      onNewTask={newTask}
+                      settingUp={local.stage === "preparing"}
+                    />
+                  </m.div>
                 )}
               </AnimatePresence>
-            </main>
-
-            {mounted && (
-              <ComputerPanel
-                model={computer}
-                level={mounted}
-                status={status}
-                slotEnabled={slotEnabled}
-                snapshot={core.native ? snapshot : null}
-                steps={panelSteps}
-                busy={core.busy.computer}
-                managing={core.busy.general}
-                error={core.errors.computer}
-                moving={motion !== null}
-                obscured={sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
-                focusOnOpen={panelFocus}
-                onCommand={runComputer}
-                onManage={manageComputer}
-                onLevel={changeLevel}
-                onClose={closeComputer}
-                onSlotError={reportSlot}
-                onDismissError={() => core.dismiss("computer")}
-                loadBootLog={api.readBootLog}
-                style={innerOpenWidth ? ({ "--open-w": `${innerOpenWidth}px` } as CSSProperties) : undefined}
-              />
-            )}
+            </div>
             <AnimatePresence>
-              {paletteOpen && (
-                <CommandPalette
-                  key="palette"
-                  tasks={tasks}
-                  computerWord={computer.chip}
-                  computerOpen={level !== null}
-                  modifier={modifier}
-                  onClose={() => setPaletteOpen(false)}
-                  onNewTask={newTask}
-                  onOpenTask={openTask}
-                  onComputer={toggleComputer}
-                  onActivity={() => openPlace("activity")}
-                  onSettings={() => openPlace("settings")}
-                  onToggleSidebar={toggleSidebar}
+              {peekVisible && selected && activity && (
+                <ComputerPeek
+                  key="peek"
+                  model={computer}
+                  snapshot={snapshot}
+                  caption={activity.detail ? `${activity.headline} · ${activity.detail}` : activity.headline}
+                  onOpen={() => openComputer()}
+                  onDismiss={() => setPeekHidden((previous) => new Set([...previous, selected.id]))}
                 />
               )}
             </AnimatePresence>
-            <Toast error={core.errors.general} onDismiss={() => core.dismiss("general")} />
-            <Announcer tasks={tasks} computerPhase={computer.phase} />
-          </div>
-        </LayoutGroup>
-        </PresenceGpuShareProvider>
-      </PresenceQualityProvider>
+          </main>
+
+          {mounted && (
+            <ComputerPanel
+              model={computer}
+              level={mounted}
+              status={status}
+              slotEnabled={slotEnabled}
+              snapshot={core.native ? snapshot : null}
+              steps={panelSteps}
+              busy={core.busy.computer}
+              managing={core.busy.general}
+              error={core.errors.computer}
+              moving={motion !== null}
+              obscured={sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
+              focusOnOpen={panelFocus}
+              onCommand={runComputer}
+              onManage={manageComputer}
+              onLevel={changeLevel}
+              onClose={closeComputer}
+              onSlotError={reportSlot}
+              onDismissError={() => core.dismiss("computer")}
+              loadBootLog={api.readBootLog}
+              style={innerOpenWidth ? ({ "--open-w": `${innerOpenWidth}px` } as CSSProperties) : undefined}
+            />
+          )}
+          <AnimatePresence>
+            {paletteOpen && (
+              <CommandPalette
+                key="palette"
+                tasks={tasks}
+                computerWord={computer.chip}
+                computerOpen={level !== null}
+                modifier={modifier}
+                onClose={() => setPaletteOpen(false)}
+                onNewTask={newTask}
+                onOpenTask={openTask}
+                onComputer={toggleComputer}
+                onActivity={() => openPlace("activity")}
+                onSettings={() => openPlace("settings")}
+                onToggleSidebar={toggleSidebar}
+              />
+            )}
+          </AnimatePresence>
+          <Toast error={core.errors.general} onDismiss={() => core.dismiss("general")} />
+          <Announcer tasks={tasks} computerPhase={computer.phase} />
+        </div>
+      </LayoutGroup>
     </FluxGlassRoot>
   );
 }
