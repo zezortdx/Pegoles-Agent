@@ -15,7 +15,17 @@ released; Windows has not run on a consumer PC.
 
 - **New Pegoles mark** (silver ring, two eyes) across the app icon, the
   `.ico`/`.icns`, PNG sizes (with simplified 16–48 px glyphs), the README,
-  the social preview and the Windows installer art.
+  the social preview and the Windows installer art. Inside the app, the
+  living mark (sidebar, Home, status bar, onboarding) now shows the
+  official artwork's own pixels, with only the eyes animated; the older
+  redrawn "ceramic" body and its WebGL renderer are gone.
+- **Agent cursor in the computer preview**: a small silver pointer that
+  glides to each real action's coordinate (never delaying the action),
+  retargets instead of queueing, pulses clicks and double clicks at the
+  exact point, draws drags as one continuous stroke and quiets down
+  between actions; it stops at once on Stop, cancellation, takeover or a
+  replaced computer, and respects reduced motion. Same code on macOS and
+  Windows.
 - **First-run onboarding**: welcome, how it works, a real system check
   (OS, architecture, virtualization, memory, disk, acceleration), one
   "Set up Pegoles" job with real byte progress, speed, time left, pause
