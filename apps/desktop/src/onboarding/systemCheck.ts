@@ -112,7 +112,7 @@ function accelerationRow(c: SystemCheck): CheckRow {
     case "cpu":
       return {
         id: "acceleration", title: "No graphics acceleration", tone: "warn", technical,
-        detail: "The AI model will run on the processor. It works, but each step takes longer.",
+        detail: "The AI model will run on the processor. It works, but slowly: each step can take a minute or more.",
       };
     case "none":
       return {
