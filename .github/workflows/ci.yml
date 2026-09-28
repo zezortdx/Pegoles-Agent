@@ -416,7 +416,11 @@ jobs:
     # Windows runner, by the real broker and helper (release builds,
     # installed in Program Files with the broker registered as the
     # installer does): first a firmware-only VM from an empty disk, then
-    # the real guest, whose runtime the helper must reach over AF_HYPERV.
+    # the freshly built guest, whose runtime the helper must reach over
+    # AF_HYPERV. Then setup's real image path: the PUBLISHED, pinned image
+    # downloaded over HTTPS from its GitHub release by the product
+    # installer, tampered bytes refused, and the full agent E2E on it from
+    # a release build (pins enforced, the disk re-hashed before it boots).
     # Windows Server on Azure with nested virtualization, as an
     # administrator: not a consumer PC.
     name: Windows guest boot (HCS, AF_HYPERV)
@@ -454,22 +458,36 @@ jobs:
       - name: The x64 guest boots and its runtime answers over AF_HYPERV
         shell: pwsh
         run: .github/scripts/windows-hcs-smoke.ps1 -Disk "$env:RUNNER_TEMP\guest\disk.vhdx"
-      # The product path end to end: Core's executor and Pegoles Policy
-      # drive the guest through the helper and the broker (boot, guest
-      # handshake, screenshots, click, typing, keys, cancel, a forged
-      # action denied, the guest runtime killed and recovered, a second
-      # boot). A debug build: it boots the locally sealed image.
-      - name: Seal the x64 image as the Windows product image
-        run: cargo run --locked -p pegoles-computer --example seal_x64_image -- "$RUNNER_TEMP/guest/disk.vhdx" "$RUNNER_TEMP/guest/manifest.json"
-      - name: Agent E2E on Windows (Core, policy, helper, broker, HCS, guest)
+      # Setup's image path, for real: this build's pinned catalog entry,
+      # over HTTPS from the immutable GitHub release, through
+      # ComputerImageManager::install_release_image (the call onboarding's
+      # "Set up" makes), in a release build: archive SHA-256, bounded
+      # decompression hashed to the disk SHA-512, then a re-hash.
+      - name: Install the published x64 image over HTTPS (release build, pinned)
+        run: cargo run --release --locked -p pegoles-computer --example install_image
+      - name: Tampered image bytes fail closed (archive, truncation, installed disk)
+        shell: pwsh
+        run: .github/scripts/windows-image-tamper.ps1
+      # The product path end to end on the published image: Core's executor
+      # and Pegoles Policy drive the guest through the helper and the broker
+      # (boot, guest handshake, screenshots, click, typing, keys, cancel, a
+      # forged action denied, the guest runtime killed and recovered, a
+      # second boot). A release build next to the installed helper, as the
+      # app runs: it boots only the pinned image and re-hashes it first.
+      - name: Agent E2E on Windows from the published image (release build)
         shell: pwsh
         env:
-          PEGOLES_VM_HOST_WINDOWS: C:\Program Files\Pegoles Agent\pegoles-vm-host.exe
           PEGOLES_E2E_OUT: ${{ runner.temp }}\e2e
         run: |
           New-Item -ItemType Directory -Force $env:PEGOLES_E2E_OUT | Out-Null
-          cargo run --locked -p pegoles-agent --example agent_e2e
-          if ($LASTEXITCODE -ne 0) { throw 'agent E2E failed' }
+          cargo build --release --locked -p pegoles-agent --example agent_e2e
+          if ($LASTEXITCODE -ne 0) { throw 'agent E2E build failed' }
+          $dir = Join-Path $env:ProgramFiles 'Pegoles Agent'
+          Copy-Item target\release\examples\agent_e2e.exe $dir
+          & (Join-Path $dir 'agent_e2e.exe')
+          $code = $LASTEXITCODE
+          Remove-Item (Join-Path $dir 'agent_e2e.exe') -Force
+          if ($code -ne 0) { throw 'agent E2E failed' }
       - name: The computer's files and COM1 log (on failure)
         if: failure()
         shell: pwsh

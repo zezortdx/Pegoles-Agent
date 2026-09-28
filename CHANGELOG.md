@@ -47,8 +47,11 @@ released; Windows has not run on a consumer PC.
 - **Windows packaging**: per-machine NSIS installer
   (`scripts/package-windows.sh` → `Pegoles-Setup-x64.exe`, unsigned),
   WebView2 network containment, and a WinGet manifest draft.
-- **x64 guest image build** (`scripts/build-guest-image/build-x64.sh`):
-  provisioned at build time like the arm64 image; not published yet.
+- **x64 guest image** (`scripts/build-guest-image/build-x64.sh`):
+  provisioned at build time like the arm64 image, published as the
+  immutable release `guest-image-x64-0.1` and pinned in the catalog (a VHDX
+  disk: the release installer now accepts `disk.vhdx` as well as
+  `disk.raw`). Setup on Windows downloads and verifies it like on macOS.
 - **CI on Windows**: every Windows crate linted and tested, the webview
   egress probe, the installer built, installed and uninstalled, an HCS VM
   booted through the helper and the broker, and the x64 image built and

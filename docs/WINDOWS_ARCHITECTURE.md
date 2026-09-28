@@ -167,7 +167,7 @@ guest) stays a separate gate (`docs/RELEASE_GATES.md`).
 | Broker service + protocol (`native/windows/pegoles-broker*`) | Written; linted and unit-tested on Windows in CI; hardened after an independent review (path race, admin-only folder) |
 | VM helper (`native/windows/pegoles-vm-host`) | Written; linted and unit-tested on Windows in CI |
 | Guest runtime listening on vsock 850 | In the CI-built x64 image; the full agent E2E runs over it on Hyper-V in CI |
-| x64 guest image (Debian 13 amd64, UEFI, Hyper-V drivers) | Built and provisioned in CI (`guest-image-x64`); boots under QEMU/UEFI with its services up; **not published** (the blocker for a real Windows task) |
+| x64 guest image (Debian 13 amd64, UEFI, Hyper-V drivers) | Built and provisioned in CI (`guest-image-x64`); **published** as the immutable release `guest-image-x64-0.1` and pinned (VHDX, archive SHA-256 + disk SHA-512); CI installs it over HTTPS like setup does and runs the agent E2E on it |
 | llama.cpp worker + AppContainer/job sandbox | Worker runs on macOS against the real VM and builds with Vulkan on Windows; escape probes pass on Windows (file, network, process all blocked) |
 | Desktop shell, onboarding, WebView2 containment | Linted and tested on Windows in CI; egress probe on Windows: 0 TCP / 0 UDP contained |
 | Installer (NSIS, per machine), silent install/uninstall | Exercised end to end in CI (build, install, service, HCS boot, confined worker, uninstall); unsigned |

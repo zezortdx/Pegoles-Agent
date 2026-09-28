@@ -24,11 +24,12 @@
 //!    sees the disconnect and the runtime reconnects;
 //! 6. teardown, then a second session boots and observes successfully.
 //!
-//! On Windows (a debug build: the x64 image is sealed locally with
-//! `seal_x64_image`, and release builds boot only pinned images), with
-//! Pegoles' broker service installed and
-//! `PEGOLES_VM_HOST_WINDOWS` pointing at the installed helper; CI's
-//! `windows-guest-boot` job runs it that way.
+//! On Windows, with Pegoles' broker service installed: a release build
+//! placed next to the installed helper boots the published, pinned x64
+//! image (installed by `install_image`, re-hashed before boot); CI's
+//! `windows-guest-boot` job runs it that way. A debug build can instead
+//! boot a locally sealed image (`seal_x64_image`) with
+//! `PEGOLES_VM_HOST_WINDOWS` pointing at the installed helper.
 //!
 //! `PEGOLES_E2E_OUT=<dir>` saves the verification frames as PNG.
 //! Exit 0 only when every assertion holds.

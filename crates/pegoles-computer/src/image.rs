@@ -96,8 +96,8 @@ pub const PEGOLES_BASE_IMAGE_ID_V3: &str = "pegoles-base-0.3";
 pub const PEGOLES_IMAGE_VERSION_V3: &str = "0.3";
 /// The x64 image for Windows (Hyper-V): Debian 13 amd64 provisioned by
 /// `scripts/build-guest-image/build-x64.sh`, a VHDX, runtime in listen
-/// mode. Not in the release catalog until it is published, so setup on
-/// Windows reports the image as unavailable (fails closed) until then.
+/// mode. Published as the immutable GitHub release `guest-image-x64-0.1`
+/// and pinned in `catalog/images.json` (disk `disk.vhdx`).
 pub const PEGOLES_BASE_IMAGE_ID_X64: &str = "pegoles-base-x64-0.1";
 /// The image a normal create boots on this host: the arm64 image on
 /// macOS, the x64 one on Windows. Older arm64 images predate the runtime

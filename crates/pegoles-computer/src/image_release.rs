@@ -1,15 +1,17 @@
 //! Distribution of the sealed Pegoles guest image.
 //!
-//! A release boots exactly one image, pinned in `catalog/images.json`, which
-//! is compiled into the (signed, notarized) app: the digest of the
+//! A release boots exactly one image per host, pinned in `catalog/images.json`,
+//! which is compiled into the (signed, notarized) app: the digest of the
 //! downloadable archive (SHA-256) and of the disk it unpacks to (SHA-512),
-//! with their sizes. Nothing downloaded is trusted by name, URL or file
+//! with their sizes. The disk is `disk.raw` (macOS, Virtualization.framework)
+//! or `disk.vhdx` (Windows, Hyper-V); either way the pinned bytes are the
+//! exact file that boots. Nothing downloaded is trusted by name, URL or file
 //! presence:
 //!
 //! ```text
 //! HTTPS (resumable) ─▶ .staging/<id>/archive.gz.part ─▶ size + SHA-256 == pin
 //!   ─▶ gzip (pure Rust, output bounded to the pinned size, sparse writes)
-//!   ─▶ disk.raw.part: size + SHA-512 == pin ─▶ manifest + marker from the pin
+//!   ─▶ disk.<raw|vhdx>.part: size + SHA-512 == pin ─▶ manifest + marker from the pin
 //!   ─▶ atomic rename to images/<id> (an older copy goes to .trash first)
 //! ```
 //!
@@ -131,8 +133,8 @@ impl ReleaseImage {
         if !archive_name_ok {
             return bad("invalid archive file name");
         }
-        if self.disk.file_name != "disk.raw" {
-            return bad("disk file must be disk.raw");
+        if self.disk_format_from_name().is_none() {
+            return bad("disk file must be disk.raw or disk.vhdx");
         }
         if self.disk.bytes == 0
             || self.disk.bytes > MAX_DISK_BYTES
@@ -155,6 +157,20 @@ impl ReleaseImage {
             return bad("archive URLs must be HTTPS");
         }
         Ok(())
+    }
+
+    fn disk_format_from_name(&self) -> Option<DiskFormat> {
+        match self.disk.file_name.as_str() {
+            "disk.raw" => Some(DiskFormat::Raw),
+            "disk.vhdx" => Some(DiskFormat::Vhdx),
+            _ => None,
+        }
+    }
+
+    /// The format of the pinned disk: raw on macOS, VHDX for Hyper-V.
+    /// Validated entries only ever name one of the two.
+    pub fn disk_format(&self) -> DiskFormat {
+        self.disk_format_from_name().unwrap_or(DiskFormat::Raw)
     }
 
     /// Whether the archive has a real download location (the catalog
@@ -182,7 +198,7 @@ impl ReleaseImage {
             built_at: self.built_at.clone(),
             artifacts: vec![ArtifactRecord {
                 file_name: self.disk.file_name.clone(),
-                disk_format: DiskFormat::Raw,
+                disk_format: self.disk_format(),
                 sha512: self.disk.sha512.clone(),
                 bytes: self.disk.bytes,
                 architecture: self.architecture.clone(),
@@ -244,7 +260,7 @@ pub fn installed_matches_pin(dir: &Path, image: &ReleaseImage) -> bool {
         return false;
     };
     let record_ok = manifest.artifacts.len() == 1
-        && manifest.artifacts[0].disk_format == DiskFormat::Raw
+        && manifest.artifacts[0].disk_format == image.disk_format()
         && manifest.artifacts.first().is_some_and(|a| {
             a.file_name == image.disk.file_name
                 && a.sha512 == image.disk.sha512
@@ -962,13 +978,68 @@ mod tests {
         install(dir, image, src, &mut |_, _, _| {}, &|| false)
     }
 
-    /// The Windows image is not published yet: the host sees no release
-    /// entry for it, so setup reports it unavailable instead of installing
-    /// the arm64 image.
+    /// Windows boots the published x64 image: a VHDX, amd64, from the
+    /// immutable GitHub release, pinned like the arm64 one.
     #[test]
-    fn the_x64_image_is_not_offered_until_published() {
-        assert!(release_image(crate::image::PEGOLES_BASE_IMAGE_ID_X64).is_none());
-        assert!(catalog().unwrap().iter().all(|i| i.architecture == "arm64"));
+    fn the_x64_image_is_pinned_as_a_vhdx_for_windows() {
+        let x64 = release_image(crate::image::PEGOLES_BASE_IMAGE_ID_X64).expect("x64 image pinned");
+        assert!(x64.validate().is_ok());
+        assert!(x64.is_published());
+        assert_eq!(x64.architecture, "amd64");
+        assert_eq!(x64.disk.file_name, "disk.vhdx");
+        assert_eq!(x64.disk_format(), DiskFormat::Vhdx);
+        assert_eq!(
+            x64.guest_protocol_version,
+            pegoles_guest_proto::GUEST_PROTOCOL_VERSION
+        );
+        assert!(x64.archive.urls.iter().all(|u| u.starts_with(
+            "https://github.com/zezortdx/Pegoles-Agent/releases/download/guest-image-x64-0.1/"
+        )));
+        let manifest = x64.manifest();
+        assert_eq!(manifest.artifacts[0].disk_format, DiskFormat::Vhdx);
+        assert_eq!(manifest.artifacts[0].file_name, "disk.vhdx");
+        // One image per architecture: each host finds exactly its own.
+        let images = catalog().unwrap();
+        for arch in ["arm64", "amd64"] {
+            assert_eq!(images.iter().filter(|i| i.architecture == arch).count(), 1);
+        }
+    }
+
+    #[test]
+    fn packages_manifests_in_the_catalog_match_their_pins() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for image in catalog().unwrap() {
+            let bytes = fs::read(repo.join(&image.provenance.packages_manifest)).unwrap();
+            assert_eq!(
+                hex::encode(Sha256::digest(&bytes)),
+                image.provenance.packages_manifest_sha256,
+                "{}",
+                image.id
+            );
+        }
+    }
+
+    #[test]
+    fn installs_a_pinned_vhdx_disk_with_its_format_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let disk = fake_disk();
+        let archive = gz(&disk);
+        let mut image = entry(&disk, &archive);
+        image.disk.file_name = "disk.vhdx".into();
+        assert!(image.validate().is_ok());
+        let dest = run(tmp.path(), &image, &FakeSource::new(archive)).unwrap();
+        assert_eq!(fs::read(dest.join("disk.vhdx")).unwrap(), disk);
+        assert!(dest.join("disk.vhdx.verified").exists());
+        assert!(!dest.join("disk.raw").exists());
+        let manifest: DerivedManifest =
+            serde_json::from_str(&fs::read_to_string(dest.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.artifacts[0].disk_format, DiskFormat::Vhdx);
+        assert!(installed_matches_pin(&dest, &image));
+        assert!(verify_installed(&dest, &image).is_ok());
+        // The same bytes pinned as a raw disk do not match a VHDX install.
+        let mut raw = image.clone();
+        raw.disk.file_name = "disk.raw".into();
+        assert!(!installed_matches_pin(&dest, &raw));
     }
 
     #[cfg(not(windows))]
@@ -1260,6 +1331,11 @@ mod tests {
         let mut bad = good.clone();
         bad.archive.compression = "xz".into();
         assert!(bad.validate().is_err());
+        for name in ["disk.img", "../disk.raw", "disk.vhd", "DISK.RAW", ""] {
+            let mut bad = good.clone();
+            bad.disk.file_name = name.into();
+            assert!(bad.validate().is_err(), "{name}");
+        }
         assert!(parse_catalog(r#"{"schema":1,"images":[],"extra":1}"#).is_err());
         assert!(parse_catalog(r#"{"schema":2,"images":[]}"#).is_err());
     }
