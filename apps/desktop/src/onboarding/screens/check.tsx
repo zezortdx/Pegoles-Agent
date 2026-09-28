@@ -5,6 +5,7 @@ import { RefreshIcon, ShieldIcon } from "../../ui/icons";
 import { checkVerdict, technicalReport, TONE_WORD, type CheckRow } from "../systemCheck";
 import { ToneGlyph } from "../visuals";
 import { TechnicalDetails } from "./details";
+import { DiagnosticReportButton } from "../../ui/DiagnosticReport";
 import type { ScreenProps } from "./types";
 
 /** Rows resolve one by one; this far apart. */
@@ -76,6 +77,7 @@ export function CheckScreen(props: CheckScreenProps) {
           <p className="ob-note__title">Pegoles couldn’t check this {computer}.</p>
           <p>Try again. If it keeps happening, restart Pegoles.</p>
           <TechnicalDetails text={failure} />
+          <DiagnosticReportButton />
         </div>
       ) : (
         <ul className="ob-checks" aria-label="System check" aria-live="polite">
@@ -107,10 +109,12 @@ export function CheckScreen(props: CheckScreenProps) {
           <p className="ob-note__title">Pegoles couldn’t turn virtualization on.</p>
           <p>Nothing else was changed. Try again, or restart your {computer} and check again.</p>
           <TechnicalDetails text={fix.technical} />
+          <DiagnosticReportButton />
         </div>
       )}
 
       {allShown && check && verdict && <TechnicalDetails text={technicalReport(check, verdict)} label="Technical details" />}
+      {allShown && verdict && !verdict.canContinue && <DiagnosticReportButton className="ob-report" />}
 
       <div className="ob-actions">
         <button type="button" className="btn btn--quiet" onClick={() => go("how")}>Back</button>

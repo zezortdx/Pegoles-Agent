@@ -432,6 +432,11 @@ export function installShellLab(hash: string): void {
     }), 500)),
     fix_virtualization: () => new Promise((resolve) => window.setTimeout(() => { fixed.virtualization = true; resolve("restart_required"); }, 1600)),
     restart_to_finish_setup: () => { throw "shell lab: a real restart would happen here"; },
+    save_diagnostic_report: () => ({
+      file_name: "Pegoles-report-20260928-130405.json",
+      location: "~/Downloads",
+      text: JSON.stringify({ report: { format: 1, about: "shell lab sample" }, app: { version: "0.1.0" } }, null, 2),
+    }),
     install_computer_image: () => {
       if (name === "onboarding-failure") {
         window.setTimeout(() => setImage({ installing: false, stage: null, error: "network error: connection reset by peer (os error 54) while downloading pegoles-base-0.3-arm64.raw.gz" }), 2500);

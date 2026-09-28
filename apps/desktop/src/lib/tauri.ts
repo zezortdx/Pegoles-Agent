@@ -316,6 +316,13 @@ export type VirtualizationState =
 export type AccelerationKind = "metal" | "cuda" | "vulkan" | "cpu" | "none";
 
 /** What Core found about this computer (facts; the UI words them). */
+/** A saved diagnostic report: its file, the folder it went to (home as ~) and its text. */
+export interface DiagnosticReport {
+  readonly file_name: string;
+  readonly location: string;
+  readonly text: string;
+}
+
 export interface SystemCheck {
   readonly platform: "macos" | "windows" | "linux";
   readonly os_name: string;
@@ -402,6 +409,8 @@ export const api = {
   fixVirtualization: () => invoke<FixOutcome>("fix_virtualization"),
   /** Windows only: restarts the PC (after the person pressed "Restart now"). */
   restartToFinishSetup: () => invoke<null>("restart_to_finish_setup"),
+  /** Saves a technical report (no screenshots, tasks, keys or files) in Downloads. */
+  saveDiagnosticReport: () => invoke<DiagnosticReport>("save_diagnostic_report"),
 };
 
 type WireAction = { type: string; [k: string]: unknown };

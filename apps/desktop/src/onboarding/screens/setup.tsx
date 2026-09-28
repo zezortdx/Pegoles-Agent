@@ -8,6 +8,7 @@ import { formatRate, formatTimeLeft, useTransferRate } from "../transferRate";
 import type { SetupRun } from "../useSetupRun";
 import { MachineGlyph } from "../visuals";
 import { TechnicalDetails } from "./details";
+import { DiagnosticReportButton } from "../../ui/DiagnosticReport";
 import type { ScreenProps } from "./types";
 
 export interface SetupScreenProps extends ScreenProps {
@@ -70,6 +71,7 @@ export function SetupScreen({ headingRef, go, computer, run, local, status }: Se
             <p className="ob-note__title">Something went wrong while setting up Pegoles</p>
             <p>{errorHint(progress.error.kind)}</p>
             <TechnicalDetails text={progress.error.technical} />
+            <DiagnosticReportButton />
           </div>
           <StepList progress={progress} />
           <div className="ob-actions">

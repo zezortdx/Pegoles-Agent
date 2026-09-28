@@ -235,6 +235,11 @@ jobs:
         run: |
           cargo run --locked -p pegoles-computer --example windows_readiness
           cargo run --locked -p pegoles-inference --example models -- hw
+      # "Save a report for help" on a real Windows machine: the facts the
+      # report carries (virtualization, broker, GPU, onboarding, backend),
+      # and none of the runner's home folder.
+      - name: The diagnostic report this runner would save
+        run: cargo run --locked -p pegoles-desktop --example diagnostic_report -- --out "$RUNNER_TEMP"
       - name: Webview egress probe (WebView2)
         run: |
           cargo run --locked -p pegoles-desktop --example webview_egress_probe -- control

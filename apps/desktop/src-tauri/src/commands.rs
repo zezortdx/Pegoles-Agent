@@ -1576,6 +1576,38 @@ pub async fn finish_onboarding() -> Result<crate::onboarding::OnboardingState, S
     .map_err(|e| format!("background task failed: {e}"))?
 }
 
+/// The system check's facts (blocking: reads the OS, the model store and
+/// the image status). Shared by onboarding and the diagnostic report.
+fn gather_system_check(
+    shared: &SharedState,
+    local: &LocalModels,
+) -> crate::onboarding::SystemCheck {
+    let data = pegoles_computer::pegoles_data_dir();
+    let settings = crate::agent::load_settings();
+    let runtime = local.payload();
+    let catalog = pegoles_inference::Catalog::builtin();
+    let model_bytes = catalog
+        .get(&settings.local_model)
+        .map_or(0, pegoles_inference::ModelSpec::total_bytes);
+    let image_ready = matches!(
+        lock_state(shared).registry.image_status(),
+        ImageStatus::Ready
+    );
+    let image_bytes =
+        pegoles_computer::image_release::release_image(&pegoles_computer::active_image_id())
+            .map_or(0, |pin| pin.archive.bytes + pin.disk.bytes);
+    let setup = crate::onboarding::SetupFacts {
+        runtime_ready: runtime.runtime_ready,
+        runtime_problem: runtime.runtime_problem.clone(),
+        model_ready: local.ready(&settings.local_model),
+        model_bytes,
+        image_ready,
+        image_bytes,
+        disk_free_bytes: pegoles_inference::store::free_disk_bytes(&data),
+    };
+    crate::onboarding::check(crate::onboarding::host_facts(), setup)
+}
+
 /// Can this computer run Pegoles? OS, processor, virtualization, memory,
 /// disk, acceleration and the bundled runtime, plus what is already set up.
 #[tauri::command]
@@ -1585,34 +1617,122 @@ pub async fn system_check(
 ) -> Result<crate::onboarding::SystemCheck, String> {
     let shared = state.inner().clone();
     let local = local.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(gather_system_check(&shared, &local)))
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// A saved diagnostic report: where it went (home folder as `~`) and its text.
+#[derive(Debug, Serialize, Clone)]
+pub struct DiagnosticReportPayload {
+    pub file_name: String,
+    pub location: String,
+    pub text: String,
+}
+
+/// Build and save a diagnostic report (technical facts only, see
+/// `diagnostics.rs`) in `dir`, or the person's Downloads folder. The
+/// Anthropic key is never read into the report: only whether one is set.
+/// Blocking; shared by the command and `examples/diagnostic_report.rs`.
+pub fn write_diagnostic_report(
+    shared: &SharedState,
+    agent: &AgentSupervisor,
+    local: &LocalModels,
+    dir: Option<&std::path::Path>,
+) -> Result<DiagnosticReportPayload, String> {
+    let data = pegoles_computer::pegoles_data_dir();
+    let system = gather_system_check(shared, local);
+    let settings = crate::agent::load_settings();
+    let runtime = local.payload();
+    let key_source = crate::agent::load_api_key().map(|(_, source)| source);
+    let (status, events, boot_log_path) = {
+        let s = lock_state(shared);
+        let events: Vec<serde_json::Value> = s
+            .event_log
+            .iter()
+            .filter_map(|e| serde_json::to_value(e).ok())
+            .collect();
+        (status_of(&s, agent), events, s.registry.serial_log_path())
+    };
+    let boot_log = boot_log_path
+        .and_then(|path| {
+            pegoles_core::ComputerRegistry::read_boot_log_file(
+                &path,
+                crate::diagnostics::BOOT_LOG_LINES,
+            )
+            .ok()
+        })
+        .map(|log| log.tail)
+        .unwrap_or_default();
+    // As the app sees it at start: an existing install counts as onboarded.
+    let onboarding = crate::onboarding::load(&data, || already_set_up(shared, local));
+    let intelligence = serde_json::json!({
+        "provider": settings.provider,
+        "local_model": settings.local_model,
+        "runtime_ready": runtime.runtime_ready,
+        "runtime_problem": runtime.runtime_problem,
+        "loaded_model": runtime.loaded_model,
+        "host_supported": runtime.host_supported,
+        "chip": runtime.chip,
+        "models": runtime.models.iter().map(|m| serde_json::json!({
+            "id": m.id, "state": m.state, "invalid_reason": m.invalid_reason,
+        })).collect::<Vec<_>>(),
+        "install": runtime.install,
+        "anthropic_key_configured": key_source.is_some(),
+    });
+    #[cfg(windows)]
+    let windows = serde_json::to_value(pegoles_computer::windows::readiness()).ok();
+    #[cfg(not(windows))]
+    let windows: Option<serde_json::Value> = None;
+    let home = crate::diagnostics::home_dir();
+    let now = chrono::Utc::now();
+    let report = crate::diagnostics::build(crate::diagnostics::ReportFacts {
+        created_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        app_version: env!("CARGO_PKG_VERSION"),
+        commit: option_env!("PEGOLES_BUILD_COMMIT"),
+        release_build: !cfg!(debug_assertions),
+        system_check: serde_json::to_value(&system).unwrap_or_default(),
+        onboarding: serde_json::to_value(&onboarding).unwrap_or_default(),
+        intelligence,
+        status: serde_json::to_value(&status).unwrap_or_default(),
+        windows,
+        events,
+        boot_log,
+        home: home.as_ref().map(|h| h.to_string_lossy().into_owned()),
+    });
+    let text = serde_json::to_string_pretty(&report)
+        .map_err(|e| format!("could not write the report: {e}"))?;
+    let dir = dir.map_or_else(
+        || crate::diagnostics::report_dir(home.as_deref(), &data),
+        std::path::Path::to_path_buf,
+    );
+    let file_name = crate::diagnostics::file_name(now);
+    std::fs::write(dir.join(&file_name), &text)
+        .map_err(|e| format!("could not save the report in {}: {e}", dir.display()))?;
+    let location = crate::diagnostics::sanitize(
+        &dir.to_string_lossy(),
+        home.as_ref().map(|h| h.to_string_lossy()).as_deref(),
+    );
+    Ok(DiagnosticReportPayload {
+        file_name,
+        location,
+        text,
+    })
+}
+
+/// Save a diagnostic report in the person's Downloads folder, to send to
+/// whoever helps them (Settings → Help, onboarding's failure screens).
+#[tauri::command]
+pub async fn save_diagnostic_report(
+    state: tauri::State<'_, SharedState>,
+    agent: tauri::State<'_, AgentSupervisor>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<DiagnosticReportPayload, String> {
+    let shared = state.inner().clone();
+    let agent = agent.inner().clone();
+    let local = local.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let data = pegoles_computer::pegoles_data_dir();
-        let settings = crate::agent::load_settings();
-        let runtime = local.payload();
-        let catalog = pegoles_inference::Catalog::builtin();
-        let model_bytes = catalog
-            .get(&settings.local_model)
-            .map_or(0, pegoles_inference::ModelSpec::total_bytes);
-        let image_ready = matches!(
-            lock_state(&shared).registry.image_status(),
-            ImageStatus::Ready
-        );
-        let image_bytes =
-            pegoles_computer::image_release::release_image(&pegoles_computer::active_image_id())
-                .map_or(0, |pin| pin.archive.bytes + pin.disk.bytes);
-        let setup = crate::onboarding::SetupFacts {
-            runtime_ready: runtime.runtime_ready,
-            runtime_problem: runtime.runtime_problem.clone(),
-            model_ready: local.ready(&settings.local_model),
-            model_bytes,
-            image_ready,
-            image_bytes,
-            disk_free_bytes: pegoles_inference::store::free_disk_bytes(&data),
-        };
-        Ok(crate::onboarding::check(
-            crate::onboarding::host_facts(),
-            setup,
-        ))
+        write_diagnostic_report(&shared, &agent, &local, None)
     })
     .await
     .map_err(|e| format!("background task failed: {e}"))?

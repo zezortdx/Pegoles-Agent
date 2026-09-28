@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod commands;
 pub mod consent;
+pub mod diagnostics;
 pub mod local;
 #[cfg(target_os = "macos")]
 mod native_display;

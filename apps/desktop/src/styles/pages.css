@@ -345,3 +345,8 @@ button.activity-quiet__row:hover { background: var(--fill-hover); }
 @media (prefers-reduced-transparency: reduce) {
   .palette { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-float-solid); }
 }
+
+/* Diagnostic report (Settings → Help, onboarding failures). */
+.report { display: grid; gap: 6px; justify-items: start; }
+.report__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.report__note { margin: 0; color: var(--text-3); font: var(--type-small); max-width: 60ch; overflow-wrap: anywhere; }

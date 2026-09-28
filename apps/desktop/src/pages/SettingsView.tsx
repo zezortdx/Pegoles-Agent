@@ -5,6 +5,7 @@ import type { IntelligenceState } from "../state/useIntelligence";
 import type { HostCapabilities, StatusPayload } from "../lib/tauri";
 import { hostLabel, shortcutModifier } from "../lib/format";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { DiagnosticReportButton } from "../ui/DiagnosticReport";
 import { IntelligenceSection } from "./IntelligenceSection";
 import { Row, Section } from "./settingsParts";
 import { HOST } from "../lib/host";
@@ -124,6 +125,12 @@ export function SettingsView(props: SettingsViewProps) {
         ))}
         <Row label="What it types" hint="The audit log records that text was typed, never the text itself.">
           <span className="security-value" data-tone="on">Never logged</span>
+        </Row>
+      </Section>
+
+      <Section id="settings-help" title="Help">
+        <Row label="Report a problem" hint="Saves a file with technical facts to your Downloads folder, to send to whoever helps you." wrap>
+          <DiagnosticReportButton />
         </Row>
       </Section>
 

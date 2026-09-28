@@ -50,6 +50,7 @@ ipc_commands! {
         system_check,
         fix_virtualization,
         restart_to_finish_setup,
+        save_diagnostic_report,
     ],
     debug: [
         prepare_image,

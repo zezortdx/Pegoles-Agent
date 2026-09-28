@@ -49,6 +49,7 @@
     "allow-finish-onboarding",
     "allow-system-check",
     "allow-fix-virtualization",
-    "allow-restart-to-finish-setup"
+    "allow-restart-to-finish-setup",
+    "allow-save-diagnostic-report"
   ]
 }
