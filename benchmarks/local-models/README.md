@@ -246,3 +246,16 @@ p50 146 s, worker 3.75 GB after load / 4.48 GB peak (weights in system
 memory). Usable but slow; a typical Windows laptop CPU will be slower
 still, which is why onboarding's system check says which accelerator
 Pegoles Local expects to use.
+
+### On Windows (CI runner, CPU only)
+
+`examples/gguf_probe` in CI (run 36358372145): the pinned GGUF model
+installed by the product's store code in 91 s (every file's SHA-256
+checked), then the installed worker inside its AppContainer and job
+object, on a GitHub Windows Server 2025 runner with no GPU (AMD EPYC 7763,
+4 vCPU, 16 GB): llama.cpp chose the CPU; load 1.4 s; per generation on a
+1440×896 guest screenshot (1,322 prompt tokens) 84–94 s wall, of which
+81–90 s image encoding and prefill, then 11 tokens/s; worker peak 3.9 GB.
+On such a machine a task step takes about a minute and a half: usable
+only for patient tests. Consumer PCs with more cores are expected to be
+faster, and a Vulkan GPU much faster; neither is measured yet.

@@ -100,7 +100,7 @@ PC.
 | W8 | x64 image published with pins in `catalog/images.json` | NOT DONE | Publishing a release asset needs the owner's approval |
 | W9 | Local model quality on the GGUF path (MAI-UI-2B Q8_0, llama.cpp) | PASS on macOS (Metal), not on Windows | `local_bench` on the real VM: 17/22 goals, the same as MLX 6-bit; 0 % invalid outputs; worker peak 2.4 GB (`benchmarks/local-models/README.md`, `results-gguf.json`) |
 | W10 | Consumer PC end to end: Windows 11 Home and Pro, standard user, virtualization off → onboarding turns it on → restart → resume → first task | NOT RUN | A Windows 11 PC (Home and Pro), ideally one with an NVIDIA/AMD GPU and one CPU-only |
-| W11 | Performance on Windows (CPU and Vulkan step latency, memory) | NOT MEASURED | Same PCs as W10 |
+| W11 | Performance on Windows (CPU and Vulkan step latency, memory) | PARTIAL (CI, CPU only) | Windows Server runner, 4 vCPU, no GPU: 84–94 s per generation (image encoding and prefill 81–90 s), 11 tokens/s, worker peak 3.9 GB, inside the sandbox. Consumer CPUs and Vulkan GPUs: not measured (needs the PCs of W10) |
 | W12 | Authenticode signing of the installer and binaries | DEFERRED | A certificate: SignPath Foundation (free for OSS, application needed) or Azure Artifact Signing (individual accounts: US/Canada only today) |
 | W13 | SmartScreen / Smart App Control with a signed build | NOT RUN | Follows W12; unsigned builds are blocked by Smart App Control and warned by SmartScreen, and Pegoles never asks anyone to turn either off |
 | W14 | WinGet | DRAFT | `packaging/winget/` (not submitted; needs a published release) |
