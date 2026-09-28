@@ -10,7 +10,10 @@
 fn main() {
     let r = pegoles_computer::windows::readiness();
     println!("os: {} (supported: {})", r.os_name, r.os_supported);
-    println!("virtualization: {:?} (Pegoles can fix it: {})", r.state, r.fixable);
+    println!(
+        "virtualization: {:?} (Pegoles can fix it: {})",
+        r.state, r.fixable
+    );
     println!("broker installed: {}", r.broker_installed);
     println!("technical: {}", r.technical);
 }
