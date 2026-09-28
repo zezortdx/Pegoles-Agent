@@ -19,6 +19,12 @@ released; Windows has not run on a consumer PC.
   living mark (sidebar, Home, status bar, onboarding) now shows the
   official artwork's own pixels, with only the eyes animated; the older
   redrawn "ceramic" body and its WebGL renderer are gone.
+- **Save a report for help**: on onboarding's failure screens and in
+  Settings → Help, one JSON file in Downloads with the technical facts a
+  helper needs (version and commit, system check, virtualization and the
+  broker, GPU, onboarding and setup stages, the computer's state, recent
+  failure codes, the guest boot log tail) and never screenshots, task
+  text, agent messages, keys or personal files.
 - **Agent cursor in the computer preview**: a small silver pointer that
   glides to each real action's coordinate (never delaying the action),
   retargets instead of queueing, pulses clicks and double clicks at the

@@ -109,7 +109,11 @@ an AppContainer sandbox. On GitHub's Windows Server runners it builds,
 passes its tests, installs, boots its own x64 guest through Hyper-V, and
 the agent operates that guest end to end (clicks, typing, screenshots,
 policy, cancel, recovery), but **it has not run on a Windows PC yet**,
-its guest image is not published, and there is no Windows download. The GGUF model path it uses scored 17 of 22 on the
+its x64 guest image is published and pinned (release
+`guest-image-x64-0.1`), and there is no public Windows download: an
+unsigned preview installer is being tried by invited testers
+([docs/WINDOWS_PREVIEW_TESTING.md](docs/WINDOWS_PREVIEW_TESTING.md)).
+The GGUF model path it uses scored 17 of 22 on the
 same real-VM benchmark on a Mac, like the MLX default. Status and
 evidence: [docs/PLATFORM_MATRIX.md](docs/PLATFORM_MATRIX.md),
 [docs/WINDOWS_ARCHITECTURE.md](docs/WINDOWS_ARCHITECTURE.md).
