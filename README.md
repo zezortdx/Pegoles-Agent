@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero-task.webp" width="880" alt="Pegoles running a task: the agent's narration on the left, the isolated VM on the right">
+  <img src="docs/images/hero-task.webp" width="880" alt="A finished Pegoles task: the agent's narration on the left, the isolated VM on the right with the agent's cursor where it clicked">
 </p>
 
 ## Quick start
@@ -74,7 +74,7 @@ Gatekeeper is not involved and nothing is turned off. To uninstall, delete
 | | |
 |---|---|
 | <img src="docs/images/home.webp" width="420" alt="Home"> | <img src="docs/images/task-running.webp" width="420" alt="A task running"> |
-| **Home.** Describe a task for the agent's computer. | **A task with Pegoles Local.** Its narration and each action beside the VM's screen. |
+| **Home.** Describe a task for the agent's computer. | **A task with Pegoles Local.** Its narration and each action beside the VM's screen, where the agent's cursor shows each click. |
 | <img src="docs/images/intelligence.webp" width="420" alt="Intelligence settings"> | <img src="docs/images/setup-computer.webp" width="420" alt="Setting up the computer"> |
 | **Pegoles Local.** The pinned model, downloaded and verified in the app. | **Set up computer.** The sealed image, downloaded and verified once. |
 
