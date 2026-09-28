@@ -562,6 +562,14 @@ export function installShellLab(hash: string): void {
   };
 
   const target = window as unknown as Record<string, unknown>;
+  // Visual QA of event-driven UI (the agent cursor): inject Core events with real shapes.
+  target.__pegolesShellLab = {
+    emitAgentEvent: (payload: AgentEvent) => {
+      for (const [id, listener] of listeners) {
+        if (listener.event === "pegoles://event") callbacks.get(listener.handler)?.({ event: "pegoles://event", id, payload });
+      }
+    },
+  };
   target.isTauri = true;
   target.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
   target.__TAURI_INTERNALS__ = {

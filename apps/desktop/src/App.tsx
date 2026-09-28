@@ -548,6 +548,8 @@ export default function App() {
                   key="peek"
                   model={computer}
                   snapshot={snapshot}
+                  computerId={status?.computer_id ?? null}
+                  display={status?.display_config ?? null}
                   caption={activity.detail ? `${activity.headline} · ${activity.detail}` : activity.headline}
                   onOpen={() => openComputer()}
                   onDismiss={() => setPeekHidden((previous) => new Set([...previous, selected.id]))}
