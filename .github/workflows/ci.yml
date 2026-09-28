@@ -446,6 +446,8 @@ jobs:
           & (Join-Path $dir 'pegoles-broker.exe') install-service
           if ($LASTEXITCODE -ne 0) { throw 'install-service failed' }
           Get-Content "$env:RUNNER_TEMP\guest\manifest.json"
+      - name: What onboarding's system check sees with the broker installed
+        run: cargo run --locked -p pegoles-computer --example windows_readiness
       - name: Firmware-only VM (empty disk)
         shell: pwsh
         run: .github/scripts/windows-hcs-smoke.ps1
