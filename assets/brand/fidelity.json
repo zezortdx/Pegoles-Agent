@@ -2,7 +2,7 @@
   "source": {
     "file": "assets/brand/source/pegoles-mark-source.png",
     "size": 1254,
-    "sha256_prefix": "2c1660e1"
+    "sha256_prefix": "bbb538cb"
   },
   "target_iou": 0.97,
   "reference_masks": {

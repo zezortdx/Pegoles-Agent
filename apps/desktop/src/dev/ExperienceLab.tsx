@@ -1,16 +1,14 @@
 /**
  * Development-only presence lab (#/dev/experience). Never loaded by the
- * production entry. The hero uses the selected renderer; everything else
- * is SVG because the app shares one WebGL canvas between presences.
+ * production entry.
  * Query options (for headless captures):
- *   ?mode=thinking&quality=full&reduced=1&grid=0&size=48&gl=force&ribbon=play&boop=<ms>
- * (size sets the hero size; gl=force skips the performance-caveat check in
- * dev; ribbon=play starts the live ribbon sequence; boop presses the hero
- * once after <ms>, to capture it mid-squash).
+ *   ?mode=thinking&reduced=1&grid=0&size=48&ribbon=play&boop=<ms>
+ * (size sets the hero size; ribbon=play starts the live ribbon sequence;
+ * boop presses the hero once after <ms>, to capture it mid-squash).
  */
 import { useEffect, useMemo, useState } from "react";
 import { FluxGlassRoot } from "@pegoles/ui";
-import { PegolesPresence, PRESENCE_MODES, PresenceMark, PresenceQualityProvider, type PresenceMode, type PresenceQuality } from "../presence";
+import { PegolesPresence, PRESENCE_MODES, PresenceMark, type PresenceMode } from "../presence";
 import { ThoughtRibbon } from "../thought/ThoughtRibbon";
 import { ribbonModel } from "../state/ribbon";
 import type { TaskStatusWire } from "@pegoles/ui";
@@ -21,10 +19,8 @@ import "../styles/tokens.css";
 export const EXPERIENCE_LAB_MARKER = "__PEGOLES_EXPERIENCE_LAB__";
 
 const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
-const qualities: readonly PresenceQuality[] = ["auto", "full", "reduced"];
 const initialMode = (PRESENCE_MODES as readonly string[]).includes(params.get("mode") ?? "") ? params.get("mode") as PresenceMode : "idle";
 const heroSize = Number(params.get("size")) > 0 ? Number(params.get("size")) : 152;
-const initialQuality = (qualities as readonly string[]).includes(params.get("quality") ?? "") ? params.get("quality") as PresenceQuality : "full";
 
 const page: React.CSSProperties = { minHeight: "100vh", background: "var(--bg-0)", color: "var(--text-1)", font: "var(--type-body)", padding: "32px 40px 64px" };
 const label: React.CSSProperties = { font: "var(--type-small)", color: "var(--text-3)" };
@@ -95,7 +91,6 @@ function LiveRibbon({ reduced }: { reduced: boolean }) {
 
 export function ExperienceLab() {
   const [mode, setMode] = useState<PresenceMode>(initialMode);
-  const [quality, setQuality] = useState<PresenceQuality>(initialQuality);
   const [reduced, setReduced] = useState(params.get("reduced") === "1");
   const [pulse, setPulse] = useState(0);
   const [look, setLook] = useState(false);
@@ -118,30 +113,23 @@ export function ExperienceLab() {
         <select aria-label="Mode" style={control} value={mode} onChange={(e) => setMode(e.target.value as PresenceMode)}>
           {PRESENCE_MODES.map((m) => <option key={m}>{m}</option>)}
         </select>
-        <select aria-label="Quality" style={control} value={quality} onChange={(e) => setQuality(e.target.value as PresenceQuality)}>
-          {qualities.map((q) => <option key={q}>{q}</option>)}
-        </select>
         <label style={{ font: "var(--type-small)" }}><input type="checkbox" checked={reduced} onChange={(e) => setReduced(e.target.checked)} /> Reduced motion</label>
         <label style={{ font: "var(--type-small)" }}><input type="checkbox" checked={look} onChange={(e) => setLook(e.target.checked)} /> Look at composer</label>
         <button type="button" style={control} onClick={() => setPulse((p) => p + 1)}>Pulse</button>
       </header>
 
       <section data-lab-hero style={{ display: "grid", placeItems: "center", alignContent: "center", gap: 40, height: 460 }}>
-        <PresenceQualityProvider quality={quality}>
-          <PegolesPresence mode={mode} size={heroSize} interactive pressable onPress={() => setPresses((p) => p + 1)}
-            pulse={pulse} nudge={nudge} look={look || typing ? { x: 0, y: 1 } : null} />
-        </PresenceQualityProvider>
+        <PegolesPresence mode={mode} size={heroSize} interactive pressable onPress={() => setPresses((p) => p + 1)}
+          pulse={pulse} nudge={nudge} look={look || typing ? { x: 0, y: 1 } : null} />
         <input data-lab-input aria-label="Type to nudge" placeholder="Type here: every keystroke nudges Pegoles" style={{ ...control, width: 420, padding: "10px 14px" }}
           onFocus={() => setTyping(true)} onBlur={() => setTyping(false)} onChange={() => setNudge((n) => n + 1)} />
         <span style={label}>presses {presses} · nudges {nudge}</span>
       </section>
 
-      <p style={label}>Sizes · SVG (PresenceMark at 16–36, PegolesPresence at 48+)</p>
+      <p style={label}>Sizes · PresenceMark at 16–36, PegolesPresence at 48+</p>
       <section data-lab-sizes style={{ display: "flex", alignItems: "center", gap: 36, margin: "20px 0 40px", padding: "20px 24px", width: "fit-content" }}>
         {[16, 18, 24, 32, 36].map((s) => <PresenceMark key={s} mode={mode} size={s} />)}
-        <PresenceQualityProvider quality="reduced">
-          {[48, 64].map((s) => <PegolesPresence key={s} mode={mode} size={s} field={false} />)}
-        </PresenceQualityProvider>
+        {[48, 64].map((s) => <PegolesPresence key={s} mode={mode} size={s} field={false} />)}
       </section>
 
       <p style={label}>Marks · 18 px in every mode</p>
@@ -160,15 +148,15 @@ export function ExperienceLab() {
       </section>
       <section style={{ margin: "0 0 56px", padding: "8px 12px" }}><LiveRibbon reduced={reduced} /></section>
 
-      {showGrid && <PresenceQualityProvider quality="reduced">
-        <p style={label}>Every mode · SVG renderer</p>
+      {showGrid && <>
+        <p style={label}>Every mode</p>
         <section data-lab-modes style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "40px 16px", margin: "24px 0 56px" }}>
           {PRESENCE_MODES.map((m) => <figure key={m} style={{ display: "grid", justifyItems: "center", gap: 28, margin: 0 }}>
             <PegolesPresence mode={m} size={112} pulse={pulse} />
             <figcaption style={label}>{m}</figcaption>
           </figure>)}
         </section>
-      </PresenceQualityProvider>}
+      </>}
     </div>
   </FluxGlassRoot>;
 }

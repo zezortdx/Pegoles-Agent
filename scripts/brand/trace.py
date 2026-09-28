@@ -14,6 +14,8 @@ Steps
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 from scipy import ndimage as ndi
 from scipy.optimize import least_squares
@@ -161,7 +163,7 @@ def main() -> None:
         "source": {
             "file": "assets/brand/source/pegoles-mark-source.png",
             "size": bl.SOURCE_SIZE,
-            "sha256_prefix": "2c1660e1",
+            "sha256_prefix": hashlib.sha256(bl.SOURCE_PNG.read_bytes()).hexdigest()[:8],
         },
         "units": "source pixels; SVG user space (pixel i spans [i, i+1)), y down",
         "segmentation": {

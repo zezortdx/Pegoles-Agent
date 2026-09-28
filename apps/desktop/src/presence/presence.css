@@ -1,6 +1,7 @@
 /*
- * Pegoles Presence — shared by both renderers. Pose values arrive as custom
- * properties from the targets table (targets.ts → poseVariables); life,
+ * Pegoles Presence — the official mark (PresenceArt: the source artwork's
+ * own pixels) with state in light and in the eyes. Pose values arrive as
+ * custom properties from the targets table (targets.ts → poseVariables); life,
  * pointer, nudges and boops write a few more from JS without re-rendering.
  * Continuous loops carry the ambient gate classes (pg-ambient / pg-work-anim)
  * and never run while the window is hidden, blurred or idle. Only transform,
@@ -70,20 +71,11 @@
   pointer-events: none;
 }
 
-.presence__svg,
-.presence__gl {
+.presence__stage {
   position: absolute;
+  inset: 0;
   pointer-events: none;
-  transition: opacity 400ms var(--ease-light);
 }
-
-.presence__svg { inset: 0; }
-.presence__gl { inset: -50%; opacity: 0; }
-.presence__gl canvas { display: block; width: 100%; height: 100%; }
-.presence[data-renderer="gl"] .presence__svg { opacity: 0; }
-.presence[data-renderer="gl"] .presence__gl { opacity: 1; }
-/* Never run the CSS loops and the WebGL loop together. */
-.presence[data-renderer="gl"] .presence__svg * { animation-play-state: paused !important; }
 
 /* ── Light around the body ──────────────────────────────────────── */
 .presence__halo,
@@ -138,7 +130,6 @@
   transition: opacity var(--dur-agent) var(--ease-light);
 }
 
-.presence__body,
 .presence__contour,
 .presence__pulse,
 .presence__shimmer,
@@ -154,6 +145,18 @@
   overflow: visible;
 }
 
+/* The artwork spans the artboard plus a quarter on every side (its glow). */
+.presence__art {
+  position: absolute;
+  inset: -25%;
+  display: block;
+  width: 150%;
+  height: 150%;
+  max-width: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 .presence__shell-layer {
   fill: none;
   stroke: rgb(245 245 243 / 0.6);
@@ -165,7 +168,7 @@
 
 .presence__filaments {
   fill: none;
-  stroke: rgb(214 228 255 / 0.95);
+  stroke: rgb(240 242 245 / 0.9);
   stroke-width: 1px;
   opacity: calc(var(--p-filament) * 0.6);
   transition: opacity var(--dur-agent) var(--ease-light);
@@ -185,42 +188,14 @@
 .presence__sweep-band {
   position: absolute;
   inset: -30%;
-  background: conic-gradient(from 210deg, transparent 0 58%, rgb(225 236 255 / 0) 63%, rgb(232 240 255 / 0.95) 71%, rgb(225 236 255 / 0) 79%, transparent 100%);
-}
-
-.presence__sheen {
-  position: absolute;
-  inset: 0;
-  -webkit-mask: var(--p-ring-mask) center / 100% 100% no-repeat;
-  mask: var(--p-ring-mask) center / 100% 100% no-repeat;
-  overflow: hidden;
-  mix-blend-mode: screen;
-  opacity: calc(0.35 + 0.4 * var(--p-sway, 0));
-  pointer-events: none;
-}
-
-.presence__sheen-light {
-  position: absolute;
-  inset: -20%;
-  background: radial-gradient(ellipse 34% 20% at 36% 22%, rgb(255 255 255 / 0.5), rgb(255 255 255 / 0) 72%),
-    radial-gradient(ellipse 10% 34% at 84% 52%, rgb(225 236 255 / 0.28), rgb(225 236 255 / 0) 70%);
-}
-
-/* Idle and attentive: the highlight travels a little, like the object swaying under a studio light. */
-.presence:is([data-mode="idle"], [data-mode="attentive"]) .presence__sheen-light {
-  animation: presence-sheen 11s var(--ease-light) infinite alternate;
-}
-
-@keyframes presence-sheen {
-  from { transform: translate(-3%, -1%); }
-  to { transform: translate(4%, 2%); }
+  background: conic-gradient(from 210deg, transparent 0 58%, rgb(243 246 250 / 0) 63%, rgb(250 251 252 / 0.9) 71%, rgb(243 246 250 / 0) 79%, transparent 100%);
 }
 
 /* 16–27 px: one calm object. No hairline layers, a tight eye glow. */
 .presence[data-small] .presence__filaments,
 .presence[data-small] .presence__shell-layer { display: none; }
 .presence[data-small] .presence__eye {
-  filter: drop-shadow(0 0 calc(var(--presence-size, 18px) * 0.05) rgb(214 229 255 / 0.6));
+  filter: drop-shadow(0 0 calc(var(--presence-size, 18px) * 0.045) rgb(243 249 255 / 0.55));
 }
 
 .presence__warn-rim {
@@ -253,10 +228,11 @@
       calc(var(--p-eye-sx) * (1 + var(--p-kick) * 0.04 + var(--p-aware) * 0.03)),
       calc(var(--p-eye-sy) * (1 + var(--p-kick) * 0.04 + var(--p-aware) * 0.03))
     );
-  /* The glow follows the visible (lidded) eye because it is applied after the clip. */
+  /* The source's eye halo (look.json eye_glow_std), recreated here so it
+   * follows the visible (lidded) eye: the filter applies after the clip. */
   filter:
-    drop-shadow(0 0 calc(var(--presence-size, 40px) * 0.028) rgb(214 229 255 / 0.55))
-    drop-shadow(0 0 calc(var(--presence-size, 40px) * 0.006) rgb(255 255 255 / 0.7));
+    drop-shadow(0 0 calc(var(--presence-size, 40px) * 0.04) rgb(243 249 255 / 0.5))
+    drop-shadow(0 0 calc(var(--presence-size, 40px) * 0.008) rgb(255 255 255 / 0.55));
   transition: transform 260ms var(--ease-out);
 }
 
@@ -270,7 +246,9 @@
   -webkit-mask-image: radial-gradient(ellipse 75% 60% at 50% calc(160% - var(--p-squint) * 87%), transparent 97%, #000 100%);
   mask-image: radial-gradient(ellipse 75% 60% at 50% calc(160% - var(--p-squint) * 87%), transparent 97%, #000 100%);
   border-radius: var(--radius-pill, 999px);
-  background: radial-gradient(ellipse 90% 62% at 50% 30%, #ffffff 0%, #f8fbff 52%, #d9e6ff 100%);
+  /* The eye's own pixels (PresenceArt sets the image). */
+  background-color: #f4f5f6;
+  background-size: 100% 100%;
   opacity: min(1, var(--p-eye-glow));
   transition: opacity var(--dur-agent) var(--ease-light), clip-path var(--p-lid-dur) var(--ease-out);
 }

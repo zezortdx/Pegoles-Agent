@@ -38,6 +38,7 @@ GLYPH_SVG = REPO_ROOT / "assets/brand/pegoles-mark-glyph.svg"
 TAURI_ICONS_DIR = REPO_ROOT / "apps/desktop/src-tauri/icons"
 TAURI_INSTALLER_DIR = REPO_ROOT / "apps/desktop/src-tauri/windows"
 BRAND_ICONS_DIR = REPO_ROOT / "assets/brand/icons"
+BRAND_RASTER_DIR = REPO_ROOT / "assets/brand/raster"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import brandlib as bl  # noqa: E402  (sibling module; needs the path above)
@@ -122,13 +123,29 @@ def glyph_polygons() -> tuple[list[np.ndarray], list[np.ndarray]]:
     return ring, eyes
 
 
-def render_glyph(size: int, mark_fraction: float = GLYPH_MARK_FRACTION) -> Image.Image:
+def hinted_eyes(eyes: list[np.ndarray], size: int) -> np.ndarray:
+    """Eye coverage snapped to whole pixels: each eye keeps its centre and
+    proportions but covers full pixel columns (at least one) and rows, so
+    it stays pure white instead of blurring to grey at 16-32 px."""
+    cov = np.zeros((size, size))
+    for eye in eyes:
+        cx, cy = eye[:, 0].mean(), eye[:, 1].mean()
+        w = max(1, round(eye[:, 0].max() - eye[:, 0].min()))
+        h = max(2, round(eye[:, 1].max() - eye[:, 1].min()))
+        x0 = int(np.floor(cx - w / 2 + 0.5))
+        y0 = int(np.floor(cy - h / 2 + 0.5))
+        cov[max(0, y0) : y0 + h, max(0, x0) : x0 + w] = 1
+    return cov
+
+
+def render_glyph(size: int, mark_fraction: float = GLYPH_MARK_FRACTION, transparent: bool = False) -> Image.Image:
     """Small-size variant: the same traced geometry, flat silver on black.
 
     The soft glow cannot survive 16-32 px, so tiny frames draw the ring
     and eyes as solid shapes (exact outlines from the vector trace, 8x8
-    supersampled coverage). Same geometry, same proportions; only the
-    lighting is dropped.
+    supersampled coverage; eyes snapped to whole pixels up to 32 px). Same
+    geometry, same proportions; only the lighting is dropped. With
+    `transparent`, only the silhouette is opaque (black face, silver ring).
     """
     ring, eyes = glyph_polygons()
     pts = np.vstack(ring)
@@ -142,14 +159,20 @@ def render_glyph(size: int, mark_fraction: float = GLYPH_MARK_FRACTION) -> Image
         return [np.column_stack([q[:, 0] * scale + ox, q[:, 1] * scale + oy]) for q in polys]
 
     ring_cov = bl.raster_mask(place(ring), size=size, ss=8)[..., None]
-    eye_cov = bl.raster_mask(place(eyes), size=size, ss=8)[..., None]
+    placed_eyes = place(eyes)
+    eye_cov = (hinted_eyes(placed_eyes, size) if size <= 32 else bl.raster_mask(placed_eyes, size=size, ss=8))[..., None]
     t = np.clip((np.arange(size) + 0.5 - (y0 * scale + oy)) / ((y1 - y0) * scale), 0, 1)
     top, bottom = np.array(GLYPH_RING_TOP, float), np.array(GLYPH_RING_BOTTOM, float)
     ring_rgb = (top + (bottom - top) * t[:, None])[:, None, :]
     rgb = ring_rgb * ring_cov
     rgb = rgb * (1 - eye_cov) + np.array(GLYPH_EYES, float) * eye_cov
     out = np.clip(rgb + 0.5, 0, 255).astype(np.uint8)
-    return Image.fromarray(out, mode="RGB").convert("RGBA")
+    if not transparent:
+        return Image.fromarray(out, mode="RGB").convert("RGBA")
+    # The ring path is outer + inner (even-odd); the silhouette is the outer contour alone.
+    silhouette = bl.raster_mask(place(ring[:1]), size=size, ss=8)
+    alpha = np.clip(np.maximum(silhouette, eye_cov[..., 0]) * 255 + 0.5, 0, 255).astype(np.uint8)
+    return Image.fromarray(np.dstack([out, alpha]), mode="RGBA")
 
 
 def tight_crop(source: Image.Image, mark_fraction: float = TILE_MARK_FRACTION) -> Image.Image:
@@ -296,11 +319,14 @@ def build_installer_images(source: Image.Image, out_dirs: list[Path]) -> dict[st
     return images
 
 
-def build_small_glyphs(out_dir: Path) -> None:
-    """Standalone small-size variant (transparent corners) for docs,
-    tray/status use and anything drawn at 16-32 px."""
+def build_small_glyphs(out_dir: Path, raster_dir: Path) -> None:
+    """Standalone small-size variant for docs, tray/status use and anything
+    drawn at 16-48 px: on a dark rounded tile (`pegoles-glyph-N.png`) and
+    as the bare mark on transparency (`raster/pegoles-mark-N.png`, the small
+    end of the 16-512 ladder; variants.py makes 64-512 from the source)."""
     for size in (16, 24, 32, 48):
         rounded_tile(render_glyph(size), size).save(out_dir / f"pegoles-glyph-{size}.png", format="PNG", optimize=True)
+        render_glyph(size, 0.96, transparent=True).save(raster_dir / f"pegoles-mark-{size}.png", format="PNG", optimize=True)
 
 
 def _load_font(size: int):
@@ -432,8 +458,10 @@ the title-bar icon.
 The glow cannot survive tiny sizes; a downscale turns the ring into a
 smudge. Those frames draw `pegoles-mark-glyph.svg` (the exact traced ring
 and eyes) as flat shapes: a silver ramp on the ring, white eyes, black
-field, 8x8 supersampled coverage. Same geometry and proportions, no
-lighting. Standalone copies: `pegoles-glyph-{16,24,32,48}.png`.
+field, 8x8 supersampled coverage, eyes snapped to whole pixels so they stay
+white. Same geometry and proportions, no lighting. Standalone copies:
+`pegoles-glyph-{16,24,32,48}.png` (dark tile) and
+`../raster/pegoles-mark-{16,24,32,48}.png` (bare mark on transparency).
 
 ## Installer art (NSIS)
 
@@ -472,7 +500,7 @@ def main() -> None:
 
     print("Building NSIS installer art + small glyphs ...")
     build_installer_images(source, [TAURI_INSTALLER_DIR, BRAND_ICONS_DIR / "installer"])
-    build_small_glyphs(BRAND_ICONS_DIR)
+    build_small_glyphs(BRAND_ICONS_DIR, BRAND_RASTER_DIR)
 
     print("Building Linux/other PNGs ...")
     linux_frames = build_linux_pngs(source, crisp_source, [TAURI_ICONS_DIR, BRAND_ICONS_DIR])
