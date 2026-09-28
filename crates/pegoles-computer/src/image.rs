@@ -1060,15 +1060,35 @@ fn instantiate_from(src_raw: &Path, dest_disk: &Path) -> Result<()> {
     }
     if fs::symlink_metadata(dest_disk).is_ok() {
         require_regular_file(dest_disk)?;
+        // A leftover copy (an interrupted reset) may be read-only: Windows
+        // refuses to overwrite it otherwise.
+        make_writable(dest_disk)?;
     }
     fs::copy(src_raw, dest_disk).map_err(|e| ComputerError::Backend(e.to_string()))?;
+    // The pinned base image is read-only and a copy keeps that on Windows;
+    // the computer's own disk must be writable (the VM writes to it).
+    make_writable(dest_disk)
+}
+
+/// Owner read/write only (Unix), or the read-only attribute cleared (Windows).
+fn make_writable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dest_disk, fs::Permissions::from_mode(0o600))
-            .map_err(|e| ComputerError::Backend(e.to_string()))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| ComputerError::Backend(e.to_string()))
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let mut perms = fs::metadata(path)
+            .map_err(|e| ComputerError::Backend(e.to_string()))?
+            .permissions();
+        // Windows: this only clears FILE_ATTRIBUTE_READONLY; access stays
+        // governed by the per-user folder's ACL.
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(path, perms).map_err(|e| ComputerError::Backend(e.to_string()))
+    }
 }
 
 /// Locate the largest non-EFI GPT partition (the Linux root) in a raw
@@ -1340,6 +1360,27 @@ fn require_regular_file(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every host: the pinned base is read-only, the computer's copy must
+    /// be writable (Windows keeps the read-only attribute across a copy),
+    /// including over a read-only leftover from an interrupted attempt.
+    #[test]
+    fn a_computer_disk_copied_from_a_read_only_base_is_writable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("disk.vhdx");
+        fs::write(&base, b"pinned base").unwrap();
+        let mut ro = fs::metadata(&base).unwrap().permissions();
+        ro.set_readonly(true);
+        fs::set_permissions(&base, ro.clone()).unwrap();
+        let dest = tmp.path().join("computers").join("c1").join("disk.vhdx");
+        instantiate_from(&base, &dest).unwrap();
+        assert!(!fs::metadata(&dest).unwrap().permissions().readonly());
+        fs::write(&dest, b"guest writes").unwrap();
+        fs::set_permissions(&dest, ro).unwrap();
+        instantiate_from(&base, &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"pinned base");
+        assert!(!fs::metadata(&dest).unwrap().permissions().readonly());
+    }
 
     const FIXTURE_SUMS: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f  debian-13-nocloud-arm64.tar.xz\n\
         da39a3ee5e6b4b0d3255bfef95601890afd80709  SHA512SUMS\n";
