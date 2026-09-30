@@ -1,0 +1,27 @@
+[package]
+name = "pegoles-egress-forwarder"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Pegoles guest egress forwarder: vsock 4051 mux to the local HTTP proxy 127.0.0.1:3128 (docs/EGRESS.md); Linux guest binary, core logic platform-neutral"
+license = "MIT"
+
+[lib]
+name = "pegoles_egress_forwarder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pegoles-egress-forwarder"
+path = "src/main.rs"
+
+[dependencies]
+pegoles-egress-proto = { path = "../../crates/pegoles-egress-proto" }
+base64 = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+pegoles-egress = { path = "../../crates/pegoles-egress" }
+tokio = { workspace = true, features = ["net", "io-util", "time", "macros", "rt-multi-thread"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
