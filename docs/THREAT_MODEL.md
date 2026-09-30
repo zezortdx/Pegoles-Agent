@@ -154,6 +154,15 @@ Implemented, exercised only on CI runners (Windows Server, administrator).
 | Verification | `pegoles-computer` hostile-frame tests incl. the hello-flood regression on a 2 MiB stack, bounded-line tests, handshake tests; hardware E2E (runtime killed inside the guest → recovered) |
 | Residual | A guest can deny service to its own agent (kill or starve the runtime). Hypervisor escape is Apple's boundary. |
 
+### Internet for a task (egress)
+
+| | |
+|---|---|
+| Surface | The one byte stream the host opens to the guest's forwarder (vsock 4051 / HvSocket) and everything on it: guest-crafted mux frames, proxy requests (CONNECT and absolute-form HTTP), TLS interception, upstream responses from the public web, names the guest asks to resolve; the per-task setting (mode and domains) typed into the composer; the native confirmation |
+| Mitigation | The VM still has no network device. Internet is off by default and chosen per task; `allowlist` (max 32 validated domains) and `open_web` each need a native confirmation the webview cannot answer (Cancel is the default; declines back off). The host opens the stream, never the guest, only while the agent controls a running computer, and closes it on stop, pause, reset, destroy, human takeover, task end, failure and exit (the Stop path cuts it without the app lock; a pump also closes it if control is lost). If it cannot open, the task runs offline and says so. `pegoles-egress`: mux decoder bounded to one frame with credit windows and 64 streams, any violation drops the connection; immutable host policy (transport rules, host resolves names and every address must be global unicast, compiled-in threat snapshot verified against a SHA-256, mode rule, response inspection by magic bytes, limits and a 1 GiB per-task cap); per-session in-memory CA with the key never on disk; upstream TLS against `webpki-roots` only and a failed verification is a deny. Every decision is an audit event (time, mode, host, path without query, verdict and reason, bytes: no headers, bodies, cookies or queries) passed through a bounded drop-oldest queue so a slow UI cannot stall the proxy; the UI gets host, verdict, reason, bytes and time only. The IPC takes a mode and domain strings, no URLs, paths or endpoints. The planners are told only that a browser exists and which sites work; the action set is unchanged (no host URL action). |
+| Verification | `pegoles-egress` unit, mux fuzz/proptest and policy tests; Core tests with the Mock backend (off never opens, invalid settings refused, every control-loss path closes the session, guest-closed and silent-guest cases, lock-free kill handle, audit events without paths or queries, drop-oldest counter); agent tests (declined or unanswerable consent leaves the task offline and says so, a failed or finished task loses the internet); frontend tests for the composer control, limits and the indicator (hosts rendered as text). Not yet verified on hardware: the sealed images that contain the browser and forwarder (0.4 arm64, x64-0.2) and the real macOS/Windows bridges end to end. |
+| Residual | In `open_web` a site not yet in the threat snapshot can be malicious, and the snapshot ages until the next release. Text the agent types into pages can leave the VM; the key-material tripwire is a heuristic, so do not give the agent secrets. Allowed domains can host untrusted content (user uploads, redirects). Chromium bugs reachable from web content run inside the VM, which stays disposable and has no host access. A compromised webview can start a task that asks for internet but cannot confirm it. |
+
 ### Webview → Tauri backend
 
 | | |
@@ -182,7 +191,7 @@ Implemented, exercised only on CI runners (Windows Server, administrator).
 
 ## Residual risks (accepted for 0.1, tracked)
 
-1. Anything a planner can do inside the offline VM (by design).
+1. Anything a planner can do inside the VM (by design). With internet enabled for a task, also what it can do on the allowed or open web (see the egress section).
 2. Guest denial of service against its own agent.
 3. `sandbox-exec` deprecation; worker can read non-home system files.
 4. Weston runs with `--debug` for `weston_capture_v1`: any guest client of the same user can capture the guest screen (the guest is hostile anyway).

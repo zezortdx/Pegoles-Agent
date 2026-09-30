@@ -125,6 +125,33 @@ pub fn run() {
                     }
                 }
             });
+            // The task's internet (docs/EGRESS.md): Stop, pause, takeover and
+            // exit cut it through a lock-free handle, and every proxy
+            // decision (host, verdict, reason code, bytes, time) is streamed
+            // to the UI as `pegoles://egress`.
+            {
+                let (kill, mut decisions) = {
+                    let guard = commands::lock_state(&shared);
+                    (
+                        guard.registry.egress_kill_handle(),
+                        guard.registry.subscribe_egress(),
+                    )
+                };
+                app.state::<AgentSupervisor>().set_internet_kill(kill);
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::sync::broadcast::error::RecvError;
+                    loop {
+                        match decisions.recv().await {
+                            Ok(decision) => {
+                                let _ = handle.emit("pegoles://egress", &decision);
+                            }
+                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Closed) => break,
+                        }
+                    }
+                });
+            }
             // Core maintenance does not depend on the UI polling (a hidden
             // window must not let the guest session time out). Skips a
             // tick when a command holds the state.
@@ -161,6 +188,10 @@ pub fn run() {
             // its own when this process closes its stdin (see
             // native/macos/pegoles-vm-host/Sources/Host.swift).
             app.state::<AgentSupervisor>().cancel(None);
+            // The internet ends first, even if a command holds the app
+            // lock (closing the process would end it anyway).
+            app.state::<AgentSupervisor>()
+                .cut_internet("Pegoles is closing");
             app.state::<commands::ScriptCancel>().trip();
             app.state::<local::LocalModels>().shutdown();
         }

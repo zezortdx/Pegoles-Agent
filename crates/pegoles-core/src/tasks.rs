@@ -5,7 +5,7 @@
 //! Pending -> Cancelled
 
 use chrono::Utc;
-use pegoles_protocol::{AgentEvent, AgentTask, TaskId, TaskStatus};
+use pegoles_protocol::{AgentEvent, AgentTask, InternetAccess, TaskId, TaskStatus};
 use std::collections::HashMap;
 
 use crate::error::{CoreError, Result};
@@ -68,6 +68,24 @@ impl TaskManager {
     pub fn submit_task(&mut self, raw_title: &str) -> Result<AgentTask> {
         let title = normalize_task_title(raw_title)?;
         Ok(self.create_task(title))
+    }
+
+    /// Like [`submit_task`](Self::submit_task), with the task's internet
+    /// setting (validated and normalized; `off` needs no confirmation and
+    /// opens nothing). Nothing is created if the setting is invalid.
+    pub fn submit_task_with_internet(
+        &mut self,
+        raw_title: &str,
+        internet: &InternetAccess,
+    ) -> std::result::Result<AgentTask, String> {
+        let title = normalize_task_title(raw_title).map_err(|e| e.to_string())?;
+        let (internet, _) = crate::egress::validate_internet(internet)?;
+        let mut task = self.create_task(title);
+        task.internet = internet.clone();
+        if let Some(stored) = self.tasks.get_mut(&task.id) {
+            stored.internet = internet;
+        }
+        Ok(task)
     }
 
     pub fn get(&self, id: &TaskId) -> Result<&AgentTask> {
@@ -248,6 +266,28 @@ mod tests {
         let over = "x".repeat(MAX_TASK_TITLE_CHARS + 1);
         assert!(m.submit_task(&over).is_err());
         assert_eq!(m.list().len(), 1);
+    }
+
+    #[test]
+    fn a_task_carries_its_validated_internet_setting() {
+        use pegoles_protocol::InternetMode;
+        let mut m = mgr();
+        assert!(m.submit_task("plain").unwrap().internet.is_off());
+        let web = InternetAccess {
+            mode: InternetMode::Allowlist,
+            domains: vec![" Docs.Rust-Lang.org ".into()],
+        };
+        let t = m.submit_task_with_internet("look it up", &web).unwrap();
+        assert_eq!(t.internet.domains, ["docs.rust-lang.org"]);
+        assert_eq!(m.get(&t.id).unwrap().internet, t.internet);
+        let bad = InternetAccess {
+            mode: InternetMode::Allowlist,
+            domains: vec![],
+        };
+        let before = m.list().len();
+        assert!(m.submit_task_with_internet("x", &bad).is_err());
+        assert!(m.submit_task_with_internet("", &web).is_err());
+        assert_eq!(m.list().len(), before, "nothing is created on refusal");
     }
 
     #[test]

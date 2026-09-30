@@ -74,6 +74,9 @@ pub struct ComputerRegistry {
     pub(crate) last_pointer_guest: pegoles_computer::GuestPoint,
     /// Last published input availability (edge-triggered events).
     pub(crate) last_input_available: Option<bool>,
+    /// The task's internet session (docs/EGRESS.md); closed by every path
+    /// that ends or takes control from the agent run.
+    pub(crate) egress: crate::egress::EgressController,
 }
 
 impl std::fmt::Debug for ComputerRegistry {
@@ -100,6 +103,7 @@ impl ComputerRegistry {
 
     /// Test constructor with explicit dirs (never touches real data).
     pub fn with_dirs(bus: EventBus, kind: BackendKind, data_dir: PathBuf) -> Self {
+        let egress = crate::egress::EgressController::new(bus.clone());
         Self {
             backend: None,
             display: DisplaySlot::unavailable(),
@@ -117,6 +121,7 @@ impl ComputerRegistry {
             input_pressed: pegoles_computer::PressedState::default(),
             last_pointer_guest: pegoles_computer::GuestPoint { x: 0, y: 0 },
             last_input_available: None,
+            egress,
         }
     }
 

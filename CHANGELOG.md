@@ -13,6 +13,21 @@ released; Windows has not run on a consumer PC.
 
 ### Added
 
+- **Internet for a task (in development, not verified on hardware).** The
+  composer has an Internet control: Off (default), Only these sites (up to
+  32 domain chips) or Open web (with a warning). Each task that asks for it
+  is confirmed in a native dialog the webview cannot answer (macOS alert,
+  Windows message box; Cancel is the default and declines back off). Core
+  opens the host-side proxy session only while the agent controls the
+  running computer and closes it on stop, pause, reset, destroy, takeover,
+  task end, failure and exit; if it cannot open, the task runs offline and
+  says so. While online, a persistent indicator shows the mode and sites
+  and a live list of what the proxy allowed or blocked, in plain words
+  (host, verdict, reason, size; never paths or queries). `create_task`
+  takes an optional `internet` (mode and domain strings only); the planners
+  are told a browser is in the top panel and which sites work. The VM still
+  has no network device. Needs the new sealed images (0.4 / x64-0.2), still
+  to be built. See `docs/EGRESS.md`, `docs/THREAT_MODEL.md`.
 - **New Pegoles mark** (silver ring, two eyes) across the app icon, the
   `.ico`/`.icns`, PNG sizes (with simplified 16–48 px glyphs), the README,
   the social preview and the Windows installer art. Inside the app, the

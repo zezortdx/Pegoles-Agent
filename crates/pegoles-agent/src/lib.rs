@@ -21,7 +21,7 @@ pub mod planner;
 pub mod runner;
 pub mod scripted;
 
-pub use core_computer::{CoreAccess, CoreComputer};
+pub use core_computer::{CoreAccess, CoreComputer, InternetConfirm, InternetPlan};
 pub use planner::{
     CallOutcome, CallOutput, PlannedCall, Planner, PlannerError, PlannerTurn, Screenshot, Step,
 };

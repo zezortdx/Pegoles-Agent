@@ -38,6 +38,9 @@ import { localView } from "./state/localModel";
 import { ActivityView } from "./pages/ActivityView";
 import { Onboarding } from "./onboarding/Onboarding";
 import { useOnboarding } from "./onboarding/useOnboarding";
+import { InternetChip, InternetPanel } from "./internet/InternetControl";
+import { InternetIndicator } from "./internet/InternetIndicator";
+import { INTERNET_OFF, draftProblem, toAccess, type InternetDraft } from "./internet/model";
 import { SettingsView, type QualityChoice, type SettingsAnchor } from "./pages/SettingsView";
 
 type View = { readonly kind: "home" } | { readonly kind: "task"; readonly id: string } | { readonly kind: "place"; readonly place: Place };
@@ -80,6 +83,9 @@ export default function App() {
   const { width: windowWidth, resizing } = useWindowWidth();
 
   const [view, setView] = useState<View>({ kind: "home" });
+  // Internet is chosen per task and always starts off (docs/EGRESS.md).
+  const [internet, setInternet] = useState<InternetDraft>(INTERNET_OFF);
+  const [internetOpen, setInternetOpen] = useState(false);
   const [quality, setQuality] = useState<QualityChoice>(readQuality);
   const tier: EffectsTier = quality === "auto" ? core.recommendedTier : quality;
   const animated = !systemReducedMotion && tier !== "minimal";
@@ -251,7 +257,7 @@ export default function App() {
   const submit = async (title: string) => {
     setHanding(true);
     setAckTask("pending");
-    const [task] = await Promise.all([run("task", () => api.createTask(title)), wait(ACK_MIN_MS)]);
+    const [task] = await Promise.all([run("task", () => (internet.mode === "off" ? api.createTask(title) : api.createTask(title, toAccess(internet)))), wait(ACK_MIN_MS)]);
     setHanding(false);
     if (!task) {
       setAckTask(null);
@@ -260,6 +266,8 @@ export default function App() {
     }
     setCreated(task);
     setDraft("");
+    setInternet(INTERNET_OFF);
+    setInternetOpen(false);
     setFocused(false);
     setAckTask(task.id);
     setArriving(task.id);
@@ -411,9 +419,12 @@ export default function App() {
       disabled={!connected}
       busy={core.busy.task || handing}
       problem={core.errors.task ? `${core.errors.task.title} ${core.errors.task.hint ?? ""}`.trim() : null}
+      blocker={draftProblem(internet)}
+      panel={connected && internetOpen && <InternetPanel draft={internet} onChange={setInternet} onClose={() => setInternetOpen(false)} />}
       strip={connected && <ComposerStrip computer={computer} computerOpen={level !== null} onComputer={toggleComputer} />}
       controls={connected && (
         <ComposerControls modelReady={modelReady} modelName={modelName} setupLabel={setupLabel}
+          extra={<InternetChip draft={internet} open={internetOpen} onToggle={() => setInternetOpen((value) => !value)} />}
           onSafety={() => openPlace("settings", "security")} onModel={() => openPlace("settings", "intelligence")} />
       )}
     />
@@ -500,7 +511,8 @@ export default function App() {
                 </m.div>
               </AnimatePresence>
             </div>
-            <div className="workbar" data-empty={bar ? undefined : true}>
+            <div className="workbar" data-empty={bar || status?.internet?.active ? undefined : true}>
+              {status?.internet && <InternetIndicator internet={status.internet} />}
               <AnimatePresence mode="popLayout" initial={false}>
                 {bar === "composer" && waiting && (
                   <m.div key="needs-you" className="banner" data-tone="attention" role="status"

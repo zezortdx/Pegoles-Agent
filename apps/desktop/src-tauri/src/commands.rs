@@ -147,6 +147,9 @@ pub struct StatusPayload {
     pub input_available: bool,
     /// A deterministic agent sequence currently owns control.
     pub agent_busy: bool,
+    /// The task's internet session: mode, domains, counters, recent
+    /// decisions (host, verdict, reason code, bytes, time).
+    pub internet: pegoles_core::EgressStatus,
     /// Phase 4 computer surface: viewport_state, viewport_issue,
     /// display_available, display_config, display_backend,
     /// display_attached, graphical_session, control_owner,
@@ -371,6 +374,7 @@ fn status_of(state: &AppState, agent: &AgentSupervisor) -> StatusPayload {
         display_setup_error: state.display_error.clone(),
         input_available: state.registry.input_available(),
         agent_busy: state.registry.input_status().agent_busy,
+        internet: state.registry.egress_status(),
         view: state
             .registry
             .computer_view_for(computer_state, state.preparing_image),
@@ -893,13 +897,19 @@ pub async fn return_control(state: tauri::State<'_, SharedState>) -> Result<Comp
 
 // --- tasks (created pending; `run_task` starts the agent) ---
 
+/// Create a pending task. `internet` is the task's mode and domain
+/// strings and nothing else (no URLs, paths or endpoints); it is validated
+/// here, refused with a sentence if wrong, and only ever confirmed
+/// natively when the task runs. Absent means off.
 #[tauri::command]
 pub async fn create_task(
     state: tauri::State<'_, SharedState>,
     title: String,
+    internet: Option<pegoles_protocol::InternetAccess>,
 ) -> Result<AgentTask, String> {
+    let internet = internet.unwrap_or_default();
     with_state(state.inner().clone(), move |s| {
-        s.tasks.submit_task(&title).map_err(err)
+        s.tasks.submit_task_with_internet(&title, &internet)
     })
     .await
 }
@@ -1376,15 +1386,21 @@ pub async fn run_task(
     state: tauri::State<'_, SharedState>,
     agent: tauri::State<'_, AgentSupervisor>,
     local: tauri::State<'_, LocalModels>,
+    consent: tauri::State<'_, ConsentGate>,
     task_id: String,
 ) -> Result<(), String> {
     let task: pegoles_protocol::TaskId = task_id.parse().map_err(|_| "invalid task id")?;
     let shared = state.inner().clone();
     let agent = agent.inner().clone();
     let local = local.inner().clone();
+    // The native question for this task's internet (the webview cannot
+    // answer it); asked by the run, only if the task wants internet.
+    let gate = consent.inner().clone();
+    let confirm: pegoles_agent::InternetConfirm =
+        Arc::new(move |access| gate.0.allow_internet(access));
     tauri::async_runtime::spawn_blocking(move || {
         let bus = lock_state(&shared).bus.clone();
-        crate::agent::start_run(shared, bus, agent, local, task)
+        crate::agent::start_run_with(shared, bus, agent, local, task, Some(confirm))
     })
     .await
     .map_err(|e| format!("background task failed: {e}"))?
@@ -1473,12 +1489,15 @@ mod tests {
             "display_setup_error",
             "input_available",
             "agent_busy",
+            "internet",
         ] {
             assert!(v.get(key).is_some(), "missing {key}: {v}");
         }
         assert_eq!(v["viewport_state"], "off");
         assert_eq!(v["display_backend"], "unavailable");
         assert_eq!(v["control_owner"], "none");
+        assert_eq!(v["internet"]["active"], false);
+        assert_eq!(v["internet"]["mode"], "off");
         assert_eq!(v["graphical_session"]["state"], "unavailable");
         s.registry.create_default().unwrap();
         s.registry.start().unwrap();

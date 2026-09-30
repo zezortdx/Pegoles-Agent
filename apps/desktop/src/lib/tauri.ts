@@ -50,6 +50,46 @@ export interface StatusPayload {
   guest_ready_ms: number | null;
   input_available: boolean;
   agent_busy: boolean;
+  /** The running task's internet session (off unless the person allowed it for that task). */
+  internet?: InternetStatus;
+}
+
+/** How much of the internet one task may reach. Chosen per task; `off` by default. */
+export type InternetMode = "off" | "allowlist" | "open_web";
+
+/** What the composer sends: a mode and site names, nothing else. */
+export interface InternetAccess {
+  mode: InternetMode;
+  domains: string[];
+}
+
+/**
+ * One decision of Pegoles' proxy. `host` comes from the computer and is
+ * untrusted text (never markup). No paths, queries, headers or bodies.
+ */
+export interface EgressDecision {
+  task_id: string;
+  host: string;
+  allowed: boolean;
+  /** `allowed` or a stable deny code; `reasonText` words it. */
+  reason: string;
+  bytes: number;
+  /** Decisions dropped before this one because the UI was slow. */
+  dropped_before: number;
+  at: string;
+}
+
+export interface InternetStatus {
+  active: boolean;
+  task_id: string | null;
+  mode: InternetMode;
+  domains: string[];
+  allowed: number;
+  blocked: number;
+  /** Decisions not listed because the UI could not keep up. */
+  dropped: number;
+  /** Newest last. */
+  recent: EgressDecision[];
 }
 
 /**
@@ -200,6 +240,9 @@ export type AgentEvent =
       reason: string;
       at: string;
     }
+  | { type: "internet_opened"; task_id: string; mode: InternetMode; domains: string[]; at: string }
+  | { type: "internet_closed"; task_id: string; reason: string; at: string }
+  | { type: "internet_unavailable"; task_id: string; reason: string; at: string }
   | {
       type: "control_ownership_changed";
       computer_id: string;
@@ -215,6 +258,7 @@ export interface AgentTask {
   status: TaskStatusWire;
   created_at: string;
   updated_at: string;
+  internet?: InternetAccess;
 }
 
 export interface DisplayGeometry {
@@ -347,7 +391,9 @@ export interface SystemCheck {
 export type FixOutcome = "ready" | "restart_required" | "declined";
 
 export const api = {
-  createTask: (title: string) => invoke<AgentTask>("create_task", { title }),
+  /** `internet` is the task's mode and site names; Core validates it and the person confirms it natively when the task starts. */
+  createTask: (title: string, internet?: InternetAccess) =>
+    invoke<AgentTask>("create_task", { title, internet: internet ?? null }),
   listTasks: () => invoke<AgentTask[]>("list_tasks"),
   /** Start the agent on a pending task (it prepares its computer itself). */
   runTask: (taskId: string) => invoke<null>("run_task", { taskId }),

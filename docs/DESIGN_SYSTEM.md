@@ -137,8 +137,12 @@ the task).
 The agent's own notes appear in the task as plain text. There is no
 approval or follow-up command (the policy fails closed instead), no
 native live view (snapshots instead; taking over says why it isn't
-offered), and the computer has no network: starters and copy never
-promise web access or access to the Mac's files.
+offered), and the computer has no network unless the person allows it for
+one task: the composer's Internet chip (Off by default / Only these sites / Open
+web, with its warning) and, while a task is online, the indicator above the work
+bar (mode, sites, live allowed/blocked list in plain words) are the only places
+internet appears; starters and copy never promise web access or access to the
+Mac's files.
 
 ## 1. Philosophy
 

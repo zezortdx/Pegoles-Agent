@@ -7,10 +7,12 @@
  * reachable from production code paths.
  */
 import {
-  MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type AgentTask, type Intelligence, type LocalModelInfo, type ModelInstallStatus,
+  MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type AgentTask, type EgressDecision, type InternetAccess, type InternetStatus,
+  type Intelligence, type LocalModelInfo, type ModelInstallStatus,
   type ModelSettings, type OnboardingStep, type Provider, type StatusPayload, type SystemCheck,
 } from "../lib/tauri";
 import { installActive } from "../state/localModel";
+import { NO_INTERNET } from "../internet/model";
 
 export const SHELL_LAB_MARKER = "__PEGOLES_SHELL_LAB__";
 
@@ -25,7 +27,8 @@ type OnboardingScenario =
 
 type Scenario =
   | OnboardingScenario | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
-  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "image-setup" | "paused" | IntelligenceScenario;
+  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "image-setup" | "paused" | "online" | "online-open"
+  | IntelligenceScenario;
 
 const now = Date.now();
 const iso = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
@@ -35,7 +38,7 @@ const baseStatus: StatusPayload = {
   image_status: "ready", spec_os: "Debian 13", spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "unavailable",
   guest_ready_ms: null, viewport_state: "off", viewport_issue: null, display_available: false, display_attached: false,
   display_config: { width_px: 1440, height_px: 900 }, display_error: null, display_setup_error: null, control_owner: "none",
-  input_available: false, agent_busy: false, active_task: null,
+  input_available: false, agent_busy: false, active_task: null, internet: NO_INTERNET,
 };
 const running: Partial<StatusPayload> = {
   model: "configured", computer_created: true, computer_state: "running", computer_id: "vm-1", guest_state: "ready", guest_ready_ms: 4200,
@@ -69,6 +72,33 @@ const history: AgentTask[] = [
 
 interface World { status: StatusPayload; tasks: AgentTask[]; events: AgentEvent[]; failComputer?: string }
 
+/** The online scenarios: what Core's status carries while a task has internet. */
+const SITES = ["rust-lang.org", "doc.rust-lang.org", "crates.io"];
+function onlineAccess(scenario: Scenario): InternetAccess {
+  return scenario === "online-open" ? { mode: "open_web", domains: [] } : { mode: "allowlist", domains: SITES };
+}
+function onlineInternet(scenario: Scenario): InternetStatus {
+  const decision = (host: string, allowed: boolean, reason: string, bytes: number, ago: number): EgressDecision =>
+    ({ task_id: "t1", host, allowed, reason, bytes, dropped_before: 0, at: iso(ago) });
+  const recent = scenario === "online-open"
+    ? [
+        decision("www.rust-lang.org", true, "allowed", 48_200, 40),
+        decision("static.rust-lang.org", true, "allowed", 1_250_000, 34),
+        decision("ads.tracker-example.net", false, "threat_malware", 0, 28),
+        decision("downloads.example.org", false, "inspect_blocked_signature", 0, 20),
+        decision("files.example.org", false, "inspect_download_not_safe", 0, 12),
+        decision("blog.rust-lang.org", true, "allowed", 91_000, 4),
+      ]
+    : [
+        decision("www.rust-lang.org", true, "allowed", 48_200, 40),
+        decision("doc.rust-lang.org", true, "allowed", 310_400, 30),
+        decision("www.example.com", false, "mode_not_in_allowlist", 0, 18),
+        decision("crates.io", true, "allowed", 22_900, 6),
+      ];
+  const allowed = recent.filter((entry) => entry.allowed).length;
+  return { active: true, task_id: "t1", ...onlineAccess(scenario), allowed, blocked: recent.length - allowed, dropped: 0, recent };
+}
+
 function world(scenario: Scenario): World {
   const current = (status: AgentTask["status"], title = "Find duplicate files in Downloads and clean them up") => task("t1", title, status, 95);
   switch (scenario) {
@@ -86,6 +116,18 @@ function world(scenario: Scenario): World {
         ...action("t1", "observe_screen", {}, 50), ...action("t1", "scroll", { x: 0.5, y: 0.5, delta_x: 0, delta_y: 5 }, 46),
         note("t1", "progress", "Notion Plus is $10 per seat a month. Opening Obsidian’s pricing next.", 20),
         ...action("t1", "click", { x: 0.5, y: 0.08 }, 2, "running"),
+      ],
+    };
+    case "online":
+    case "online-open": return {
+      status: { ...baseStatus, ...running, viewport_state: "agent_active", control_owner: "agent", active_task: "t1", agent_busy: true, internet: onlineInternet(scenario) },
+      tasks: [...history, { ...current("running", "Find the current stable version of Rust and note what changed"), internet: onlineAccess(scenario) }],
+      events: [
+        note("t1", "progress", "Internet is on for this task. Opening the browser from the top panel.", 70),
+        ...action("t1", "click", { x: 0.06, y: 0.03 }, 66), ...action("t1", "observe_screen", {}, 60),
+        ...action("t1", "type_text", { text: "releases", sensitive: false }, 40), ...action("t1", "key_press", { key: "Return" }, 38),
+        ...action("t1", "observe_screen", {}, 30), ...action("t1", "scroll", { x: 0.5, y: 0.5, delta_x: 0, delta_y: 5 }, 20),
+        ...action("t1", "click", { x: 0.4, y: 0.3 }, 2, "running"),
       ],
     };
     case "thinking": return { status: { ...baseStatus, ...running, model: "configured" }, tasks: [...history, current("running")], events: [] };
@@ -538,7 +580,7 @@ export function installShellLab(hash: string): void {
     get_host_capabilities: () => ({ platform: "macos", architecture: "arm64", backend: "real", backend_available: true, backend_detail: "", guest_transport: "virtio_socket", guest_transport_available: true, required_setup: [], supported: true }),
     suggested_effects: () => ({ tier: "full" }),
     create_task: (args) => {
-      const created = task(`n${nextId++}`, String(args.title), "pending", 0);
+      const created = { ...task(`n${nextId++}`, String(args.title), "pending", 0), internet: (args.internet as InternetAccess | null) ?? undefined };
       state.tasks = [...state.tasks, created];
       state.events = [...state.events, { type: "task_created", task_id: created.id, title: created.title, at: created.created_at }];
       return created;

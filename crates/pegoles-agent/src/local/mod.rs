@@ -130,6 +130,8 @@ pub struct LocalPlanner {
     turn: u32,
     pub traces: Vec<StepTrace>,
     pub load: Option<LoadReport>,
+    /// The host's note that the computer has internet, if it does.
+    internet_note: Option<String>,
 }
 
 impl LocalPlanner {
@@ -138,6 +140,7 @@ impl LocalPlanner {
             cfg,
             backend,
             objective: String::new(),
+            internet_note: None,
             screen: None,
             screen_png: Arc::new(Vec::new()),
             screen_hash: 0,
@@ -242,6 +245,7 @@ impl LocalPlanner {
             omitted_steps: self.total_steps - self.history.len(),
             history: &history,
             hint,
+            internet: self.internet_note.as_deref(),
         });
         Ok(GenerateRequest {
             messages,
@@ -345,6 +349,10 @@ impl LocalPlanner {
 impl Planner for LocalPlanner {
     fn name(&self) -> String {
         format!("pegoles-local:{}", self.cfg.model.spec.id)
+    }
+
+    fn set_internet_note(&mut self, note: Option<String>) {
+        self.internet_note = note;
     }
 
     fn start(&mut self, objective: &str, screen: &Screenshot) -> Result<(), PlannerError> {

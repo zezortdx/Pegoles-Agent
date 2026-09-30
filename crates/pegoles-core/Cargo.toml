@@ -11,12 +11,14 @@ pegoles-protocol = { workspace = true }
 pegoles-guest-proto = { path = "../pegoles-guest-proto" }
 pegoles-computer = { workspace = true }
 pegoles-policy = { workspace = true }
+pegoles-egress = { path = "../pegoles-egress" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "macros"] }
 
 [dev-dependencies]
 tempfile = "3"
+pegoles-egress-proto = { path = "../pegoles-egress-proto" }

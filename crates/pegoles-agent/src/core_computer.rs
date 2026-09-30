@@ -8,13 +8,17 @@
 //! lock released between them, so status polling, guest heartbeats and
 //! cancellation never stall behind an agent run.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use pegoles_core::{CancellationToken, ComputerRegistry, EventBus, TaskManager};
+use pegoles_core::{
+    validate_internet, CancellationToken, ComputerRegistry, EventBus, TaskManager,
+    HANDSHAKE_TIMEOUT,
+};
 use pegoles_policy::PolicyContext;
 use pegoles_protocol::{
     ActionId, ActionOutcome, ActionRequest, ActionResult, AgentEvent, ComputerAction, ComputerId,
-    ComputerState, ControlOwner, Decision, GuestRuntimeState, TaskId, TaskStatus,
+    ComputerState, ControlOwner, Decision, GuestRuntimeState, InternetAccess, TaskId, TaskStatus,
 };
 
 use crate::planner::Screenshot;
@@ -24,6 +28,19 @@ use crate::runner::AgentComputer;
 /// primitives (about 2 s of paced keystrokes), not the 30-60 s a full
 /// `MAX_TYPE_CHARS` action takes.
 pub const TYPE_CHARS_PER_LOCK: usize = 4 * pegoles_computer::input::TYPE_SLICE_CHARS;
+
+/// The person's native confirmation for a task's internet access. Runs on
+/// the run's thread with Core unlocked, may block on a dialog. `Ok(false)`
+/// (declined) and `Err` (could not ask) both leave the task offline.
+pub type InternetConfirm = Arc<dyn Fn(&InternetAccess) -> Result<bool, String> + Send + Sync>;
+
+/// What a task asked for and how it gets confirmed (docs/EGRESS.md).
+#[derive(Clone)]
+pub struct InternetPlan {
+    pub task: TaskId,
+    pub access: InternetAccess,
+    pub confirm: InternetConfirm,
+}
 
 /// Exclusive access to Core. Implementations recover a poisoned lock and
 /// keep their own bookkeeping (e.g. event history) in sync afterwards.
@@ -41,6 +58,9 @@ pub struct CoreComputer<A: CoreAccess> {
     last_act: std::sync::Mutex<Option<Instant>>,
     /// Budget for create/start + guest runtime readiness.
     pub prepare_timeout: Duration,
+    /// Budget for the guest to answer once the internet channel is open.
+    pub internet_timeout: Duration,
+    internet: Option<InternetPlan>,
 }
 
 impl<A: CoreAccess> CoreComputer<A> {
@@ -51,7 +71,77 @@ impl<A: CoreAccess> CoreComputer<A> {
             ctx: PolicyContext::default(),
             last_act: std::sync::Mutex::new(None),
             prepare_timeout: Duration::from_secs(180),
+            internet_timeout: HANDSHAKE_TIMEOUT,
+            internet: None,
         }
+    }
+
+    /// This run's task asked for internet: confirm it natively, then open
+    /// it once the agent holds the computer. Without a plan (or with mode
+    /// off) nothing is ever asked or opened.
+    pub fn with_internet(mut self, plan: InternetPlan) -> Self {
+        self.internet = Some(plan);
+        self
+    }
+
+    /// Ask the person (before the computer boots, Core unlocked). `None`
+    /// keeps the task offline, after telling the person why.
+    fn confirm_internet(&self) -> Option<InternetAccess> {
+        let plan = self.internet.as_ref().filter(|p| !p.access.is_off())?;
+        let access = match validate_internet(&plan.access) {
+            Ok((access, _)) => access,
+            Err(why) => return self.offline(plan.task, &why),
+        };
+        match (plan.confirm)(&access) {
+            Ok(true) => Some(access),
+            Ok(false) => self.offline(plan.task, "it was not confirmed in the Pegoles window"),
+            Err(why) => self.offline(plan.task, &why),
+        }
+    }
+
+    /// Open the confirmed session and wait (Core unlocked) for the guest.
+    /// Any failure: closed again, the task runs offline and says so.
+    fn open_internet(&self, task: TaskId, access: &InternetAccess, cancel: &CancellationToken) {
+        // Quick steps under Core's lock, every wait outside it (the helper
+        // and the guest can take seconds; Core must stay usable).
+        let opened = self
+            .access
+            .with_core(|r, _| r.egress_prepare(task, access))
+            .and_then(|mut opening| {
+                let endpoint = opening.wait();
+                self.access
+                    .with_core(|r, _| r.egress_install(opening, endpoint))
+            });
+        let result = opened.and_then(|handshake| handshake.wait(cancel, self.internet_timeout));
+        if let Err(why) = result {
+            self.access
+                .with_core(|r, _| r.egress_close("the internet channel did not come up"));
+            if !cancel.is_cancelled() {
+                self.offline(task, &why);
+            }
+        }
+    }
+
+    /// The task runs offline although internet was asked for.
+    fn offline(&self, task: TaskId, why: &str) -> Option<InternetAccess> {
+        let why: String = why
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(300)
+            .collect();
+        let at = chrono::Utc::now();
+        self.bus.publish(AgentEvent::InternetUnavailable {
+            task_id: task,
+            reason: why.clone(),
+            at,
+        });
+        self.bus.publish(AgentEvent::AgentMessage {
+            task_id: task,
+            kind: pegoles_protocol::AgentMessageKind::Progress,
+            text: format!("Internet access is off for this task: {why}. It continues offline."),
+            at,
+        });
+        None
     }
 
     /// Keep input at or below the executor's rate brake (sleeping with
@@ -159,6 +249,7 @@ enum Readiness {
 
 impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
     fn prepare(&self, cancel: &CancellationToken) -> Result<(), String> {
+        let internet = self.confirm_internet();
         // Create / boot / resume as needed (one lifecycle call per lock).
         self.access.with_core(|r, _| -> Result<(), String> {
             if !r.is_created() {
@@ -222,7 +313,11 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
             r.begin_agent_session(&mut out)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-        })
+        })?;
+        if let (Some(access), Some(plan)) = (internet, self.internet.as_ref()) {
+            self.open_internet(plan.task, &access, cancel);
+        }
+        Ok(())
     }
 
     fn observe(&self, task: TaskId, cancel: &CancellationToken) -> Result<Screenshot, String> {
@@ -328,7 +423,18 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
     fn publish(&self, event: AgentEvent) {
         self.bus.publish(event);
     }
+
+    fn internet(&self) -> Option<InternetAccess> {
+        let status = self.access.with_core(|r, _| r.egress_status());
+        status.active.then_some(InternetAccess {
+            mode: status.mode,
+            domains: status.domains,
+        })
+    }
 }
+
+#[cfg(test)]
+mod internet_tests;
 
 #[cfg(test)]
 mod tests {
