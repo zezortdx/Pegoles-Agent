@@ -23,11 +23,11 @@ use crate::Out;
 const CONNECT_TIMEOUT_MS: u32 = 2000;
 const RETRY: Duration = Duration::from_millis(250);
 
-fn guid(g: Guid) -> GUID {
+pub(super) fn guid(g: Guid) -> GUID {
     GUID::from_values(g.data1, g.data2, g.data3, g.data4)
 }
 
-fn wsa() -> Result<(), String> {
+pub(super) fn wsa() -> Result<(), String> {
     static ONCE: Once = Once::new();
     static mut OK: bool = false;
     ONCE.call_once(|| {
@@ -57,7 +57,7 @@ pub struct GuestLink {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-fn try_connect(vm: GUID, service: GUID) -> Option<SOCKET> {
+pub(super) fn try_connect(vm: GUID, service: GUID) -> Option<SOCKET> {
     // SAFETY: plain socket creation.
     let sock = match unsafe { socket(AF_HYPERV as i32, SOCK_STREAM, HV_PROTOCOL_RAW as i32) } {
         Ok(sock) => sock,

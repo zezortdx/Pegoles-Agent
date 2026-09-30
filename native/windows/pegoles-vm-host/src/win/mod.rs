@@ -2,6 +2,7 @@
 //! the serial pipe, behind the platform-free [`Machine`] trait.
 
 mod broker;
+mod egress;
 mod link;
 mod serial;
 mod util;
@@ -18,6 +19,10 @@ use crate::Out;
 struct Running {
     link: link::GuestLink,
     serial: Option<serial::SerialPump>,
+    /// The VM's runtime GUID (the HvSocket peer id).
+    runtime_id: String,
+    /// The one egress stream, while the app holds it.
+    egress: Option<egress::EgressBridge>,
 }
 
 pub struct WinMachine {
@@ -61,6 +66,10 @@ impl WinMachine {
 
     fn stop_links(&mut self, id: &str) {
         if let Some(mut running) = self.running.remove(id) {
+            // Egress first: it is the only path out of the guest.
+            if let Some(bridge) = running.egress.take() {
+                bridge.close();
+            }
             running.link.close();
             if let Some(serial) = running.serial.as_mut() {
                 serial.close();
@@ -112,7 +121,15 @@ impl Machine for WinMachine {
             }
             return Err(e);
         }
-        self.running.insert(id, Running { link, serial });
+        self.running.insert(
+            id,
+            Running {
+                link,
+                serial,
+                runtime_id,
+                egress: None,
+            },
+        );
         Ok(())
     }
 
@@ -156,6 +173,31 @@ impl Machine for WinMachine {
     fn guest_kick(&mut self, id: &str) {
         if let Some(running) = self.running.get(id) {
             running.link.kick("kicked");
+        }
+    }
+
+    fn egress_open(&mut self, id: &str, endpoint: &str) -> Result<(), String> {
+        let out = self.out.clone();
+        let Some(running) = self.running.get_mut(id) else {
+            return Err("the computer is not running".into());
+        };
+        // A bridge that ended by itself has already told the app.
+        if running.egress.as_ref().is_some_and(|b| b.is_open()) {
+            return Err("an egress stream is already open".into());
+        }
+        running.egress = None;
+        let bridge = egress::EgressBridge::open(id, &running.runtime_id, endpoint, out)?;
+        running.egress = Some(bridge);
+        Ok(())
+    }
+
+    fn egress_close(&mut self, id: &str) {
+        if let Some(bridge) = self
+            .running
+            .get_mut(id)
+            .and_then(|running| running.egress.take())
+        {
+            bridge.close();
         }
     }
 

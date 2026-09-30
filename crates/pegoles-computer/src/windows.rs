@@ -474,6 +474,15 @@ impl ComputerBackend for WindowsHcsBackend {
         self.engine
             .input_capture_frame_cancellable(request_id, timeout, cancelled)
     }
+    fn open_egress(&mut self) -> Result<crate::egress::EgressEndpoint> {
+        self.engine.backend_open_egress()
+    }
+    fn begin_open_egress(&mut self) -> Result<Box<dyn crate::egress::PendingEgressOpen>> {
+        self.engine.backend_begin_open_egress()
+    }
+    fn close_egress(&mut self) -> Result<()> {
+        self.engine.backend_close_egress()
+    }
 }
 
 impl crate::transport::GuestTransport for WindowsHcsBackend {

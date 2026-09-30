@@ -9,6 +9,7 @@ pub mod computer_store;
 pub mod config;
 pub mod coords;
 pub mod display;
+pub mod egress;
 pub mod error;
 pub mod governor;
 pub mod guest;
@@ -33,6 +34,10 @@ pub use display::{
     ComputerDisplayBackend, DisplayAttachment, DisplayBackendKind, DisplayEvent, DisplayGeometry,
     DisplayPresentation, DisplayRect, GeometryError, TestDisplay, TestDisplayCall,
     TestDisplayState, UnavailableDisplay, MAX_GEOMETRY_ANIMATION_MS,
+};
+pub use egress::{
+    EgressEndpoint, PendingEgressOpen, ReadyEgress, EGRESS_ACCEPT_TIMEOUT, EGRESS_HELPER_TIMEOUT,
+    EGRESS_VSOCK_PORT,
 };
 pub use error::{ComputerError, Result};
 pub use governor::{
@@ -61,6 +66,8 @@ pub use input::{
     PressedState, TestInput, UnavailableInput, WindowsInputStub,
 };
 pub use macos::MacOSVirtualizationBackend;
+#[cfg(unix)]
+pub use mock::EgressPeerHandle;
 pub use mock::MockComputerBackend;
 pub use pegoles_guest_proto::MAX_FRAME_BYTES as GUEST_FRAME_MAX_BYTES;
 pub use pegoles_guest_proto::{CapabilityDiagnostic, GUEST_CAP_FRAME, GUEST_CAP_INPUT};

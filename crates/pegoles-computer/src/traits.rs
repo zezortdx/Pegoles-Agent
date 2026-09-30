@@ -179,4 +179,30 @@ pub trait ComputerBackend: Send + Sync {
     ) -> Result<crate::input::CapturedFrame> {
         self.input_capture_frame(request_id, timeout)
     }
+    // --- egress stream (docs/EGRESS.md). Defaults: not supported. ---
+    /// Open the one egress byte stream to the guest's forwarder. The
+    /// backend creates the local endpoint first, asks the VM host helper
+    /// to connect it to the guest (vsock port 4051), accepts exactly one
+    /// connection (10 s) and returns it. The stream carries the mux
+    /// protocol; everything on it is untrusted guest data. At most one
+    /// stream per computer; a second call fails until `close_egress`.
+    fn open_egress(&mut self) -> Result<crate::egress::EgressEndpoint> {
+        Err(crate::error::ComputerError::UnsupportedOperation(
+            "egress is not supported by this backend".to_string(),
+        ))
+    }
+    /// First half of [`open_egress`](Self::open_egress) for callers that
+    /// hold a lock: validate, create the local endpoint and send the
+    /// helper's command, without waiting for anything (short, bounded).
+    /// The returned handle waits for the helper's answer and the guest's
+    /// connection and needs no access to the backend, so the caller can
+    /// wait with its lock released. Default: opens synchronously.
+    fn begin_open_egress(&mut self) -> Result<Box<dyn crate::egress::PendingEgressOpen>> {
+        Ok(Box::new(crate::egress::ReadyEgress(self.open_egress()?)))
+    }
+    /// Tell the helper to close the egress stream (idempotent). Also
+    /// happens implicitly on stop, destroy and reset.
+    fn close_egress(&mut self) -> Result<()> {
+        Ok(())
+    }
 }

@@ -457,6 +457,40 @@ mod tests {
         assert_eq!(vm["Chipset"]["Uefi"]["BootThis"]["DeviceType"], "ScsiDrive");
     }
 
+    /// The egress stream (docs/EGRESS.md) is the guest forwarder listening
+    /// on vsock port 4051, i.e. HvSocket service
+    /// `00000fd3-facb-11e6-bd58-64006a7986d3`. The document applies its two
+    /// default descriptors (SYSTEM + the user) to every service and lists
+    /// none individually, so that service is reachable by the helper with
+    /// no document change; and still no network adapter exists.
+    #[test]
+    fn the_egress_service_needs_no_document_change_and_there_is_still_no_network() {
+        let s = spec();
+        let text = hcs_document(&s, &s.disk, SID);
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let hv = doc["VirtualMachine"]["Devices"]["HvSocket"]["HvSocketConfig"]
+            .as_object()
+            .unwrap();
+        let mut keys: Vec<&String> = hv.keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "DefaultBindSecurityDescriptor",
+                "DefaultConnectSecurityDescriptor"
+            ]
+        );
+        for forbidden in [
+            "ServiceTable",
+            "NetworkAdapters",
+            "NetworkAdapter",
+            "Network",
+        ] {
+            assert!(!text.contains(forbidden), "document mentions {forbidden}");
+        }
+        assert_eq!(format!("{:08x}", 4051), "00000fd3");
+    }
+
     #[test]
     fn responses_are_one_bounded_line() {
         let long = Response::fail("hcs", "é".repeat(600));

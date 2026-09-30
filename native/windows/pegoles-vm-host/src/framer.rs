@@ -113,4 +113,13 @@ mod tests {
         assert!(Guid::parse("not-a-guid").is_none());
         assert!(Guid::parse("0f8fad5b-d9cb-469f-a165-70867728950e").is_some());
     }
+
+    #[test]
+    fn the_egress_service_guid_is_port_4051() {
+        let text =
+            pegoles_computer::hyperv_service_guid_for_port(pegoles_computer::EGRESS_VSOCK_PORT);
+        let g = Guid::parse(&text).unwrap();
+        assert_eq!((g.data1, g.data2), (4051, 0xfacb));
+        assert_eq!(g.data4, [0xbd, 0x58, 0x64, 0x00, 0x6a, 0x79, 0x86, 0xd3]);
+    }
 }

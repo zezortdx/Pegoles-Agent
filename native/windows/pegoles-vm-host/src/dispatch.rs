@@ -25,6 +25,12 @@ pub trait Machine {
     fn guest_connected(&self, id: &str) -> bool;
     /// Drop the guest connection (the link reconnects on its own).
     fn guest_kick(&mut self, id: &str);
+    /// Connect the guest's egress listener (HvSocket, vsock port 4051) and
+    /// bridge it to the app's named pipe. One stream per computer; an
+    /// error if one is already open or the guest is not listening.
+    fn egress_open(&mut self, id: &str, endpoint: &str) -> Result<(), String>;
+    /// Close the egress stream (idempotent). No event: the app asked.
+    fn egress_close(&mut self, id: &str);
     /// Stop everything (stdin closed).
     fn shutdown(&mut self);
 }
@@ -54,6 +60,10 @@ impl Machine for Unavailable {
         false
     }
     fn guest_kick(&mut self, _: &str) {}
+    fn egress_open(&mut self, _: &str, _: &str) -> Result<(), String> {
+        Err("not on Windows".into())
+    }
+    fn egress_close(&mut self, _: &str) {}
     fn shutdown(&mut self) {}
 }
 
@@ -274,6 +284,40 @@ impl<M: Machine> Host<M> {
                 self.machine.guest_kick(&computer_id);
                 ok(id, None)
             }
+            HostCommand::EgressOpen {
+                computer_id,
+                endpoint,
+            } => {
+                let Some(entry) = self.computers.get(&computer_id) else {
+                    return fail(id, HostErrorCode::UnknownComputer, "no such computer");
+                };
+                // Only the app's own pipe, exactly `pegoles-egress-<uuid>`.
+                if !pegoles_computer::egress::is_egress_pipe_name(&endpoint) {
+                    return fail(
+                        id,
+                        HostErrorCode::InvalidParams,
+                        "the egress endpoint must be \\\\.\\pipe\\pegoles-egress-<uuid>",
+                    );
+                }
+                if entry.state != VmState::Running {
+                    return fail(
+                        id,
+                        HostErrorCode::EgressFailed,
+                        "the computer is not running",
+                    );
+                }
+                match self.machine.egress_open(&computer_id, &endpoint) {
+                    Ok(()) => ok(id, None),
+                    Err(e) => fail(id, HostErrorCode::EgressFailed, e),
+                }
+            }
+            HostCommand::EgressClose { computer_id } => {
+                if !self.computers.contains_key(&computer_id) {
+                    return fail(id, HostErrorCode::UnknownComputer, "no such computer");
+                }
+                self.machine.egress_close(&computer_id);
+                ok(id, None)
+            }
         }
     }
 
@@ -323,6 +367,7 @@ mod tests {
     struct Fake {
         calls: Vec<String>,
         fail_boot: bool,
+        egress: bool,
     }
 
     impl Machine for Arc<Mutex<Fake>> {
@@ -356,6 +401,20 @@ mod tests {
         }
         fn guest_kick(&mut self, id: &str) {
             self.lock().unwrap().calls.push(format!("kick {id}"));
+        }
+        fn egress_open(&mut self, id: &str, endpoint: &str) -> Result<(), String> {
+            let mut f = self.lock().unwrap();
+            if f.egress {
+                return Err("an egress stream is already open".into());
+            }
+            f.egress = true;
+            f.calls.push(format!("egress_open {id} {endpoint}"));
+            Ok(())
+        }
+        fn egress_close(&mut self, id: &str) {
+            let mut f = self.lock().unwrap();
+            f.egress = false;
+            f.calls.push(format!("egress_close {id}"));
         }
         fn shutdown(&mut self) {}
     }
@@ -534,6 +593,93 @@ mod tests {
             .all(|l| l.contains("\"event\":\"vm_state_changed\"")));
         // Running, Paused, Running, Stopped, Running (destroy forgets silently).
         assert_eq!(text.lines().count(), 5);
+    }
+
+    #[test]
+    fn egress_needs_a_running_computer_and_the_apps_own_pipe_name() {
+        let (mut h, fake, _, dir) = host();
+        let pipe = format!(r"\\.\pipe\pegoles-egress-{ID}");
+        let open = |id, endpoint: &str| {
+            req(
+                id,
+                HostCommand::EgressOpen {
+                    computer_id: ID.into(),
+                    endpoint: endpoint.into(),
+                },
+            )
+        };
+        let code = |r: HostResponse| r.error.map(|e| e.code);
+        assert_eq!(
+            code(h.handle(open(1, &pipe))),
+            Some(HostErrorCode::UnknownComputer)
+        );
+        assert!(
+            h.handle(req(
+                2,
+                HostCommand::Create {
+                    params: params(&dir.0)
+                }
+            ))
+            .ok
+        );
+        // Created but not running.
+        assert_eq!(
+            code(h.handle(open(3, &pipe))),
+            Some(HostErrorCode::EgressFailed)
+        );
+        assert!(
+            h.handle(req(
+                4,
+                HostCommand::Start {
+                    computer_id: ID.into()
+                }
+            ))
+            .ok
+        );
+        for bad in [
+            r"\\.\pipe\pegoles-serial-0f8fad5b-d9cb-469f-a165-70867728950e",
+            r"\\.\pipe\pegoles-egress-..\..\x",
+            r"\\attacker\pipe\pegoles-egress-0f8fad5b-d9cb-469f-a165-70867728950e",
+            r"C:\Users\me\egress",
+            "/tmp/egress/x/s",
+            "",
+        ] {
+            assert_eq!(
+                code(h.handle(open(5, bad))),
+                Some(HostErrorCode::InvalidParams),
+                "{bad}"
+            );
+        }
+        assert!(!fake
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|c| c.starts_with("egress")));
+        assert!(h.handle(open(6, &pipe)).ok);
+        // At most one stream per computer.
+        assert_eq!(
+            code(h.handle(open(7, &pipe))),
+            Some(HostErrorCode::EgressFailed)
+        );
+        let close = |id| {
+            req(
+                id,
+                HostCommand::EgressClose {
+                    computer_id: ID.into(),
+                },
+            )
+        };
+        assert!(h.handle(close(8)).ok);
+        assert!(h.handle(close(9)).ok, "idempotent");
+        assert!(h.handle(open(10, &pipe)).ok);
+        let unknown = h.handle(req(
+            11,
+            HostCommand::EgressClose {
+                computer_id: "other".into(),
+            },
+        ));
+        assert_eq!(code(unknown), Some(HostErrorCode::UnknownComputer));
     }
 
     #[test]
