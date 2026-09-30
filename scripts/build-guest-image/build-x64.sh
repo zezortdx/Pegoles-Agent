@@ -62,6 +62,9 @@ echo "source verified; work disk $(wc -c < "$OUT/work.raw" | tr -d ' ') bytes"
 
 # --- 2. guest binaries and packages ------------------------------------------
 bash "$HERE/build-runtime.sh" "$OUT/runtime"
+# Guest end of the egress channel (images x64-0.2+); picked up by
+# make-seed-iso.sh and patch-image.sh.
+export PEGOLES_FORWARDER_BIN="$OUT/runtime/pegoles-egress-forwarder"
 bash "$HERE/build-fixture.sh" "$OUT/fixture"
 bash "$HERE/build-deb-bundle.sh" "$OUT/debs"
 bash "$HERE/make-seed-iso.sh" "$OUT/runtime/pegoles-guest-runtime" "$OUT/fixture/pegoles-input-fixture" \
@@ -125,6 +128,9 @@ PY
   | sort > "$OUT/packages.txt"
 [ -s "$OUT/packages.txt" ] || { echo "could not read the package list" >&2; exit 1; }
 grep -qE '^linux-image-[0-9].* amd64$' "$OUT/packages.txt" || { echo "no amd64 kernel in the image" >&2; exit 1; }
+grep -qE '^chromium [^ ]+ amd64$' "$OUT/packages.txt" || { echo "no chromium in the image" >&2; exit 1; }
+! grep -qE '^chromium-sandbox ' "$OUT/packages.txt" || { echo "chromium-sandbox (setuid) must not be installed" >&2; exit 1; }
+# TODO(x64-0.2): commit packages.txt as manifests/pegoles-base-x64-0.2.packages.txt.
 
 # --- 5. VHDX + manifest ------------------------------------------------------------
 rm -f "$OUT/disk.vhdx"
@@ -148,6 +154,7 @@ manifest = {
     'guest_transport': 'listen (vsock 850, hv_sock)',
     'source': {'url': url, 'sha512': source_sha},
     'graphical': {'compositor': f"weston {pick('weston')}", 'terminal': f"foot {pick('foot')}"},
+    'browser': {'chromium': pick('chromium'), 'proxy': '127.0.0.1:3128 (managed policy, docs/EGRESS.md)'},
     'disk_raw': {'bytes': os.path.getsize(os.path.join(out, 'disk.raw')), 'sha512': digest(os.path.join(out, 'disk.raw'))},
     'disk_vhdx': {'bytes': os.path.getsize(os.path.join(out, 'disk.vhdx')), 'sha512': digest(os.path.join(out, 'disk.vhdx'))},
     'packages': len(packages),

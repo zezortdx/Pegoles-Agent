@@ -1,0 +1,61 @@
+# Guest end of the egress channel (docs/EGRESS.md): listens on AF_VSOCK 4051
+# for the host and, while the host holds the channel, on TCP 127.0.0.1:3128
+# for Chromium. It is its own system user: the agent's user (pegoles) can
+# neither signal it nor read its memory, and it can write exactly ONE file:
+# the managed-policy file that carries the per-session CA certificate.
+#
+# CONTRACT with the binary: /etc/chromium/policies/managed is root:root 0755,
+# so the forwarder cannot create, rename or delete files there. It must write
+# /etc/chromium/policies/managed/pegoles-egress-ca.json IN PLACE (open without
+# O_CREAT/rename, truncate, one write of complete JSON) and, when the channel
+# closes, reset it to {"CACertificates": []} instead of removing it.
+[Unit]
+Description=Pegoles egress forwarder (vsock 4051 to local proxy 127.0.0.1:3128)
+After=systemd-user-sessions.service
+# Never let a crash loop leave the unit permanently failed.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pegoles-egress
+Group=pegoles-egress
+ExecStart=/usr/local/lib/pegoles/pegoles-egress-forwarder
+Restart=always
+RestartSec=1s
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+# A file path, not the directory: a directory would let the service drop
+# other policy files that Chromium would load.
+ReadWritePaths=/etc/chromium/policies/managed/pegoles-egress-ca.json
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# IP sockets: loopback only (the IPAddress filter does not cover AF_VSOCK).
+RestrictAddressFamilies=AF_VSOCK AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+LimitNOFILE=512
+MemoryMax=96M
+# 2 threads per stream (64 streams) + session + accept, with headroom for
+# streams still flushing to a TCP client.
+TasksMax=256
