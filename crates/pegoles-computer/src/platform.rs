@@ -302,33 +302,44 @@ pub fn host_capabilities() -> HostCapabilities {
             }
         }
         HostPlatform::Windows => {
-            let probe = crate::windows::probe_windows_host();
-            match probe {
-                Ok(caps) => HostCapabilities {
-                    platform,
-                    architecture,
-                    backend: BackendKind::WindowsHcs,
-                    backend_available: false,
-                    backend_detail: format!(
-                        "WindowsHcsBackend skeleton only (state: {:?})",
-                        caps.state
-                    ),
-                    guest_transport: GuestTransportKind::HyperVSocket,
-                    guest_transport_available: false,
-                    required_setup: caps.setup_steps(),
-                    supported: false,
-                },
-                Err(e) => HostCapabilities {
-                    platform,
-                    architecture,
-                    backend: BackendKind::WindowsHcs,
-                    backend_available: false,
-                    backend_detail: format!("Windows probe failed: {e}"),
-                    guest_transport: GuestTransportKind::HyperVSocket,
-                    guest_transport_available: false,
-                    required_setup: vec![format!("Fix Windows probing: {e}")],
-                    supported: false,
-                },
+            let r = crate::windows::readiness();
+            let ready =
+                r.state == crate::windows::VirtualizationReadiness::Ready && r.broker_installed;
+            let mut required_setup = Vec::new();
+            match r.state {
+                crate::windows::VirtualizationReadiness::Ready if !r.broker_installed => {
+                    required_setup
+                        .push("Install Pegoles again: its VM service is missing".to_string())
+                }
+                crate::windows::VirtualizationReadiness::Ready => {}
+                crate::windows::VirtualizationReadiness::NeedsEnable => required_setup
+                    .push("Turn on virtualization (Pegoles can do it from its setup)".to_string()),
+                crate::windows::VirtualizationReadiness::RestartPending => required_setup
+                    .push("Restart Windows once to finish turning on virtualization".to_string()),
+                crate::windows::VirtualizationReadiness::FirmwareDisabled => required_setup.push(
+                    "Enable Intel VT-x / AMD-V in this PC's firmware (BIOS/UEFI) settings"
+                        .to_string(),
+                ),
+                crate::windows::VirtualizationReadiness::Unsupported => {
+                    required_setup.push("This PC can't run Pegoles' computer".to_string())
+                }
+                crate::windows::VirtualizationReadiness::Unknown => {
+                    required_setup.push(format!("Check virtualization: {}", r.technical))
+                }
+            }
+            HostCapabilities {
+                platform,
+                architecture,
+                backend: BackendKind::WindowsHcs,
+                backend_available: ready,
+                backend_detail: format!(
+                    "Host Compute System on Virtual Machine Platform ({})",
+                    r.technical
+                ),
+                guest_transport: GuestTransportKind::HyperVSocket,
+                guest_transport_available: ready,
+                required_setup,
+                supported: ready,
             }
         }
         HostPlatform::Linux => HostCapabilities {
@@ -379,8 +390,9 @@ mod tests {
     #[test]
     fn macos_paths_use_application_support() {
         let root = resolve_root(HostPlatform::MacOS, "/home/testuser", None, None, None);
+        // Separators are the test host's own (this also runs on Windows).
         assert_eq!(
-            root.to_string_lossy(),
+            root.to_string_lossy().replace('\\', "/"),
             "/home/testuser/Library/Application Support/Pegoles"
         );
         let paths = PegolesPaths { root };
@@ -428,9 +440,10 @@ mod tests {
             None,
             Some("/home/ana/.xdg/data".to_string()),
         );
-        assert_eq!(root.to_string_lossy(), "/home/ana/.xdg/data/pegoles");
+        let unix = |p: std::path::PathBuf| p.to_string_lossy().replace('\\', "/");
+        assert_eq!(unix(root), "/home/ana/.xdg/data/pegoles");
         let fallback = resolve_root(HostPlatform::Linux, "/home/ana", None, None, None);
-        assert_eq!(fallback.to_string_lossy(), "/home/ana/.local/share/pegoles");
+        assert_eq!(unix(fallback), "/home/ana/.local/share/pegoles");
     }
 
     #[test]
@@ -476,11 +489,11 @@ mod tests {
     fn no_silent_mock_fallback() {
         // A gated-out backend kind returns an explicit error from the
         // factory — production failure stays a failure, never a Mock.
-        let tmp = tempfile::tempdir().unwrap();
-        let images = tmp.path().join("images");
-        let computers = tmp.path().join("computers");
         #[cfg(not(target_os = "windows"))]
         {
+            let tmp = tempfile::tempdir().unwrap();
+            let images = tmp.path().join("images");
+            let computers = tmp.path().join("computers");
             let err = match create_backend(BackendKind::WindowsHcs, images, computers) {
                 Ok(_) => panic!("WindowsHcs must not construct off Windows"),
                 Err(e) => e,

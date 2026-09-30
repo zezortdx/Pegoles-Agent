@@ -50,6 +50,46 @@ export interface StatusPayload {
   guest_ready_ms: number | null;
   input_available: boolean;
   agent_busy: boolean;
+  /** The running task's internet session (off unless the person allowed it for that task). */
+  internet?: InternetStatus;
+}
+
+/** How much of the internet one task may reach. Chosen per task; `off` by default. */
+export type InternetMode = "off" | "allowlist" | "open_web";
+
+/** What the composer sends: a mode and site names, nothing else. */
+export interface InternetAccess {
+  mode: InternetMode;
+  domains: string[];
+}
+
+/**
+ * One decision of Pegoles' proxy. `host` comes from the computer and is
+ * untrusted text (never markup). No paths, queries, headers or bodies.
+ */
+export interface EgressDecision {
+  task_id: string;
+  host: string;
+  allowed: boolean;
+  /** `allowed` or a stable deny code; `reasonText` words it. */
+  reason: string;
+  bytes: number;
+  /** Decisions dropped before this one because the UI was slow. */
+  dropped_before: number;
+  at: string;
+}
+
+export interface InternetStatus {
+  active: boolean;
+  task_id: string | null;
+  mode: InternetMode;
+  domains: string[];
+  allowed: number;
+  blocked: number;
+  /** Decisions not listed because the UI could not keep up. */
+  dropped: number;
+  /** Newest last. */
+  recent: EgressDecision[];
 }
 
 /**
@@ -200,6 +240,9 @@ export type AgentEvent =
       reason: string;
       at: string;
     }
+  | { type: "internet_opened"; task_id: string; mode: InternetMode; domains: string[]; at: string }
+  | { type: "internet_closed"; task_id: string; reason: string; at: string }
+  | { type: "internet_unavailable"; task_id: string; reason: string; at: string }
   | {
       type: "control_ownership_changed";
       computer_id: string;
@@ -215,6 +258,7 @@ export interface AgentTask {
   status: TaskStatusWire;
   created_at: string;
   updated_at: string;
+  internet?: InternetAccess;
 }
 
 export interface DisplayGeometry {
@@ -283,6 +327,8 @@ export interface LocalRuntime {
   readonly chip: string | null;
   readonly memory_bytes: number;
   readonly apple_silicon: boolean;
+  /** This computer can run Pegoles Local at all (Apple silicon Mac, x64 PC). */
+  readonly host_supported: boolean;
 }
 
 /** Everything about who plans, as Core reports it. Never contains a secret. */
@@ -297,8 +343,57 @@ export interface Intelligence {
 /** Emitted ~4×/s while downloading and on every phase change. */
 export const MODEL_INSTALL_EVENT = "pegoles://model-install";
 
+/** The first-run screens, in order. */
+export type OnboardingStep = "welcome" | "how" | "check" | "setup" | "intelligence" | "ready";
+
+/** Where the person is in onboarding (Core persists it across restarts). */
+export interface OnboardingState {
+  readonly version: number;
+  readonly step: OnboardingStep;
+  readonly completed: boolean;
+  /** They chose to restart Windows to finish turning virtualization on. */
+  readonly restart_requested: boolean;
+}
+
+export type VirtualizationState =
+  | "ready" | "needs_enable" | "restart_pending" | "firmware_disabled" | "unsupported" | "unknown";
+export type AccelerationKind = "metal" | "cuda" | "vulkan" | "cpu" | "none";
+
+/** What Core found about this computer (facts; the UI words them). */
+/** A saved diagnostic report: its file, the folder it went to (home as ~) and its text. */
+export interface DiagnosticReport {
+  readonly file_name: string;
+  readonly location: string;
+  readonly text: string;
+}
+
+export interface SystemCheck {
+  readonly platform: "macos" | "windows" | "linux";
+  readonly os_name: string;
+  readonly os_supported: boolean;
+  readonly os_minimum: string;
+  readonly architecture: "arm64" | "x86_64";
+  readonly architecture_supported: boolean;
+  readonly virtualization: { readonly state: VirtualizationState; readonly fixable: boolean; readonly technical: string };
+  readonly memory_bytes: number;
+  readonly memory_minimum_bytes: number;
+  readonly memory_recommended_bytes: number;
+  readonly disk_free_bytes: number | null;
+  readonly disk_needed_bytes: number;
+  readonly acceleration: { readonly kind: AccelerationKind; readonly device: string | null; readonly technical: string };
+  readonly runtime_ready: boolean;
+  readonly runtime_problem: string | null;
+  readonly model_ready: boolean;
+  readonly image_ready: boolean;
+}
+
+/** After asking Windows to turn virtualization on. */
+export type FixOutcome = "ready" | "restart_required" | "declined";
+
 export const api = {
-  createTask: (title: string) => invoke<AgentTask>("create_task", { title }),
+  /** `internet` is the task's mode and site names; Core validates it and the person confirms it natively when the task starts. */
+  createTask: (title: string, internet?: InternetAccess) =>
+    invoke<AgentTask>("create_task", { title, internet: internet ?? null }),
   listTasks: () => invoke<AgentTask[]>("list_tasks"),
   /** Start the agent on a pending task (it prepares its computer itself). */
   runTask: (taskId: string) => invoke<null>("run_task", { taskId }),
@@ -352,6 +447,16 @@ export const api = {
   cancelAgentInput: () => invoke("cancel_agent_input"),
   captureScreen: () =>
     invoke<{ meta: FrameMetaWire; png_base64: string }>("capture_screen"),
+  getOnboarding: () => invoke<OnboardingState>("get_onboarding"),
+  setOnboardingStep: (step: OnboardingStep) => invoke<OnboardingState>("set_onboarding_step", { step }),
+  finishOnboarding: () => invoke<OnboardingState>("finish_onboarding"),
+  systemCheck: () => invoke<SystemCheck>("system_check"),
+  /** Windows only: asks for administrator approval in Windows' own prompt. */
+  fixVirtualization: () => invoke<FixOutcome>("fix_virtualization"),
+  /** Windows only: restarts the PC (after the person pressed "Restart now"). */
+  restartToFinishSetup: () => invoke<null>("restart_to_finish_setup"),
+  /** Saves a technical report (no screenshots, tasks, keys or files) in Downloads. */
+  saveDiagnosticReport: () => invoke<DiagnosticReport>("save_diagnostic_report"),
 };
 
 type WireAction = { type: string; [k: string]: unknown };

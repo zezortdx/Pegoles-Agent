@@ -37,6 +37,10 @@ export interface ComposerProps {
   readonly strip?: ReactNode;
   /** How it will run, beside the send button (safety rules, model). Facts you can open, never fake choices. */
   readonly controls?: ReactNode;
+  /** A choice that opens above the field (e.g. internet for this task). */
+  readonly panel?: ReactNode;
+  /** Why the task can't be handed over yet (an incomplete choice in the panel). Blocks sending. */
+  readonly blocker?: string | null;
 }
 
 /**
@@ -47,14 +51,14 @@ export interface ComposerProps {
  */
 export function Composer({
   value, onChange, onSubmit, onFocusChange, onKeystroke, inputRef, placeholder,
-  disabled = false, busy = false, problem, strip, controls,
+  disabled = false, busy = false, problem, strip, controls, panel, blocker,
 }: ComposerProps) {
   const [field, setField] = useState<HTMLTextAreaElement | null>(null);
   const [focused, setFocused] = useState(false);
   const normalized = normalizeTitle(value);
   const invalid = titleProblem(normalized);
   const length = [...normalized].length;
-  const canSend = !disabled && !busy && length > 0 && !invalid;
+  const canSend = !disabled && !busy && length > 0 && !invalid && !blocker;
 
   useLayoutEffect(() => {
     if (!field) return;
@@ -69,9 +73,11 @@ export function Composer({
   }, [inputRef]);
 
   const focus = (next: boolean) => { setFocused(next); onFocusChange?.(next); };
-  const message = invalid ?? problem ?? null;
+  const hint = invalid ?? (length > 0 ? blocker : null) ?? null;
+  const message = hint ?? problem ?? null;
   return (
     <div className="composer-shell" data-focused={focused || undefined} data-disabled={disabled || undefined}>
+      {panel}
       {strip && <div className="composer__strip">{strip}</div>}
       <form
         className="composer"
@@ -122,7 +128,7 @@ export function Composer({
           </button>
         </div>
       </form>
-      {message && <p id="composer-message" className="composer__message" role={invalid ? "status" : "alert"}>{message}</p>}
+      {message && <p id="composer-message" className="composer__message" role={hint ? "status" : "alert"}>{message}</p>}
     </div>
   );
 }

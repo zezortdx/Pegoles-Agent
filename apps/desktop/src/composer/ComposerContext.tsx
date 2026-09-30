@@ -1,6 +1,8 @@
+import type { ReactNode } from "react";
 import type { ComputerModel } from "../state/computerModel";
 import { MachineScreen } from "../computer/MachineScreen";
 import { AlertCircleIcon, ModelIcon, ShieldIcon } from "../ui/icons";
+import { HOST } from "../lib/host";
 
 export interface ComposerStripProps {
   readonly computer: ComputerModel;
@@ -18,7 +20,7 @@ export function ComposerStrip({ computer, computerOpen, onComputer }: ComposerSt
         <span className="strip-item__label">Pegoles Computer</span>
         <span className="strip-item__state" data-phase={computer.phase}>{computer.chip}</span>
       </button>
-      <span className="strip-note">Isolated from your Mac</span>
+      <span className="strip-note">Isolated from your {HOST}</span>
     </>
   );
 }
@@ -30,10 +32,12 @@ export interface ComposerControlsProps {
   readonly setupLabel?: string;
   readonly onSafety: () => void;
   readonly onModel: () => void;
+  /** Another choice between the safety rules and the model (internet for this task). */
+  readonly extra?: ReactNode;
 }
 
 /** How the job runs: the fixed safety rules and the model, as facts you can open. */
-export function ComposerControls({ modelReady, modelName, setupLabel, onSafety, onModel }: ComposerControlsProps) {
+export function ComposerControls({ modelReady, modelName, setupLabel, onSafety, onModel, extra }: ComposerControlsProps) {
   const missing = setupLabel ? `${setupLabel.replace(/…$/, "")}. Open settings` : "No model connected. Open settings";
   return (
     <>
@@ -41,6 +45,7 @@ export function ComposerControls({ modelReady, modelName, setupLabel, onSafety, 
         <ShieldIcon size={14} />
         <span>Stays inside its computer</span>
       </button>
+      {extra}
       <button type="button" className="composer-chip" data-tone={modelReady ? undefined : "attention"} onClick={onModel}
         aria-label={modelReady ? `Model: ${modelName ?? "connected"}` : missing}>
         {modelReady ? <ModelIcon size={14} /> : <AlertCircleIcon size={14} />}

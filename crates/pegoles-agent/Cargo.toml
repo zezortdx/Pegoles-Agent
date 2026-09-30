@@ -25,5 +25,6 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 png = { workspace = true }
 tempfile = "3"
+pegoles-egress-proto = { path = "../pegoles-egress-proto" }
 tokio = { workspace = true }
 proptest = { workspace = true }

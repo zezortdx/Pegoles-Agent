@@ -7,6 +7,7 @@
 pub mod display;
 #[cfg(test)]
 mod display_tests;
+pub mod egress;
 pub mod error;
 pub mod events;
 pub mod input;
@@ -16,6 +17,9 @@ pub mod viewport;
 
 pub use display::{
     default_display_config, ComputerView, DisplayBounds, GeometryOutcome, GEOMETRY_EPSILON_PX,
+};
+pub use egress::{
+    validate_internet, EgressHandshake, EgressKill, EgressOpening, EgressStatus, HANDSHAKE_TIMEOUT,
 };
 pub use error::{CoreError, Result};
 pub use events::EventBus;

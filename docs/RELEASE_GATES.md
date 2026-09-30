@@ -80,6 +80,46 @@ tree and runs only when `PEGOLES_BINARY_RELEASES` is enabled.
 | Native consent for cloud planner and key | PASS (logic) | `consent.rs` tests with an injected decider and the decline backoff |
 | Lifecycle / resource soak | PASS | `release_soak`: 12 VM lifecycles, 1200 observations, 60 inferences with 2 forced worker kills; nothing left after each destroy |
 
+## Windows gates (0.2 candidate, in progress)
+
+For the first Windows release (a future `v0.2.0-rc.1`). **Nothing below is
+PASS on consumer hardware**: the project has no Windows PC yet. CI rows run
+on GitHub's Windows Server 2025 runners (real Windows and Hyper-V, nested,
+as an administrator), which is evidence for the code, not for a consumer
+PC.
+
+| # | Gate | Status | Evidence / what it needs |
+|---|---|---|---|
+| W1 | Windows crates build, lint and test on Windows | PASS (CI) | `ci.yml` job `windows`, run 36346739833: clippy `-D warnings` and 502 tests across the 11 Windows crates, 0 failures (fixes it forced: host path separators in tests, the model store renaming a folder with an open file, the desktop test binary missing its Common Controls manifest) |
+| W2 | Webview has no network under WebView2 | PASS (CI) | `webview_egress_probe` on Windows: without the switches the page reached the listeners (33 TCP connections, 353 UDP packets); with them 0 and 0, while IPC worked and the navigation was blocked |
+| W3 | Installer builds; silent per-machine install registers the broker; uninstall leaves nothing | PASS (CI) | `windows-installer`, run 36355971256: `Pegoles-Setup-x64.exe` built from source (llama.cpp with Vulkan and CPU backends, app-local Visual C++ runtime), installed with `/S` into Program Files, `PegolesVmBroker` registered (LocalSystem, demand start; interactive users may only query and start it), its pipe served; the silent uninstall removed the service and every file (the step itself then failed on a PowerShell exit-code detail, fixed in the next commit). Unsigned |
+| W4 | HCS VM boots through the helper and the broker (empty disk) | PASS (CI) | `windows-guest-boot`, run 36351594759: the release broker registered as a service from Program Files, the unprivileged helper created and started a UEFI VM, it reported running, destroy left no compute system |
+| W5 | Model worker confined (AppContainer + job object) | PASS (CI) | `a_confined_worker_cannot_read_files_reach_the_network_or_start_processes` on Windows: unconfined, a stand-in worker reads a user file, reaches a loopback listener and starts a process; confined, all three fail. The installed llama.cpp worker starts inside its AppContainer and job from Program Files and answers `hello` (`the_real_worker_starts_confined`, run 36355971256). Two fixes it forced: the AppContainer environment needs the profile variables, and the worker must start detached (no console) |
+| W6 | x64 guest image built and provisioned from pinned inputs | PASS (CI) | `guest-image-x64` (KVM): 515 packages, weston 14.0.2-1, foot 1.21.0-2, listen mode on the kernel command line, Hyper-V drivers in the initramfs; the same image boots under QEMU/UEFI with weston, the runtime and the workspace terminal started |
+| W7 | The agent operates a booted x64 guest end to end (agent E2E) | PASS (CI) | `agent_e2e` on Windows: the product orchestrator, Core's executor and Pegoles Policy drove the CI-built x64 guest through the helper, the broker and HCS (run 36355971256): guest ready 30.3 s after VM start; a click, typing and Enter painted a red block verified in a fresh frame (140,400 red pixels); scroll, double-click and drag changed the screen; a cancel was honored in 42 ms; a forged out-of-screen click was blocked by policy; the guest runtime killed inside the guest was back in 4.2 s; a second boot was ready in 32.4 s; observe p50 0.69 s / p95 1.16 s (nested virtualization). Two fixes it forced: the helper needs `SystemRoot` for Winsock; the guest needs Hyper-V's synthetic display for its DRM seat |
+| W8 | x64 image published with pins in `catalog/images.json` | NOT DONE | Publishing a release asset needs the owner's approval |
+| W9 | Local model quality on the GGUF path (MAI-UI-2B Q8_0, llama.cpp) | PASS on macOS (Metal), not on Windows | `local_bench` on the real VM: 17/22 goals, the same as MLX 6-bit; 0 % invalid outputs; worker peak 2.4 GB (`benchmarks/local-models/README.md`, `results-gguf.json`) |
+| W10 | Consumer PC end to end: Windows 11 Home and Pro, standard user, virtualization off → onboarding turns it on → restart → resume → first task | NOT RUN | A Windows 11 PC (Home and Pro), ideally one with an NVIDIA/AMD GPU and one CPU-only |
+| W11 | Performance on Windows (CPU and Vulkan step latency, memory) | PARTIAL (CI, CPU only) | Windows Server runner, 4 vCPU, no GPU: 84–94 s per generation (image encoding and prefill 81–90 s), 11 tokens/s, worker peak 3.9 GB, inside the sandbox. Consumer CPUs and Vulkan GPUs: not measured (needs the PCs of W10) |
+| W12 | Authenticode signing of the installer and binaries | DEFERRED | A certificate: SignPath Foundation (free for OSS, application needed) or Azure Artifact Signing (individual accounts: US/Canada only today) |
+| W13 | SmartScreen / Smart App Control with a signed build | NOT RUN | Follows W12; unsigned builds are blocked by Smart App Control and warned by SmartScreen, and Pegoles never asks anyone to turn either off |
+| W14 | WinGet | DRAFT | `packaging/winget/` (not submitted; needs a published release) |
+
+### macOS regression checks on the 0.2 branch
+
+On the test Mac (M4 Pro, 24 GB), 2026-09-27: `scripts/check.sh` green
+(frontend, fmt, clippy, every workspace test, Swift helper);
+`webview_egress_probe` unchanged (contained 0 TCP / 0 UDP); `local_bench`
+MLX control 4/6 on a six-task subset; `local_e2e` (the desktop code
+driving the MLX worker and the real VM): Stop 2.3 s, worker killed and
+recovered, clean teardown, no internet sockets, in every run. Its first
+task ("create hello.txt containing pegoles local, then cat it") was
+verified in the guest in 0 of 5 runs on the branch and 1 of 3 runs of
+`main` built the same day: the 2B model sometimes types the text as a
+command or omits the redirect. The planner and the MLX request path are
+byte-identical to `main` (the worker's stream helpers only moved), so this
+is recorded as model variance, not a regression.
+
 ## Supply chain and provenance
 
 | Item | Status | Evidence |

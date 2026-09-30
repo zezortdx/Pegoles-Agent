@@ -10,6 +10,15 @@ RUST_IMAGE="rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4
 DEBIAN_IMAGE="debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a"
 export RUST_IMAGE DEBIAN_IMAGE
 
+# Guest architecture: arm64 (macOS, Virtualization.framework; default) or
+# amd64 (Windows, Hyper-V). PEGOLES_GUEST_ARCH selects it for every step.
+case "${PEGOLES_GUEST_ARCH:-arm64}" in
+  arm64) GUEST_ARCH=arm64 DOCKER_PLATFORM=linux/arm64 RUST_TARGET=aarch64-unknown-linux-gnu ;;
+  amd64) GUEST_ARCH=amd64 DOCKER_PLATFORM=linux/amd64 RUST_TARGET=x86_64-unknown-linux-gnu ;;
+  *) echo "PEGOLES_GUEST_ARCH must be arm64 or amd64" >&2; return 1 ;;
+esac
+export GUEST_ARCH DOCKER_PLATFORM RUST_TARGET
+
 # out_dir [path]: print the directory a build step writes its products to.
 # No path: a fresh private directory (mktemp -d, mode 0700); its path is
 # printed so it can be handed to the next step. An explicit path is created

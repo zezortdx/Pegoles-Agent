@@ -199,6 +199,11 @@ impl ComputerRegistry {
         self.display.control
     }
 
+    /// The agent (not the human) holds the computer right now.
+    pub(crate) fn agent_controls(&self) -> bool {
+        self.display.control == ControlOwner::Agent
+    }
+
     /// Native view confirmed attached for the current computer.
     pub fn display_attached(&self) -> bool {
         match (self.display.link, self.current_id()) {
@@ -435,6 +440,7 @@ impl ComputerRegistry {
     pub fn pump(&mut self) -> Vec<AgentEvent> {
         let mut out = self.pump_guest();
         self.drain_display_events(&mut out);
+        self.egress_reconcile();
         let state = self.state();
         self.reconcile_display(state, &mut out);
         out

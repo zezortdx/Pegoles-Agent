@@ -129,7 +129,7 @@ describe("Intelligence settings: Pegoles Local", () => {
 
   it("is honest when this Mac can't run it, and never offers a setup that can't work", async () => {
     vi.mocked(api.getIntelligence).mockResolvedValue(intelligenceOf({
-      local: { apple_silicon: false, runtime_ready: false, runtime_problem: "Pegoles Local needs a Mac with Apple silicon.", chip: null },
+      local: { apple_silicon: false, host_supported: false, runtime_ready: false, runtime_problem: "Pegoles Local needs a Mac with Apple silicon.", chip: null },
     }));
     render(<Harness />);
     expect(await screen.findByText("Pegoles Local needs a Mac with Apple silicon. You can still use a cloud model.")).toBeTruthy();

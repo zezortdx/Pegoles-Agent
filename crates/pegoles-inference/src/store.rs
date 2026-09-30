@@ -409,9 +409,13 @@ impl ModelStore {
         let raw =
             serde_json::to_vec_pretty(&manifest).map_err(|e| StoreError::Io(e.to_string()))?;
         let mpath = staging.join(MANIFEST_NAME);
-        let mut out = fs::File::create(&mpath).map_err(io)?;
-        out.write_all(&raw).map_err(io)?;
-        out.sync_all().map_err(io)?;
+        {
+            // Closed before the directory is renamed: Windows refuses to
+            // rename a directory with an open file inside.
+            let mut out = fs::File::create(&mpath).map_err(io)?;
+            out.write_all(&raw).map_err(io)?;
+            out.sync_all().map_err(io)?;
+        }
         let verified = match self.verify_dir(spec, staging) {
             Ok(v) => v,
             Err(e) => {
@@ -576,9 +580,8 @@ fn fetch_file(
     progress: &mut dyn FnMut(u64),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<String, StoreError> {
-    use std::os::unix::fs::OpenOptionsExt;
     // Never through a symlink, for reading or appending.
-    let open = |opts: &mut fs::OpenOptions| opts.custom_flags(libc::O_NOFOLLOW).open(part);
+    let open = |opts: &mut fs::OpenOptions| open_no_follow(opts, part);
     let mut hasher = Sha256::new();
     let mut have: u64 = 0;
     if let Ok(mut existing) = open(fs::OpenOptions::new().read(true)) {
@@ -640,6 +643,25 @@ fn fetch_file(
 }
 
 #[cfg(unix)]
+fn open_no_follow(opts: &mut fs::OpenOptions, path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    opts.custom_flags(libc::O_NOFOLLOW).open(path)
+}
+
+/// Opens the link itself (`FILE_FLAG_OPEN_REPARSE_POINT`) and refuses it,
+/// so a planted symlink or junction is never followed.
+#[cfg(windows)]
+fn open_no_follow(opts: &mut fs::OpenOptions, path: &Path) -> std::io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let file = opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::other("refusing a link in the model store"));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
 pub fn free_disk_bytes(path: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let mut probe = path.to_path_buf();
@@ -653,7 +675,23 @@ pub fn free_disk_bytes(path: &Path) -> Option<u64> {
     (rc == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn free_disk_bytes(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut probe = path.to_path_buf();
+    while !probe.exists() {
+        probe = probe.parent()?.to_path_buf();
+    }
+    let wide: Vec<u16> = probe.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut available = 0u64;
+    // SAFETY: NUL-terminated path; the out-param lives across the call.
+    unsafe { GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut available), None, None) }.ok()?;
+    Some(available)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn free_disk_bytes(_path: &Path) -> Option<u64> {
     None
 }
@@ -707,6 +745,8 @@ pub(crate) mod tests {
             pegoles_min_version: "0.1.0".into(),
             recommended_min_ram_gb: None,
             published: "2026-01-01".into(),
+            format: crate::catalog::ModelFormat::Mlx,
+            gguf: None,
             files: files
                 .iter()
                 .map(|(p, b)| ModelFile {
@@ -834,7 +874,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let res = store.install(&s, &fetcher, &mut |_| {}, &|| false);
-        assert!(matches!(res, Err(StoreError::Corrupted { .. })));
+        assert!(matches!(res, Err(StoreError::Corrupted { .. })), "{res:?}");
         assert_ne!(store.state(&s), InstallState::Installed);
         assert!(!tmp.path().join("models/test-model").exists());
         // The corrupt part file was deleted: a retry starts from zero.

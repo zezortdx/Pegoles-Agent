@@ -1,10 +1,12 @@
 /*
- * AgentCursor — THE AGENT's pointer, drawn in its own overlay layer.
+ * AgentCursor — THE AGENT's pointer, drawn in its own overlay layer above
+ * the computer preview (never baked into the screenshot).
  *
- * Positions are written by AgentCursorController as `transform` on the
- * nodes below (never through React). CSS here only owns looks, state
- * visibility (data-state) and short opacity transitions. The layer never
- * takes pointer events: the human's input always goes through.
+ * Positions are written by AgentCursorController as `transform` (never
+ * through React). CSS owns looks, per-state emphasis (data-state) and short
+ * opacity transitions. The layer never takes pointer events. Colours are
+ * the mark's: white and silver light, a dark hairline so the pointer also
+ * reads on light guest content.
  */
 
 .pgc-layer {
@@ -15,23 +17,46 @@
   contain: strict;
   z-index: 1;
   --pgc-ease: var(--pg-ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+  --pgc-scale: 1;
 }
 
 .pgc-pointer,
-.pgc-trail,
-.pgc-ripple,
-.pgc-drag {
+.pgc-pulse,
+.pgc-drag,
+.pgc-scroll {
   position: absolute;
   left: 0;
   top: 0;
 }
 
-/* Hotspot = element origin. */
+/* Hotspot = element origin. Emphasis per state, eased; motion is the controller's. */
 .pgc-pointer {
   width: 0;
   height: 0;
   opacity: 1;
-  transition: opacity 180ms var(--pgc-ease);
+  transition: opacity 140ms var(--pgc-ease);
+}
+
+.pgc-layer[data-state="hidden"] .pgc-pointer {
+  opacity: 0;
+  transition-duration: 90ms;
+}
+
+/* Looking at its screen: present, subdued. */
+.pgc-layer[data-state="observing"] .pgc-pointer {
+  opacity: 0.72;
+}
+
+/* Between actions (planning the next step, a wait): quieter, after a beat. */
+.pgc-layer[data-state="thinking"] .pgc-pointer {
+  opacity: 0.5;
+  transition: opacity 480ms var(--pgc-ease) 320ms;
+}
+
+/* The task finished: it rests where it last acted, out of the way. */
+.pgc-layer[data-state="done"] .pgc-pointer {
+  opacity: 0.3;
+  transition: opacity 700ms var(--pgc-ease) 250ms;
 }
 
 .pgc-body {
@@ -39,104 +64,111 @@
   left: 0;
   top: 0;
   transform-origin: 0 0;
+  scale: var(--pgc-scale);
 }
 
 .pgc-glyph {
   position: absolute;
-  /* viewBox "-5 -5 24 27" at 1 unit = 1 px: tip (0,0) sits on the origin. */
-  left: -5px;
-  top: -5px;
-  width: 24px;
+  /* viewBox "-4 -4 22 27" at 1 unit = 1 px: the tip (0, 0) sits on the origin. */
+  left: -4px;
+  top: -4px;
+  width: 22px;
   height: 27px;
   overflow: visible;
+  /* The mark's soft white light, and a shadow that lifts it off light content. Static: rasterized once. */
+  filter: drop-shadow(0 0 3px rgb(255 255 255 / 0.42)) drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.55));
+  transition: transform 140ms var(--pgc-ease);
+  transform-origin: 4px 4px;
 }
 
-.pgc-layer[data-state="hidden"] .pgc-pointer,
-.pgc-layer[data-state="hidden"] .pgc-trail {
-  opacity: 0 !important;
+/* Held (mouse down, dragging): pressed in a little. */
+.pgc-layer[data-pressed] .pgc-glyph {
+  transform: scale(0.9);
 }
 
-/* Trail: small cyan sparks behind the pointer; opacity set per frame. */
-.pgc-trail {
-  width: 8px;
-  height: 8px;
-  margin: -4px 0 0 -4px;
-  border-radius: 50%;
-  background: radial-gradient(circle, #f4f7fc 0%, #4ccefc 45%, rgb(22 156 253 / 0) 72%);
-  opacity: 0;
+.pgc-layer[data-tier="minimal"] .pgc-glyph {
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.6));
 }
 
-/* Click ripple / refraction: a thin luminous ring (WAAPI drives it). */
-.pgc-ripple {
+/* Click: a thin ring of the mark's light at the exact click point (WAAPI
+ * drives it). Dark hairlines on both sides keep it visible on white pages. */
+.pgc-pulse {
   width: 28px;
   height: 28px;
   margin: -14px 0 0 -14px;
   border-radius: 50%;
-  border: 1.5px solid rgb(151 235 253 / 0.9);
+  border: 1.5px solid rgb(255 255 255 / 0.95);
   box-shadow:
-    0 0 10px rgb(22 156 253 / 0.55),
-    inset 0 0 6px rgb(76 206 252 / 0.45);
+    0 0 0 1px rgb(0 0 0 / 0.3),
+    inset 0 0 0 1px rgb(0 0 0 / 0.16),
+    0 0 12px rgb(255 255 255 / 0.4);
   opacity: 0;
 }
 
-/* Drag: a temporary direction path that fades after the drag ends. */
+/* Drag: the stroke itself, only while it happens, then a quick fade. The
+ * line is a 1 px box stretched with scaleX, so it carries no shadow (a blur
+ * would stretch with it): a light core between dark edges, faded toward the
+ * start by a mask. */
 .pgc-drag {
   width: 1px;
-  height: 2px;
-  margin-top: -1px;
+  height: 4px;
+  margin-top: -2px;
   transform-origin: 0 50%;
-  background: linear-gradient(90deg, rgb(76 206 252 / 0.05), rgb(151 235 253 / 0.85));
-  box-shadow: 0 0 6px rgb(22 156 253 / 0.6);
-  opacity: 0;
-  transition: opacity 420ms var(--pgc-ease);
-}
-
-/* Waiting: still, with a subtle attention ring (opacity breathing only). */
-.pgc-wait {
-  position: absolute;
-  left: -13px;
-  top: -13px;
-  width: 26px;
-  height: 26px;
+  background: linear-gradient(
+    180deg,
+    rgb(0 0 0 / 0) 0%,
+    rgb(0 0 0 / 0.22) 18%,
+    rgb(255 255 255 / 0.85) 38%,
+    rgb(255 255 255 / 0.85) 62%,
+    rgb(0 0 0 / 0.22) 82%,
+    rgb(0 0 0 / 0) 100%
+  );
+  -webkit-mask-image: linear-gradient(90deg, rgb(0 0 0 / 0.1), #000 70%);
+  mask-image: linear-gradient(90deg, rgb(0 0 0 / 0.1), #000 70%);
   opacity: 0;
   transition: opacity 260ms var(--pgc-ease);
 }
 
-.pgc-wait i {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  border: 1.5px solid rgb(76 206 252 / 0.75);
-  box-shadow: 0 0 12px rgb(22 156 253 / 0.45);
-  animation: pgc-attend 2400ms var(--pg-ease-ambient, cubic-bezier(0.37, 0, 0.63, 1)) infinite alternate;
+/* Scroll: a small double chevron beside the pointer, in the scroll's direction. */
+.pgc-scroll {
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  opacity: 0;
 }
 
-.pgc-layer[data-state="waiting"] .pgc-wait {
-  opacity: 1;
+.pgc-scroll svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: rgb(255 255 255 / 0.95);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.7));
 }
 
-/* Typing: a small ephemeral pill of three dots beside the pointer. */
+/* Typing: the pointer holds still; three small dots say keys are going in. */
 .pgc-typing {
   position: absolute;
-  left: 14px;
-  top: 16px;
+  left: 13px;
+  top: 17px;
   display: flex;
-  gap: 3px;
-  padding: 4px 6px;
+  gap: 2.5px;
+  padding: 3px 5px;
   border-radius: 999px;
-  background: rgb(7 11 20 / 0.82);
-  box-shadow:
-    0 0 0 1px rgb(22 156 253 / 0.55),
-    0 0 10px rgb(22 156 253 / 0.35);
+  background: rgb(10 11 13 / 0.78);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.28);
   opacity: 0;
-  transition: opacity 180ms var(--pgc-ease);
+  transition: opacity 160ms var(--pgc-ease);
 }
 
 .pgc-typing i {
-  width: 4px;
-  height: 4px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
-  background: #97ebfd;
+  background: rgb(255 255 255 / 0.92);
   animation: pgc-type 900ms ease-in-out infinite;
 }
 
@@ -152,18 +184,14 @@
   opacity: 1;
 }
 
-/* Gates: nothing loops while idle/hidden/offscreen; reduced motion and the
- * Minimal tier keep the ring and dots static (still visible = still readable). */
-.pgc-layer:not([data-state="waiting"]) .pgc-wait i,
+/* Gates: the dots loop only while typing and never while hidden; reduced
+ * motion and the Minimal tier keep them static (still visible = still readable). */
 .pgc-layer:not([data-state="typing"]) .pgc-typing i,
-[data-ambient="paused"] .pgc-wait i,
 [data-visibility="hidden"] .pgc-typing i {
   animation-play-state: paused;
 }
 
-.pgc-layer[data-rm="true"] .pgc-wait i,
 .pgc-layer[data-rm="true"] .pgc-typing i,
-.pgc-layer[data-tier="minimal"] .pgc-wait i,
 .pgc-layer[data-tier="minimal"] .pgc-typing i {
   animation: none;
 }
@@ -176,13 +204,11 @@
   opacity: 0.45;
 }
 
-@keyframes pgc-attend {
-  from {
-    opacity: 0.45;
-  }
-  to {
-    opacity: 1;
-  }
+/* Reduced motion: states change by a short fade only. */
+.pgc-layer[data-rm="true"] .pgc-pointer,
+.pgc-layer[data-rm="true"] .pgc-glyph {
+  transition-duration: 100ms;
+  transition-delay: 0ms;
 }
 
 @keyframes pgc-type {

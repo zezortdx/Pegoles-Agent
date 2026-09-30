@@ -25,7 +25,7 @@ mod sysinfo;
 #[cfg(target_os = "linux")]
 use pegoles_guest_proto::{
     encode_guest, parse_host_message, Framer, GuestMessage, HostMessage, MessageError,
-    GUEST_PROTOCOL_VERSION, PEGOLES_VSOCK_PORT, RUNTIME_VERSION,
+    GUEST_PROTOCOL_VERSION, RUNTIME_VERSION,
 };
 #[cfg(target_os = "linux")]
 use std::io::{BufReader, Read, Write};
@@ -34,31 +34,93 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 mod vsock {
-    use crate::connector::resolve_host_endpoint;
+    use crate::connector::GuestEndpoint;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-    /// AF_VSOCK connect to the resolved host endpoint from a RESERVED
-    /// source port. The host accepts only ports <= GUEST_SOURCE_PORT_MAX,
-    /// which Linux lets only CAP_NET_BIND_SERVICE holders bind: that
-    /// capability is what authenticates this process as the runtime.
-    pub fn connect(port: u32) -> std::io::Result<std::os::fd::OwnedFd> {
+    fn vm_addr(cid: u32, port: u32) -> libc::sockaddr_vm {
+        // SAFETY: sockaddr_vm is plain old data; zero is a valid value.
+        let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+        addr.svm_family = libc::AF_VSOCK as u16;
+        addr.svm_cid = cid;
+        addr.svm_port = port;
+        addr
+    }
+
+    /// Hyper-V: listen on the privileged port. Binding it needs
+    /// CAP_NET_BIND_SERVICE, which only the runtime's unit grants, so no
+    /// other guest process can stand in for the runtime. Close-on-exec.
+    pub fn listen(port: u32) -> std::io::Result<OwnedFd> {
+        // SAFETY: plain socket(2).
+        let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: fd is a fresh, owned socket.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        let local = vm_addr(libc::VMADDR_CID_ANY, port);
+        let len = std::mem::size_of::<libc::sockaddr_vm>() as u32;
+        // SAFETY: valid fd and a correctly sized sockaddr_vm.
+        let ret = unsafe {
+            libc::bind(
+                owned.as_raw_fd(),
+                &local as *const _ as *const libc::sockaddr,
+                len,
+            )
+        };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // One host at a time; a second connection waits (or replaces the
+        // first once it ends).
+        // SAFETY: valid, bound socket.
+        if unsafe { libc::listen(owned.as_raw_fd(), 1) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(owned)
+    }
+
+    /// Next host connection on a listener (blocks). Only the host can
+    /// reach a guest vsock listener; peers are checked by the caller.
+    pub fn accept(listener: &OwnedFd) -> std::io::Result<OwnedFd> {
+        let mut peer: libc::sockaddr_vm = vm_addr(0, 0);
+        let mut len = std::mem::size_of::<libc::sockaddr_vm>() as u32;
+        // SAFETY: valid listener, correctly sized out-parameter.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                &mut peer as *mut _ as *mut libc::sockaddr,
+                &mut len,
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: accept4 returned a new, owned descriptor.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        // Guests only ever hear from their host (CID 2) over hv_sock;
+        // anything else is refused.
+        if peer.svm_cid != libc::VMADDR_CID_HOST {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("vsock peer is not the host (cid {})", peer.svm_cid),
+            ));
+        }
+        Ok(owned)
+    }
+
+    /// AF_VSOCK connect to the host endpoint from a RESERVED source
+    /// port. The host accepts only ports <= GUEST_SOURCE_PORT_MAX, which
+    /// Linux lets only CAP_NET_BIND_SERVICE holders bind: that capability
+    /// is what authenticates this process as the runtime.
+    pub fn connect(endpoint: GuestEndpoint) -> std::io::Result<OwnedFd> {
         use pegoles_guest_proto::{GUEST_SOURCE_PORT_MAX, GUEST_SOURCE_PORT_MIN};
-        use std::os::fd::{AsRawFd, FromRawFd};
-        let endpoint = resolve_host_endpoint();
-        debug_assert_eq!(port, endpoint.port);
         let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) };
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: fd is a fresh, owned socket (or we return early above).
-        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        let vm_addr = |cid: u32, port: u32| {
-            // SAFETY: sockaddr_vm is plain old data; zero is a valid value.
-            let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
-            addr.svm_family = libc::AF_VSOCK as u16;
-            addr.svm_cid = cid;
-            addr.svm_port = port;
-            addr
-        };
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
         let len = std::mem::size_of::<libc::sockaddr_vm>() as u32;
         let mut bound = Err(std::io::Error::from(std::io::ErrorKind::AddrInUse));
         for source in (GUEST_SOURCE_PORT_MIN..=GUEST_SOURCE_PORT_MAX).rev() {
@@ -99,16 +161,44 @@ mod vsock {
     }
 }
 
+/// Where the next control connection comes from: dialled out to the
+/// host, or accepted from it on the privileged listener.
+#[cfg(target_os = "linux")]
+enum Link {
+    Dial(connector::GuestEndpoint),
+    Listen(std::os::fd::OwnedFd),
+}
+
+#[cfg(target_os = "linux")]
+impl Link {
+    fn open(mode: connector::Mode) -> std::io::Result<Self> {
+        Ok(match mode {
+            connector::Mode::Dial(endpoint) => Link::Dial(endpoint),
+            connector::Mode::Listen { port } => Link::Listen(vsock::listen(port)?),
+        })
+    }
+
+    fn next(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        match self {
+            Link::Dial(endpoint) => vsock::connect(*endpoint),
+            Link::Listen(listener) => vsock::accept(listener),
+        }
+    }
+}
+
 /// Connection wrapper: whatever ends the session (close, error,
 /// protocol violation), held guest input is released first so the
 /// compositor never keeps a stuck button or modifier.
 #[cfg(target_os = "linux")]
 fn serve_once(
+    link: &Link,
     device: &mut Option<input::device::AgentDevice>,
     open_error: &Option<String>,
     flips: &mut FlipBudget,
 ) -> std::io::Result<()> {
-    let result = serve_inner(device, open_error, flips);
+    let result = link
+        .next()
+        .and_then(|conn| serve_inner(conn, device, open_error, flips));
     if let Some(dev) = device.as_ref() {
         dev.release_all();
     }
@@ -317,12 +407,12 @@ fn execute_input(
 /// `flips` persists across connections (reconnect budget converges).
 #[cfg(target_os = "linux")]
 fn serve_inner(
+    owned: std::os::fd::OwnedFd,
     device: &mut Option<input::device::AgentDevice>,
     open_error: &Option<String>,
     flips: &mut FlipBudget,
 ) -> std::io::Result<()> {
     use std::os::fd::{FromRawFd, IntoRawFd};
-    let owned = vsock::connect(PEGOLES_VSOCK_PORT)?;
     let fd = owned.into_raw_fd();
     // SAFETY: fd is ours; wrap read + write halves separately via dup.
     let read_fd = unsafe { libc::dup(fd) };
@@ -588,6 +678,20 @@ fn main() {
     // it a bounded head start so the first hello can already advertise
     // frame capture (otherwise the host waits for a capability flip).
     wait_for_compositor(Duration::from_secs(15));
+    let args: Vec<String> = std::env::args().collect();
+    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let mode = connector::resolve_mode(&args, &cmdline);
+    // A listener that cannot be opened (no capability, no hv_sock) is
+    // retried: the unit restarts us, and the host sees no runtime.
+    let link = loop {
+        match Link::open(mode) {
+            Ok(link) => break link,
+            Err(e) => {
+                eprintln!("pegoles-guest-runtime: cannot open the control channel ({mode:?}): {e}");
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+    };
     // Capped backoff: 1,2,4,5,5…s. Retries continue while the
     // process lives; systemd Restart=on-failure covers real crashes.
     // Exit codes: 0 only on clean shutdown paths (none currently — the
@@ -611,7 +715,7 @@ fn main() {
             }
         }
         let started = std::time::Instant::now();
-        match serve_once(&mut device, &open_error, &mut flips) {
+        match serve_once(&link, &mut device, &open_error, &mut flips) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("pegoles-guest-runtime: connection failed: {e}");

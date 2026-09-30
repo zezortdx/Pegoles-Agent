@@ -789,6 +789,8 @@ fn qwen() -> VerifiedModel {
                 size: 1,
                 sha256: "0".repeat(64),
             }],
+            format: Default::default(),
+            gguf: None,
         },
         dir: "/nonexistent".into(),
         verify_ms: 0,

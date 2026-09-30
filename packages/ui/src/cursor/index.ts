@@ -1,41 +1,35 @@
 export {
   AgentCursorController,
-  CLICK_MS,
-  MAX_TRAIL_ELEMENTS,
-  RM_FADE_MS,
-  TRAIL_BY_TIER,
-  TRAIL_LAG_MS,
-  trailLengthFor,
+  CURSOR_STATES,
+  DOUBLE_GAP_MS,
+  PRESS_MS,
+  PULSE_MS,
+  RM_PULSE_MS,
+  SCROLL_CUE_MS,
   type AgentCursorControllerOptions,
   type AgentCursorElements,
-  type CursorTimers,
+  type CursorState,
   type FrameScheduler,
-  type CursorPoint,
 } from "./AgentCursorController.js";
 export { AgentCursorLayer, type AgentCursorHandle, type AgentCursorLayerProps } from "./AgentCursorLayer.js";
 export {
   AgentCursorOverlay,
   applyAgentCursorAction,
-  productionAgentCursorSource,
-  useAgentCursorSource,
+  silentAgentCursorSource,
   type AgentCursorAction,
   type AgentCursorOverlayProps,
   type AgentCursorSource,
-  type AgentCursorSourceBinding,
 } from "./agentCursorSource.js";
 export {
-  CURSOR_STATES,
-  canTransition,
-  transitionCursor,
-  type CursorEvent,
-  type CursorState,
-} from "./cursorMachine.js";
-export {
-  AGENT_CURSOR_SPRING,
-  SETTLE_DISTANCE,
-  SETTLE_SPEED,
-  isSettled,
-  stepSpring,
-  type SpringAxis,
-  type SpringConfig,
-} from "./spring.js";
+  DRAG_APPROACH_MAX_MS,
+  DRAG_MAX_MS,
+  DRAG_MIN_MS,
+  GLIDE,
+  dragDuration,
+  glideDuration,
+  sampleGlide,
+  startGlide,
+  type Glide,
+  type GlideSample,
+} from "./glide.js";
+export { clampUnit, containRect, frameRect, snapToDevice, toOverlay, type FrameFit, type Point, type Rect, type Size } from "./mapping.js";

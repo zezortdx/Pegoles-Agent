@@ -329,6 +329,8 @@
   box-shadow: inset 0 0 0 1px rgb(53 145 255 / 0.45);
 }
 .peek__image { width: 100%; height: 100%; object-fit: cover; }
+/* The agent cursor at peek scale: same pointer, smaller. */
+.peek__cursor { --pgc-scale: 0.75; }
 .peek__open {
   position: absolute;
   top: 6px;

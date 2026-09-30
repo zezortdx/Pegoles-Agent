@@ -214,6 +214,15 @@ impl ComputerBackend for MacOSVirtualizationBackend {
         self.engine
             .input_capture_frame_cancellable(request_id, timeout, cancelled)
     }
+    fn open_egress(&mut self) -> Result<crate::egress::EgressEndpoint> {
+        self.engine.backend_open_egress()
+    }
+    fn begin_open_egress(&mut self) -> Result<Box<dyn crate::egress::PendingEgressOpen>> {
+        self.engine.backend_begin_open_egress()
+    }
+    fn close_egress(&mut self) -> Result<()> {
+        self.engine.backend_close_egress()
+    }
 }
 
 impl crate::transport::GuestTransport for MacOSVirtualizationBackend {
@@ -535,6 +544,168 @@ mod tests {
         assert_eq!(info.os, "debian");
         assert_eq!(info.arch, "aarch64");
         assert_eq!(b.guest_info().map(|i| i.os), Some("debian".to_string()));
+    }
+
+    #[cfg(unix)]
+    mod egress_tests {
+        use super::*;
+        use std::io::{Read, Write};
+
+        fn egress_dir(tmp: &tempfile::TempDir) -> PathBuf {
+            tmp.path().join("egress")
+        }
+
+        fn leftovers(tmp: &tempfile::TempDir) -> usize {
+            std::fs::read_dir(egress_dir(tmp))
+                .map(|d| d.count())
+                .unwrap_or(0)
+        }
+
+        #[test]
+        fn open_egress_bridges_bytes_and_allows_one_stream() {
+            let (tmp, mut b, id, fake) = ready_backend();
+            let cid = id.to_string();
+            let mut ep = b.open_egress().unwrap();
+            // The helper was told exactly one endpoint, inside the data folder.
+            let sent = fake.lock().sent.clone();
+            let line = sent.iter().find(|l| l.contains("egress_open")).unwrap();
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(v["computer_id"], cid.as_str());
+            assert!(crate::egress::is_egress_socket_path(
+                tmp.path(),
+                Path::new(v["endpoint"].as_str().unwrap())
+            ));
+            // The endpoint is gone once accepted; bytes flow both ways.
+            assert_eq!(leftovers(&tmp), 0);
+            let mut peer = fake.lock().egress_peers.remove(&cid).unwrap();
+            peer.write_all(b"from guest").unwrap();
+            let mut buf = [0u8; 10];
+            ep.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"from guest");
+            ep.write_all(b"to guest").unwrap();
+            let mut buf = [0u8; 8];
+            peer.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"to guest");
+            fake.lock().egress_peers.insert(cid.clone(), peer);
+            // At most one stream per computer.
+            let err = b.open_egress().unwrap_err();
+            assert!(err.to_string().contains("already open"), "{err}");
+            b.close_egress().unwrap();
+            assert!(fake.lock().egress_peers.is_empty());
+            assert!(fake.lock().sent.iter().any(|l| l.contains("egress_close")));
+            b.close_egress().unwrap(); // idempotent, no second helper call
+            assert_eq!(
+                fake.lock()
+                    .sent
+                    .iter()
+                    .filter(|l| l.contains("egress_close"))
+                    .count(),
+                1
+            );
+            let _again = b.open_egress().unwrap();
+        }
+
+        #[test]
+        fn a_slow_helper_answer_does_not_block_other_backend_calls() {
+            let (_tmp, mut b, _id, fake) = ready_backend();
+            fake.lock().egress_reply_delay = Some(std::time::Duration::from_millis(1200));
+            // The quick half returns at once; the waiting half holds no lock.
+            let begun = std::time::Instant::now();
+            let pending = b.begin_open_egress().unwrap();
+            assert!(begun.elapsed() < std::time::Duration::from_millis(300));
+            let waiter = std::thread::spawn(move || pending.wait());
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            // Other backend calls during the wait (some read the transport
+            // and may well read the open's answer: it must not be lost).
+            let mut worst = std::time::Duration::ZERO;
+            let end = std::time::Instant::now() + std::time::Duration::from_millis(1300);
+            while std::time::Instant::now() < end {
+                let t = std::time::Instant::now();
+                let _ = b.state();
+                let _ = b.poll_guest();
+                worst = worst.max(t.elapsed());
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert!(
+                worst < std::time::Duration::from_millis(400),
+                "another call was blocked for {worst:?}"
+            );
+            let ep = waiter.join().unwrap();
+            assert!(ep.is_ok(), "{:?}", ep.err());
+            assert!(b.open_egress().is_err(), "the stream is open exactly once");
+        }
+
+        #[test]
+        fn dropping_an_unwaited_open_undoes_it() {
+            let (tmp, mut b, _id, fake) = ready_backend();
+            drop(b.begin_open_egress().unwrap());
+            assert_eq!(leftovers(&tmp), 0);
+            assert!(fake.lock().sent.iter().any(|l| l.contains("egress_close")));
+            assert!(b.open_egress().is_ok(), "a dropped open does not wedge it");
+        }
+
+        #[test]
+        fn open_egress_needs_a_running_computer() {
+            let (tmp, images, computers) = test_dirs();
+            seed_ready_image(&images);
+            let fake = SharedFake::default();
+            let mut b = MacOSVirtualizationBackend::with_transport(
+                images,
+                computers,
+                Box::new(fake.clone()),
+            );
+            assert_eq!(b.open_egress().unwrap_err(), ComputerError::NotCreated);
+            b.create(default_config_for_test()).unwrap();
+            assert!(matches!(
+                b.open_egress().unwrap_err(),
+                ComputerError::WrongState { .. }
+            ));
+            assert!(!fake.lock().sent.iter().any(|l| l.contains("egress_open")));
+            assert_eq!(leftovers(&tmp), 0);
+        }
+
+        #[test]
+        fn helper_refusal_leaves_no_endpoint_and_no_open_stream() {
+            let (tmp, mut b, _id, fake) = ready_backend();
+            fake.lock().egress_open_error = Some("egress_failed".into());
+            assert!(b.open_egress().is_err());
+            assert_eq!(leftovers(&tmp), 0);
+            fake.lock().egress_open_error = None;
+            assert!(b.open_egress().is_ok(), "a failed open does not wedge it");
+        }
+
+        #[test]
+        fn a_helper_that_never_connects_times_out_and_is_told_to_close() {
+            let (tmp, mut b, _id, fake) = ready_backend();
+            fake.lock().egress_skip_connect = true;
+            let started = std::time::Instant::now();
+            let err = b
+                .engine
+                .backend_open_egress_within(std::time::Duration::from_millis(200))
+                .unwrap_err();
+            assert!(matches!(err, ComputerError::Timeout(_)), "{err:?}");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            assert_eq!(leftovers(&tmp), 0);
+            assert!(fake.lock().sent.iter().any(|l| l.contains("egress_close")));
+            fake.lock().egress_skip_connect = false;
+            assert!(b.open_egress().is_ok());
+        }
+
+        #[test]
+        fn stop_and_helper_events_end_the_stream() {
+            let (_tmp, mut b, id, fake) = ready_backend();
+            let cid = id.to_string();
+            let _ep = b.open_egress().unwrap();
+            fake.lock().egress_peers.clear();
+            fake.lock().inject_egress_closed(&cid, "guest_closed");
+            let _ = b.poll_guest();
+            // The helper ended it: a new stream may be opened without close.
+            let _second = b.open_egress().unwrap();
+            fake.lock().egress_peers.clear();
+            b.stop().unwrap();
+            b.start().unwrap();
+            let _third = b.open_egress().unwrap();
+        }
     }
 
     #[test]

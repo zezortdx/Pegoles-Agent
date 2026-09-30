@@ -1,38 +1,59 @@
-//! Host endpoint resolution for the guest control plane.
+//! How the runtime reaches the host's control plane.
 //!
-//! The runtime binary is hypervisor-blind by design: it knows only "a
-//! VSOCK transport to the host exists". Endpoint discovery differences
-//! (virtio vsock vs Hyper-V vsock) are isolated here so the Guest
-//! Protocol layer never branches on hypervisors.
+//! The Guest Protocol above never branches on hypervisors; only the
+//! connection's direction differs, and it is decided here:
 //!
-//! - Apple Virtualization (virtio-vsock): host is CID 2 (`VMADDR_CID_HOST`).
-//! - Hyper-V (hv_sock): the Linux guest ALSO uses AF_VSOCK with CID 2 for
-//!   the host; the host side maps the connection through the Pegoles
-//!   service GUID derived from the same logical port. No guest changes.
-//! - KVM (vhost-vsock, future): same CID 2 convention.
+//! - **Dial** (Apple Virtualization, virtio-vsock): connect to the host,
+//!   CID 2 (`VMADDR_CID_HOST`), port 4050, from a reserved source port.
+//!   The host checks that port.
+//! - **Listen** (Hyper-V, hv_sock): listen on reserved port 850 and let
+//!   the host connect. Windows cannot reliably see a guest's source port,
+//!   so owning the privileged listener is what proves "this is the
+//!   runtime".
 //!
-//! Conclusion: one binary, one endpoint shape. If a future hypervisor
-//! needs different discovery, extend THIS module only.
+//! The mode comes from the command line (`--listen`, set by the image's
+//! unit) or the kernel command line (`pegoles.transport=listen`, set by
+//! the host that boots the kernel). Default: dial.
 
-use pegoles_guest_proto::PEGOLES_VSOCK_PORT;
+use pegoles_guest_proto::{PEGOLES_GUEST_LISTEN_PORT, PEGOLES_VSOCK_PORT};
 
-/// Host endpoint for the control plane.
+/// Host endpoint for the control plane (dial mode).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuestEndpoint {
     /// vsock CID of the host (2 == VMADDR_CID_HOST on every transport).
     pub host_cid: u32,
-    /// Logical Pegoles port (4050). On Hyper-V the host maps it through
-    /// `hyperv_service_guid_for_port(port)`; the guest always dials the
-    /// plain port number.
     pub port: u32,
 }
 
-/// Resolve where to dial. No detection needed today: CID 2 + port 4050 is
-/// correct on virtio, Hyper-V, and vhost transports alike.
+/// Where the connection comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Connect to the host (virtio-vsock hosts).
+    Dial(GuestEndpoint),
+    /// Accept the host's connection on this privileged port (Hyper-V).
+    Listen { port: u32 },
+}
+
+/// The host endpoint for dial mode: CID 2 + port 4050.
 pub fn resolve_host_endpoint() -> GuestEndpoint {
     GuestEndpoint {
         host_cid: 2,
         port: PEGOLES_VSOCK_PORT,
+    }
+}
+
+/// Pure: the mode from our arguments and the kernel command line.
+pub fn resolve_mode<S: AsRef<str>>(args: &[S], kernel_cmdline: &str) -> Mode {
+    let listen_arg = args.iter().any(|a| a.as_ref() == "--listen");
+    let listen_kernel = kernel_cmdline
+        .split_ascii_whitespace()
+        .any(|word| word == "pegoles.transport=listen");
+    if listen_arg || listen_kernel {
+        Mode::Listen {
+            port: PEGOLES_GUEST_LISTEN_PORT,
+        }
+    } else {
+        Mode::Dial(resolve_host_endpoint())
     }
 }
 
@@ -41,18 +62,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_is_hypervisor_blind() {
-        let ep = resolve_host_endpoint();
-        assert_eq!(ep.host_cid, 2, "VMADDR_CID_HOST on all transports");
-        assert_eq!(ep.port, 4050);
-        assert_eq!(ep.port, PEGOLES_VSOCK_PORT, "no magic numbers");
+    fn dials_the_host_by_default() {
+        let none: [&str; 0] = [];
+        assert_eq!(
+            resolve_mode(&none, "root=/dev/vda2 quiet"),
+            Mode::Dial(GuestEndpoint {
+                host_cid: 2,
+                port: 4050
+            })
+        );
     }
 
     #[test]
-    fn port_matches_hyperv_service_guid() {
-        // Cross-check with the host-side derivation (same logical port):
-        // hyperv_service_guid_for_port(4050) == 00000FD2-facb-… — the guest
-        // dials 4050, the Windows host listens on the matching GUID.
-        assert_eq!(PEGOLES_VSOCK_PORT, 4050);
+    fn listens_when_the_unit_or_the_host_says_so() {
+        assert_eq!(
+            resolve_mode(&["pegoles-guest-runtime", "--listen"], ""),
+            Mode::Listen { port: 850 }
+        );
+        assert_eq!(
+            resolve_mode(
+                &["pegoles-guest-runtime"],
+                "root=/dev/sda rw pegoles.transport=listen console=ttyS0"
+            ),
+            Mode::Listen { port: 850 }
+        );
+        // Only the exact word counts.
+        let none: [&str; 0] = [];
+        assert!(matches!(
+            resolve_mode(&none, "xpegoles.transport=listen"),
+            Mode::Dial(_)
+        ));
+    }
+
+    #[test]
+    fn the_listen_port_is_privileged_and_outside_the_source_range() {
+        use pegoles_guest_proto::{GUEST_SOURCE_PORT_MAX, GUEST_SOURCE_PORT_MIN};
+        const { assert!(PEGOLES_GUEST_LISTEN_PORT <= 1023) };
+        assert!(
+            !(GUEST_SOURCE_PORT_MIN..=GUEST_SOURCE_PORT_MAX).contains(&PEGOLES_GUEST_LISTEN_PORT)
+        );
     }
 }

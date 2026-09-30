@@ -10,6 +10,7 @@ import { duration, ease } from "../lib/motion";
 import { plural, timeOf } from "../artifacts/format";
 import { LocalProgress } from "../intelligence/LocalProgress";
 import { Narrative } from "./Narrative";
+import { HOST } from "../lib/host";
 
 export interface TaskViewProps {
   readonly task: AgentTask;
@@ -57,7 +58,7 @@ const NOT_STARTED_BODY = {
   ready: "Pegoles will do this on its own computer once you start it.",
   busy: "Pegoles is working on another task. It works on one at a time, so start this one when that one ends.",
 } as const;
-const PREPARING_BODY = "Pegoles is getting its local model ready on this Mac. Start this task once it’s ready; it’s kept while the app is open.";
+const PREPARING_BODY = `Pegoles is getting its local model ready on this ${HOST}. Start this task once it’s ready; it’s kept while the app is open.`;
 
 /** The set-up button's words on a task: the product's name first, since the task doesn't say where it is. */
 function setupLabel(view: LocalView): string {
@@ -75,7 +76,7 @@ function LocalLine({ setup }: { setup: LocalSetup }) {
     case "paused": return <p className="notice__meta">Paused at {progressText(view.doneBytes ?? 0, view.totalBytes ?? 0)}. It picks up where it stopped.</p>;
     case "damaged": return <p className="notice__meta">Its files didn’t pass the check. Setting it up again replaces them.</p>;
     case "unsupported":
-    case "downloaded": return <p className="notice__meta">{view.problem ?? "Pegoles Local needs a Mac with Apple silicon."}</p>;
+    case "downloaded": return <p className="notice__meta">{view.problem ?? "Pegoles Local can’t run on this computer."}</p>;
     default: return view.problem ? <p className="notice__meta">{view.problem}</p> : null;
   }
 }

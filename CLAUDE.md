@@ -47,9 +47,24 @@ those before large changes.
   signed helper next to it, and link `target/release/Resources/runtime`
   → `target/pegoles-runtime` and `target/release/Resources/workers/mlx` →
   `workers/mlx` (release builds look only in `../Resources`), run.
-- The worker must stay sandboxed (`sandbox-exec`, fail closed) with a
-  cleared environment; model output is only ever parsed by
-  `pegoles-agent/src/local/parse.rs` into typed actions.
+- The worker must stay sandboxed (`sandbox-exec` on macOS, AppContainer
+  + job object on Windows; fail closed) with a cleared environment; model
+  output is only ever parsed by `pegoles-agent/src/local/parse.rs` into
+  typed actions.
+
+## Windows (in development, `docs/WINDOWS_ARCHITECTURE.md`)
+
+- No Windows PC is available: status stays "compile/CI-verified", never
+  "works on Windows". CI jobs `windows`, `windows-installer`,
+  `guest-image-x64`, `windows-guest-boot` are the real checks.
+- From macOS: `cargo xwin clippy --target x86_64-pc-windows-msvc -p …`
+  with the pinned toolchain 1.97.1 (newer clippy lints differ).
+- The llama.cpp worker (`workers/llama`) is its own workspace; on macOS
+  it needs `LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib`. `local_bench`
+  runs GGUF models through it (copy `pegoles-llm-worker` next to the
+  example binary, like the VM helper).
+- Installer: `scripts/package-windows.sh` (Git Bash on Windows);
+  x64 image: `scripts/build-guest-image/build-x64.sh`.
 
 ## Invariants (do not break)
 

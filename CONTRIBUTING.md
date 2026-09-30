@@ -82,6 +82,25 @@ cp native/macos/pegoles-vm-host/.build/release/pegoles-vm-host target/release/ex
 It boots a real VM from the sealed image; destroy test computers
 afterwards (disk space).
 
+### Windows (in development)
+
+Design: `docs/WINDOWS_ARCHITECTURE.md`. On a Windows 11 x64 PC with Rust
+(MSVC), Node.js + pnpm, CMake, LLVM and the Vulkan SDK:
+
+```bash
+bash scripts/package-windows.sh        # Git Bash → target/release-artifacts/Pegoles-Setup-x64.exe
+```
+
+From a Mac, the Windows crates can be type-checked and linted with
+[cargo-xwin](https://github.com/rust-cross/cargo-xwin) and the pinned
+toolchain (`cargo xwin clippy --target x86_64-pc-windows-msvc -p
+pegoles-desktop -p pegoles-broker -p pegoles-vm-host-windows …`); the
+`windows*` CI jobs are the real check. The x64 guest image is built with
+`scripts/build-guest-image/build-x64.sh` (QEMU; KVM on Linux, much slower
+under TCG on a Mac). The llama.cpp worker (`workers/llama`, its own
+workspace) also builds on macOS (`LIBCLANG_PATH` pointing at Homebrew's
+LLVM), and `local_bench` runs GGUF models through it on the real VM.
+
 ## Invariants
 
 A pull request that breaks one of these will not be merged:
@@ -92,12 +111,17 @@ A pull request that breaks one of these will not be merged:
 - Guest data is hostile: every field is bounded, nothing panics on it, and
   the app lock is not held while waiting on the guest.
 - The model API key lives in the Keychain; it is never logged, returned to
-  the webview, put in model context, or passed to the local worker.
+  the webview, put in model context, or passed to the local worker. (No
+  key storage exists on Windows yet; cloud planners fail closed there.)
 - Every planner (local or cloud) is untrusted and goes through the same
   `Planner` trait and policy path. Model output is parsed only by the
   strict parsers into typed actions.
-- The local worker stays sandboxed (`sandbox-exec`, fail closed) with a
-  cleared environment.
+- The local worker stays sandboxed with a cleared environment, fail
+  closed: `sandbox-exec` on macOS, an AppContainer with no capabilities
+  plus a job object on Windows.
+- On Windows, only `PegolesVmBroker` holds virtualization privileges; it
+  accepts only its typed verbs from Pegoles' own helper, and it never
+  receives guest bytes.
 - Only a sealed Pegoles image boots in normal flows.
 - The frontend never renders model or guest text as HTML.
 

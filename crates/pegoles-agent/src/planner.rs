@@ -90,11 +90,38 @@ pub enum PlannerError {
     Cancelled,
 }
 
+/// The one note a planner's prompt gets when the task's computer has
+/// internet (docs/EGRESS.md): a browser is in the top panel, and which
+/// sites work. Built from the validated, normalized setting only (domains
+/// are plain ASCII names). `None` when the task is offline.
+pub fn internet_note(access: &pegoles_protocol::InternetAccess) -> Option<String> {
+    use pegoles_protocol::InternetMode;
+    match access.mode {
+        InternetMode::Off => None,
+        InternetMode::Allowlist => Some(format!(
+            "Internet is on for this task. Open the web browser from the panel at the top of \
+             the screen. Only these sites (and their subdomains) load: {}. Everything else is \
+             blocked; do not look for ways around a block.",
+            access.domains.join(", ")
+        )),
+        InternetMode::OpenWeb => Some(
+            "Internet is on for this task. Open the web browser from the panel at the top of \
+             the screen. Public websites load, except known harmful ones; downloads of programs \
+             and archives are blocked. Do not look for ways around a block."
+                .to_string(),
+        ),
+    }
+}
+
 /// Decides the next actions. Implementations may block (network); they
 /// must honor `cancel` promptly and never run actions themselves.
 pub trait Planner: Send {
     /// Human-readable planner name for logs ("claude-opus-5", "script").
     fn name(&self) -> String;
+
+    /// Tell the planner, before `start`, that the computer has internet
+    /// ([`internet_note`]). Planners that ignore it keep "no network".
+    fn set_internet_note(&mut self, _note: Option<String>) {}
 
     /// Begin a task: the user's objective (the only authoritative
     /// instruction) and the first observation of the screen.
@@ -107,4 +134,32 @@ pub trait Planner: Send {
         outcomes: Vec<CallOutcome>,
         cancel: &pegoles_core::CancellationToken,
     ) -> Result<PlannerTurn, PlannerError>;
+}
+
+#[cfg(test)]
+mod internet_note_tests {
+    use super::internet_note;
+    use pegoles_protocol::{InternetAccess, InternetMode};
+
+    #[test]
+    fn offline_tasks_get_no_note() {
+        assert_eq!(internet_note(&InternetAccess::off()), None);
+    }
+
+    #[test]
+    fn the_note_names_the_browser_and_the_allowed_sites() {
+        let note = internet_note(&InternetAccess {
+            mode: InternetMode::Allowlist,
+            domains: vec!["example.com".into(), "docs.example.org".into()],
+        })
+        .unwrap();
+        assert!(note.contains("browser") && note.contains("top of the screen"));
+        assert!(note.contains("example.com, docs.example.org"));
+        let open = internet_note(&InternetAccess {
+            mode: InternetMode::OpenWeb,
+            domains: vec![],
+        })
+        .unwrap();
+        assert!(open.contains("browser") && open.contains("Public websites"));
+    }
 }

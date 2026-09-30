@@ -8,7 +8,7 @@ function Probe() {
   const { tier, reducedMotion, transitionStyle, params } = useFluxGlass();
   return (
     <output data-testid="probe">
-      {tier}|{String(reducedMotion)}|{transitionStyle}|{params.cursorTrailLength}
+      {tier}|{String(reducedMotion)}|{transitionStyle}|{params.maxBackdropSurfaces}
     </output>
   );
 }
@@ -31,7 +31,7 @@ describe("FluxGlassRoot", () => {
     expect(target.getAttribute("data-effects-tier")).toBe("full");
     expect(target.getAttribute("data-reduced-motion")).toBe("false");
     expect(target.getAttribute("data-ambient")).toMatch(/running|paused/);
-    expect(screen.getByTestId("probe").textContent).toBe("full|false|morph|10");
+    expect(screen.getByTestId("probe").textContent).toBe("full|false|morph|6");
 
     rerender(
       <FluxGlassRoot tier="minimal" reducedMotion target={target}>
@@ -54,7 +54,7 @@ describe("FluxGlassRoot", () => {
       </FluxGlassRoot>,
     );
     expect(target.getAttribute("data-effects-tier")).toBe("full");
-    expect(screen.getByTestId("probe").textContent).toBe("full|true|crossfade|10");
+    expect(screen.getByTestId("probe").textContent).toBe("full|true|crossfade|6");
   });
 
   it("stops the gate on unmount (ambient paused)", () => {

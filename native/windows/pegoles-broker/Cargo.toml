@@ -1,0 +1,31 @@
+[package]
+name = "pegoles-broker"
+version = "0.2.0"
+edition = "2021"
+publish = false
+description = "Pegoles VM broker: the Windows service that owns Host Compute System calls, and the elevated one-shot setup verbs"
+license = "MIT"
+
+[[bin]]
+name = "pegoles-broker"
+path = "src/main.rs"
+
+[dependencies]
+pegoles-broker-proto = { path = "../pegoles-broker-proto" }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_HostComputeSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Services",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+] }

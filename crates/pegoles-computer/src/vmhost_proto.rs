@@ -59,6 +59,19 @@ pub enum HostCommand {
     GuestDisconnect {
         computer_id: String,
     },
+    /// Connect the helper to the guest's egress listener (vsock port
+    /// 4051) and bridge the raw bytes to `endpoint`, which the app has
+    /// already created (macOS: a Unix socket inside the Pegoles data
+    /// folder; Windows: `\\.\pipe\pegoles-egress-<uuid>`). Transport
+    /// only, at most one stream per computer. See docs/EGRESS.md.
+    EgressOpen {
+        computer_id: String,
+        endpoint: String,
+    },
+    /// Close the egress stream (both sides); idempotent.
+    EgressClose {
+        computer_id: String,
+    },
 }
 
 /// Paths and resources for one computer. All paths are inside that
@@ -116,6 +129,9 @@ pub enum HostErrorCode {
     NotEntitled,
     /// No guest vsock connection established right now.
     GuestUnavailable,
+    /// The egress stream could not be opened (guest not listening, bad
+    /// endpoint, already open).
+    EgressFailed,
     Internal,
 }
 
@@ -191,6 +207,12 @@ pub enum HostEvent {
     /// Guest channel closed. `reason`: eof | frame_too_large |
     /// invalid_utf8 | kicked | helper_gone.
     GuestDisconnected {
+        computer_id: String,
+        reason: String,
+    },
+    /// The egress stream ended by itself (guest or app side closed, VM
+    /// stopped). Not sent in reply to `egress_close`.
+    EgressClosed {
         computer_id: String,
         reason: String,
     },
@@ -282,8 +304,10 @@ mod tests {
             "guest_send",
             "guest_status",
             "guest_disconnect",
+            "egress_open",
+            "egress_close",
         ];
-        assert_eq!(all.len(), 12);
+        assert_eq!(all.len(), 14);
     }
 
     /// Wire name of every command. The match is exhaustive on purpose:
@@ -303,6 +327,8 @@ mod tests {
             HostCommand::GuestSend { .. } => "guest_send",
             HostCommand::GuestStatus { .. } => "guest_status",
             HostCommand::GuestDisconnect { .. } => "guest_disconnect",
+            HostCommand::EgressOpen { .. } => "egress_open",
+            HostCommand::EgressClose { .. } => "egress_close",
         }
     }
 
@@ -324,6 +350,11 @@ mod tests {
             },
             HostCommand::GuestStatus { computer_id: cid() },
             HostCommand::GuestDisconnect { computer_id: cid() },
+            HostCommand::EgressOpen {
+                computer_id: cid(),
+                endpoint: "/tmp/e/s".into(),
+            },
+            HostCommand::EgressClose { computer_id: cid() },
         ]
     }
 
@@ -334,7 +365,7 @@ mod tests {
     #[test]
     fn no_input_injection_command_exists() {
         let commands = one_of_each_command();
-        assert_eq!(commands.len(), 12);
+        assert_eq!(commands.len(), 14);
         for command in &commands {
             let line = format_request(1, command);
             let v: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -455,6 +486,64 @@ mod tests {
         {
             HostLine::Event(HostEvent::GuestDisconnected { reason, .. }) => {
                 assert_eq!(reason, "eof")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn egress_request_shapes() {
+        let line = format_request(
+            3,
+            &HostCommand::EgressOpen {
+                computer_id: "c1".into(),
+                endpoint: r"\\.\pipe\pegoles-egress-x".into(),
+            },
+        );
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["id"], 3);
+        assert_eq!(v["command"], "egress_open");
+        assert_eq!(v["computer_id"], "c1");
+        assert_eq!(v["endpoint"], r"\\.\pipe\pegoles-egress-x");
+        let line = format_request(
+            4,
+            &HostCommand::EgressClose {
+                computer_id: "c1".into(),
+            },
+        );
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["command"], "egress_close");
+        assert_eq!(v.as_object().unwrap().len(), 3);
+        // A request without an endpoint is not an egress_open.
+        assert!(serde_json::from_str::<HostRequest>(
+            r#"{"id":1,"command":"egress_open","computer_id":"c"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn egress_replies_and_events_parse() {
+        match parse_line(
+            r#"{"id":5,"ok":false,"error":{"code":"egress_failed","message":"guest is not listening"}}"#,
+        )
+        .unwrap()
+        {
+            HostLine::Response(r) => {
+                assert_eq!(r.error.unwrap().code, HostErrorCode::EgressFailed)
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match parse_line(r#"{"event":"egress_closed","computer_id":"c","reason":"guest_closed"}"#)
+            .unwrap()
+        {
+            HostLine::Event(HostEvent::EgressClosed {
+                computer_id,
+                reason,
+            }) => {
+                assert_eq!(
+                    (computer_id.as_str(), reason.as_str()),
+                    ("c", "guest_closed")
+                )
             }
             other => panic!("unexpected {other:?}"),
         }

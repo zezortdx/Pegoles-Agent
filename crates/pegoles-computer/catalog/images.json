@@ -14,7 +14,10 @@
         "compositor": "weston 14.0.2-1",
         "terminal": "foot 1.21.0-2"
       },
-      "capabilities": ["input", "frame"],
+      "capabilities": [
+        "input",
+        "frame"
+      ],
       "disk": {
         "file_name": "disk.raw",
         "bytes": 3221225472,
@@ -37,6 +40,50 @@
           "SSH host keys removed (/etc/ssh/ssh_host_*)",
           "systemd random seed removed (/var/lib/systemd/random-seed)",
           "root and debian accounts locked, authorized_keys empty (verified)"
+        ]
+      }
+    },
+    {
+      "id": "pegoles-base-x64-0.1",
+      "version": "x64-0.1",
+      "debian_version": "13",
+      "architecture": "amd64",
+      "guest_runtime_version": "0.2.0",
+      "guest_protocol_version": 1,
+      "source_image_sha512": "40017fab9e1ed4bd3d2068e49301ac8427d02c2ee418160bdedd041f529e048fa0dc8ddf8f363e85bdb3c33e9f3cf4c5734d98429ba6802bbc4d4a83df7f0f4b",
+      "built_at": "2026-09-28T11:01:44+00:00",
+      "graphical": {
+        "compositor": "weston 14.0.2-1",
+        "terminal": "foot 1.21.0-2"
+      },
+      "capabilities": [
+        "input",
+        "frame"
+      ],
+      "disk": {
+        "file_name": "disk.vhdx",
+        "bytes": 1769996288,
+        "sha512": "5142472c88c317f4ab977ede76c9d66d182d02e84d320f89fc2b9c252ce570d6d03577ce079dc0f5c769a9b5e233c61fab9f71e7fc0f8e8cdd442b31ebb95d90"
+      },
+      "archive": {
+        "file_name": "pegoles-base-x64-0.1-amd64.vhdx.gz",
+        "compression": "gzip",
+        "bytes": 606048846,
+        "sha256": "65569bfa57b6211c802119fcb8b21e3ab4bce8a04719109f75c16bb7c482490e",
+        "urls": [
+          "https://github.com/zezortdx/Pegoles-Agent/releases/download/guest-image-x64-0.1/pegoles-base-x64-0.1-amd64.vhdx.gz"
+        ]
+      },
+      "provenance": {
+        "build": "Built in CI (GitHub Actions run 36412584574, job \"Guest image x64\", commit d7f62ac76fbe32771b01bacacd4f9d441c28fe2d) by scripts/build-guest-image/build-x64.sh: Debian 13 generic amd64 20260914-2601 (source_image_sha512, cdimage.debian.org) provisioned once under QEMU/KVM with no network (NoCloud seed, pinned amd64 .deb bundle, x86_64 guest runtime 0.2.0 in vsock listen mode for Hyper-V), patched without booting by patch-image.sh, sanitized by sanitize-image.sh, converted to a dynamic VHDX by qemu-img (3 GiB virtual; decompressed raw SHA-512 fd522c4cb3b5580c9c71fb571c6ecae5e1b6dfdcd77cb8544a5b3d4403ee96ed638de81bd8c40f7389ba76c3e084c2a5f540d7184199a7836b2c789512e915af), archived with gzip -9 -n; booted through HCS with the full agent E2E in the same run",
+        "packages_manifest": "scripts/build-guest-image/manifests/pegoles-base-x64-0.1.packages.txt",
+        "packages_manifest_sha256": "58c7ba5ff530dfa38780f001b5a6635923bfff63d0dcf3eecf7c4cd483d8a445",
+        "sanitized": [
+          "SSH host keys removed (/etc/ssh/ssh_host_*)",
+          "systemd random seed removed (/var/lib/systemd/random-seed)",
+          "every account locked (shadow * or !), root authorized_keys empty, no home directories or shell histories (verified)",
+          "cloud-init disabled after provisioning; its user-data is the public seed in the repository (verified)",
+          "ssh, networkd, resolved, timesyncd and apt/unattended-upgrades units masked (verified)"
         ]
       }
     }

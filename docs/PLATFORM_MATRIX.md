@@ -1,4 +1,4 @@
-# Platform Matrix (honest status, 2026-09-26)
+# Platform Matrix (honest status, 2026-09-27)
 
 Tiers: **VERIFIED** = exercised on real hardware in this repo's E2E;
 **IMPLEMENTED** = code + unit tests, not run on real hardware;
@@ -18,14 +18,30 @@ Tiers: **VERIFIED** = exercised on real hardware in this repo's E2E;
 | Native VM display embed (human takes control) | NOT IMPLEMENTED (`pegoles-macos-embed` is a stub); the UI shows captured frames instead |
 | Image distribution (download a sealed Pegoles image) | NOT IMPLEMENTED — images are built locally (`scripts/build-guest-image`) |
 
-## Windows 11 (Hyper-V / HCS)
+## Windows 11 x64 (Host Compute System) — in development
+
+Branch `phase/windows-0.2`; design and reasoning in
+`docs/WINDOWS_ARCHITECTURE.md`. **No Windows PC has run Pegoles yet.**
+Extra tier: **CI** = exercised on GitHub's Windows Server 2025 runners
+(Azure VMs with nested virtualization, as an administrator), which is
+real Windows but not a consumer PC.
 
 | Area | Status |
 |---|---|
-| HCS backend, Hyper-V socket transport, setup tool | Code exists behind `cfg(windows)`. Never booted. Two compile errors and two Windows-API bugs were fixed by inspection on 2026-09-26; the crate was **not compiled** for Windows in this environment. |
-| Guest image for Windows | amd64 VHDX is unprovisioned; the runtime is built for arm64 only |
+| Broker service (`PegolesVmBroker`) + typed pipe protocol | IMPLEMENTED; CI: linted and unit-tested on Windows |
+| Unprivileged VM helper (`pegoles-vm-host.exe`, same JSONL as macOS) | IMPLEMENTED; CI: linted and unit-tested on Windows |
+| HCS VM boot (UEFI from VHDX, no network) | CI: a firmware-only VM and the real x64 guest both boot through the broker and the helper (Windows Server 2025, nested); COM1 boot log captured |
+| x64 guest image (Debian 13 amd64, runtime in listen mode, Hyper-V drivers) | PUBLISHED 2026-09-28: immutable release `guest-image-x64-0.1` (`pegoles-base-x64-0.1-amd64.vhdx.gz`), pinned in `catalog/images.json` (archive SHA-256, VHDX SHA-512). CI installs it over HTTPS through the product installer (release build), refuses a flipped byte, a truncated archive and a modified installed disk, and runs the agent E2E on it. Not yet installed on a consumer PC |
+| Guest channel, screenshots and input through Core and Policy | CI (agent E2E on Hyper-V): handshake, click, typing, keys, scroll, drag, cancel, policy denial, runtime recovery, second boot — guest ready 30.3 s after VM start; a click, typing and Enter painted a red block verified in a fresh frame (140,400 red pixels); scroll, double-click and drag changed the screen; a cancel was honored in 42 ms; a forged out-of-screen click was blocked by policy; the guest runtime killed inside the guest was back in 4.2 s; a second boot was ready in 32.4 s; observe p50 0.69 s / p95 1.16 s (nested virtualization) |
+| Pegoles Local (llama.cpp, GGUF Q8, Vulkan/CPU) in AppContainer + job | Worker VERIFIED on macOS (Metal) against the real VM (`local_bench`); Windows CI: model installed by the store, generations by the installed worker inside its sandbox on the CPU (84–94 s per step on 4 vCPU); Vulkan on a real GPU not run |
+| Onboarding (system check, turning on virtualization, restart and resume) | IMPLEMENTED (UI tested with fixtures; Windows facts from real APIs, cross-compiled); never run on Windows |
+| Webview network containment (WebView2 switches) | CI: egress probe on Windows — 0 TCP / 0 UDP contained (33 / 353 without) |
+| Installer (NSIS, per machine, `Pegoles-Setup-x64.exe`) | CI: built from source, installed silently, service registered, HCS VM started through the installed broker, installed worker started confined, uninstalled cleanly; unsigned |
+| Cloud planner | NOT AVAILABLE on Windows (fails closed: no native confirmation window yet) |
+| Windows on ARM | NOT IMPLEMENTED |
 
-**Not supported.** The UI must not claim Windows support.
+**Not released.** The UI must not claim Windows support until the gates
+in `docs/RELEASE_GATES.md` (Windows section) pass on a real PC.
 
 ## Linux host
 

@@ -7,6 +7,8 @@
 //! macOS uses `sysctl`, `host_statistics64` and `proc_pid_rusage`
 //! (`phys_footprint` is the number Activity Monitor calls "Memory" and
 //! includes Metal / unified-memory allocations attributed to a process).
+//! Windows uses `GlobalMemoryStatusEx`, the process's private commit
+//! (Task Manager's "Commit size") and DXGI for the GPU list.
 
 use serde::Serialize;
 
@@ -54,6 +56,7 @@ impl HardwareProfile {
     }
 }
 
+#[cfg(not(windows))]
 pub fn detect() -> HardwareProfile {
     let arch = std::env::consts::ARCH.to_string();
     let os = std::env::consts::OS.to_string();
@@ -71,8 +74,112 @@ pub fn detect() -> HardwareProfile {
     }
 }
 
+#[cfg(windows)]
+pub fn detect() -> HardwareProfile {
+    HardwareProfile {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        chip: sys::cpu_name(),
+        model_id: None,
+        total_memory_bytes: sys::system_memory().map_or(0, |m| m.total_bytes),
+        performance_cores: None,
+        efficiency_cores: None,
+        apple_silicon: false,
+        metal: false,
+    }
+}
+
 pub fn system_memory() -> Option<SystemMemory> {
     sys::system_memory()
+}
+
+/// Which llama.cpp backend a Windows PC can use.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceleratorKind {
+    Cuda,
+    Vulkan,
+    Metal,
+    Cpu,
+}
+
+/// The expected accelerator, before the worker confirms it at load.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Acceleration {
+    pub kind: AcceleratorKind,
+    /// The GPU's name as Windows reports it, when there is one.
+    pub device: Option<String>,
+    pub technical: String,
+}
+
+/// One display adapter (DXGI).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuAdapter {
+    pub name: String,
+    pub vendor_id: u32,
+    pub dedicated_bytes: u64,
+    pub shared_bytes: u64,
+}
+
+/// Pure choice: Vulkan on the best hardware adapter when the Vulkan
+/// loader is installed (every current NVIDIA, AMD and Intel driver ships
+/// it), otherwise the CPU. Pegoles ships llama.cpp's Vulkan and CPU
+/// backends only (no CUDA runtime: it would add gigabytes), so a GPU
+/// without a Vulkan driver runs on the CPU.
+pub fn choose_acceleration(adapters: &[GpuAdapter], vulkan_loader: bool) -> Acceleration {
+    let best = adapters
+        .iter()
+        .filter(|a| a.vendor_id != MICROSOFT_VENDOR)
+        .max_by_key(|a| (a.dedicated_bytes, a.shared_bytes));
+    let listed = if adapters.is_empty() {
+        "no display adapters reported".to_string()
+    } else {
+        adapters
+            .iter()
+            .map(|a| {
+                format!(
+                    "{} (vendor {:04x}, {} MB dedicated)",
+                    a.name,
+                    a.vendor_id,
+                    a.dedicated_bytes >> 20
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    match best {
+        Some(gpu) if vulkan_loader => Acceleration {
+            kind: AcceleratorKind::Vulkan,
+            device: Some(gpu.name.clone()),
+            technical: format!("Vulkan on {}; adapters: {listed}", gpu.name),
+        },
+        Some(gpu) => Acceleration {
+            kind: AcceleratorKind::Cpu,
+            device: Some(gpu.name.clone()),
+            technical: format!(
+                "no Vulkan loader (vulkan-1.dll) installed; CPU. Adapters: {listed}"
+            ),
+        },
+        None => Acceleration {
+            kind: AcceleratorKind::Cpu,
+            device: None,
+            technical: format!("no hardware GPU; CPU. Adapters: {listed}"),
+        },
+    }
+}
+
+/// PCI vendor id of Microsoft's software adapters (Basic Render Driver).
+const MICROSOFT_VENDOR: u32 = 0x1414;
+
+#[cfg(windows)]
+pub fn windows_acceleration() -> Acceleration {
+    choose_acceleration(&sys::gpu_adapters(), sys::vulkan_loader_present())
+}
+
+/// The OS release as people know it ("15.5" on macOS). None when the OS
+/// does not say (other hosts report their version elsewhere).
+pub fn os_product_version() -> Option<String> {
+    sys::sysctl_string("kern.osproductversion")
 }
 
 pub fn process_memory(pid: i32) -> Option<ProcessMemory> {
@@ -271,7 +378,148 @@ mod sys {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+mod sys {
+    use super::{GpuAdapter, ProcessMemory, SystemMemory};
+    use windows::core::w;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+    use windows::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    use windows::Win32::System::SystemInformation::{
+        GetSystemDirectoryW, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    /// Longest GPU / CPU name kept.
+    const MAX_NAME: usize = 120;
+    /// Adapters looked at (DXGI lists hardware first).
+    const MAX_ADAPTERS: u32 = 8;
+
+    pub fn sysctl_string(_name: &str) -> Option<String> {
+        None
+    }
+
+    pub fn cpu_name() -> Option<String> {
+        let mut buf = [0u16; 256];
+        let mut len = (buf.len() * 2) as u32;
+        // SAFETY: the buffer and its byte length describe the same array.
+        unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                w!("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"),
+                w!("ProcessorNameString"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut len),
+            )
+        }
+        .ok()
+        .ok()?;
+        let name = String::from_utf16_lossy(&buf[..(len as usize / 2).min(buf.len())]);
+        let name = name.trim_matches(char::from(0)).trim();
+        (!name.is_empty()).then(|| name.chars().take(MAX_NAME).collect())
+    }
+
+    pub fn system_memory() -> Option<SystemMemory> {
+        let mut st = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: dwLength set as documented.
+        unsafe { GlobalMemoryStatusEx(&mut st) }.ok()?;
+        Some(SystemMemory {
+            total_bytes: st.ullTotalPhys,
+            used_bytes: st.ullTotalPhys.saturating_sub(st.ullAvailPhys),
+            free_bytes: st.ullAvailPhys,
+            wired_bytes: 0,
+            compressed_bytes: 0,
+            pressure_level: None,
+            swap_used_bytes: None,
+        })
+    }
+
+    pub fn process_memory(pid: i32) -> Option<ProcessMemory> {
+        let id = u32::try_from(pid).ok()?;
+        // SAFETY: query-only handle, closed below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, id) }.ok()?;
+        let mut c = PROCESS_MEMORY_COUNTERS_EX::default();
+        // SAFETY: the EX struct starts with the base struct; cb is its size.
+        let ok = unsafe {
+            K32GetProcessMemoryInfo(
+                process,
+                (&mut c as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(),
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+            )
+        }
+        .as_bool();
+        // SAFETY: the handle came from OpenProcess.
+        let _ = unsafe { CloseHandle(process) };
+        ok.then_some(ProcessMemory {
+            pid,
+            phys_footprint_bytes: c.PrivateUsage as u64,
+            resident_bytes: c.WorkingSetSize as u64,
+            lifetime_max_phys_footprint_bytes: c.PeakPagefileUsage as u64,
+        })
+    }
+
+    pub fn gpu_adapters() -> Vec<GpuAdapter> {
+        // SAFETY: plain COM factory creation.
+        let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for i in 0..MAX_ADAPTERS {
+            // SAFETY: index enumeration; stops at DXGI_ERROR_NOT_FOUND.
+            let Ok(adapter) = (unsafe { factory.EnumAdapters1(i) }) else {
+                break;
+            };
+            // SAFETY: valid adapter.
+            let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
+                continue;
+            };
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                continue;
+            }
+            let end = desc
+                .Description
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(desc.Description.len());
+            out.push(GpuAdapter {
+                name: String::from_utf16_lossy(&desc.Description[..end])
+                    .trim()
+                    .chars()
+                    .take(MAX_NAME)
+                    .collect(),
+                vendor_id: desc.VendorId,
+                dedicated_bytes: desc.DedicatedVideoMemory as u64,
+                shared_bytes: desc.SharedSystemMemory as u64,
+            });
+        }
+        out
+    }
+
+    /// `%SystemRoot%\System32\vulkan-1.dll`: the Khronos loader GPU drivers
+    /// install. Only its presence is checked; nothing is loaded here.
+    pub fn vulkan_loader_present() -> bool {
+        let mut buf = [0u16; 260];
+        // SAFETY: buffer sized as passed.
+        let n = unsafe { GetSystemDirectoryW(Some(&mut buf)) } as usize;
+        if n == 0 || n >= buf.len() {
+            return false;
+        }
+        let dir = String::from_utf16_lossy(&buf[..n]);
+        std::path::Path::new(&dir).join("vulkan-1.dll").is_file()
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod sys {
     use super::{ProcessMemory, SystemMemory};
 
@@ -304,6 +552,33 @@ mod tests {
         let me = process_memory(std::process::id() as i32).expect("proc_pid_rusage");
         assert!(me.phys_footprint_bytes > 0);
         assert!(me.lifetime_max_phys_footprint_bytes >= me.phys_footprint_bytes / 2);
+    }
+
+    #[test]
+    fn acceleration_prefers_the_biggest_real_gpu_with_vulkan() {
+        let gpu = |name: &str, vendor, dedicated| GpuAdapter {
+            name: name.into(),
+            vendor_id: vendor,
+            dedicated_bytes: dedicated,
+            shared_bytes: 8 << 30,
+        };
+        let adapters = [
+            gpu("Intel(R) UHD Graphics", 0x8086, 128 << 20),
+            gpu("NVIDIA GeForce RTX 3060", 0x10de, 12 << 30),
+            gpu("Microsoft Basic Render Driver", MICROSOFT_VENDOR, 0),
+        ];
+        let a = choose_acceleration(&adapters, true);
+        assert_eq!(a.kind, AcceleratorKind::Vulkan);
+        assert_eq!(a.device.as_deref(), Some("NVIDIA GeForce RTX 3060"));
+        let no_loader = choose_acceleration(&adapters, false);
+        assert_eq!(no_loader.kind, AcceleratorKind::Cpu);
+        assert!(no_loader.technical.contains("vulkan-1.dll"));
+        let basic_only = choose_acceleration(&adapters[2..], true);
+        assert_eq!(
+            (basic_only.kind, basic_only.device),
+            (AcceleratorKind::Cpu, None)
+        );
+        assert_eq!(choose_acceleration(&[], true).kind, AcceleratorKind::Cpu);
     }
 
     #[test]

@@ -6,7 +6,9 @@
 //! catalog   ── pinned model entries (source, license, bytes, digests)
 //! store     ── verified install / resume / remove under <data>/models
 //! backend   ── InferenceBackend trait (replaceable)
-//! worker    ── MLX reference backend: supervised persistent worker
+//! worker    ── MLX backend (macOS): supervised persistent worker
+//! llama     ── llama.cpp backend (Windows; also runs on macOS): same
+//!              protocol and supervision, sandboxed per platform
 //! ```
 //!
 //! Model output is plain text here. Turning it into actions (strict
@@ -17,17 +19,24 @@ pub mod backend;
 pub mod catalog;
 pub mod download;
 pub mod hardware;
+pub mod llama;
+#[cfg(windows)]
+mod sandbox_windows;
 pub mod store;
+pub(crate) mod supervisor;
+#[cfg(unix)]
 pub mod worker;
 
 pub use backend::{
     BackendInfo, BackendMemory, ChatMessage, GenerateRequest, GenerateResponse, ImageInput,
     InferenceBackend, InferenceError, LoadReport, Part, Role, Timings,
 };
-pub use catalog::{Catalog, ModelFamily, ModelSpec};
+pub use catalog::{Catalog, ModelFamily, ModelFormat, ModelSpec};
+pub use llama::{LlamaWorkerBackend, LlamaWorkerConfig};
 pub use store::{
     InstallPhase, InstallProgress, InstallState, ModelStore, StoreError, VerifiedModel,
 };
+#[cfg(unix)]
 pub use worker::{MlxWorkerBackend, MlxWorkerConfig};
 
 /// `<data>/models`.

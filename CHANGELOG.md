@@ -8,7 +8,75 @@ the tag (the release workflow refuses a mismatch).
 
 ## [Unreleased]
 
-Nothing yet.
+Work toward 0.2 on the `phase/windows-0.2` branch. Nothing here is
+released; Windows has not run on a consumer PC.
+
+### Added
+
+- **Internet for a task (in development, not verified on hardware).** The
+  composer has an Internet control: Off (default), Only these sites (up to
+  32 domain chips) or Open web (with a warning). Each task that asks for it
+  is confirmed in a native dialog the webview cannot answer (macOS alert,
+  Windows message box; Cancel is the default and declines back off). Core
+  opens the host-side proxy session only while the agent controls the
+  running computer and closes it on stop, pause, reset, destroy, takeover,
+  task end, failure and exit; if it cannot open, the task runs offline and
+  says so. While online, a persistent indicator shows the mode and sites
+  and a live list of what the proxy allowed or blocked, in plain words
+  (host, verdict, reason, size; never paths or queries). `create_task`
+  takes an optional `internet` (mode and domain strings only); the planners
+  are told a browser is in the top panel and which sites work. The VM still
+  has no network device. Needs the new sealed images (0.4 / x64-0.2), still
+  to be built. See `docs/EGRESS.md`, `docs/THREAT_MODEL.md`.
+- **New Pegoles mark** (silver ring, two eyes) across the app icon, the
+  `.ico`/`.icns`, PNG sizes (with simplified 16–48 px glyphs), the README,
+  the social preview and the Windows installer art. Inside the app, the
+  living mark (sidebar, Home, status bar, onboarding) now shows the
+  official artwork's own pixels, with only the eyes animated; the older
+  redrawn "ceramic" body and its WebGL renderer are gone.
+- **Save a report for help**: on onboarding's failure screens and in
+  Settings → Help, one JSON file in Downloads with the technical facts a
+  helper needs (version and commit, system check, virtualization and the
+  broker, GPU, onboarding and setup stages, the computer's state, recent
+  failure codes, the guest boot log tail) and never screenshots, task
+  text, agent messages, keys or personal files.
+- **Agent cursor in the computer preview**: a small silver pointer that
+  glides to each real action's coordinate (never delaying the action),
+  retargets instead of queueing, pulses clicks and double clicks at the
+  exact point, draws drags as one continuous stroke and quiets down
+  between actions; it stops at once on Stop, cancellation, takeover or a
+  replaced computer, and respects reduced motion. Same code on macOS and
+  Windows.
+- **First-run onboarding**: welcome, how it works, a real system check
+  (OS, architecture, virtualization, memory, disk, acceleration), one
+  "Set up Pegoles" job with real byte progress, speed, time left, pause
+  and retry, the choice of intelligence (Pegoles Local recommended), and
+  first tasks that match what the computer can do. Errors in plain words
+  with the technical detail kept behind "Technical details".
+- **Windows backend (in development)**: `PegolesVmBroker`, a small
+  LocalSystem service that owns every Host Compute System call behind
+  eight typed verbs; an unprivileged `pegoles-vm-host.exe` speaking the
+  macOS helper's protocol; the guest runtime's listen mode (vsock 850 over
+  AF_HYPERV); UEFI boot from the computer's VHDX with no network device;
+  turning on the Virtual Machine Platform from onboarding with consent,
+  restart and resume.
+- **Pegoles Local on llama.cpp**: `pegoles-llm-worker` (GGUF, Vulkan or
+  CPU on Windows, Metal on macOS) behind the same protocol and supervisor
+  as the MLX worker, confined by an AppContainer and a job object on
+  Windows and `sandbox-exec` on macOS; MAI-UI-2B Q8_0 GGUF pinned in the
+  catalog for Windows.
+- **Windows packaging**: per-machine NSIS installer
+  (`scripts/package-windows.sh` → `Pegoles-Setup-x64.exe`, unsigned),
+  WebView2 network containment, and a WinGet manifest draft.
+- **x64 guest image** (`scripts/build-guest-image/build-x64.sh`):
+  provisioned at build time like the arm64 image, published as the
+  immutable release `guest-image-x64-0.1` and pinned in the catalog (a VHDX
+  disk: the release installer now accepts `disk.vhdx` as well as
+  `disk.raw`). Setup on Windows downloads and verifies it like on macOS.
+- **CI on Windows**: every Windows crate linted and tested, the webview
+  egress probe, the installer built, installed and uninstalled, an HCS VM
+  booted through the helper and the broker, and the x64 image built and
+  booted.
 
 ## [0.1.0] - 2026-09-27
 

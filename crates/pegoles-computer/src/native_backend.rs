@@ -270,9 +270,20 @@ impl ChildTransport {
     pub(crate) fn spawn(binary: &Path, display_name: &str) -> Result<Self> {
         // Fixed binary, no arguments, scrubbed environment: the helper
         // gets nothing from the host environment it does not need.
-        let mut child = Command::new(binary)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        let mut command = Command::new(binary);
+        command.env_clear();
+        if cfg!(windows) {
+            // Winsock (the guest channel) cannot create a socket without
+            // SystemRoot; nothing else is passed.
+            for key in ["SystemRoot", "windir"] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+        } else {
+            command.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -375,6 +386,18 @@ pub struct FakeTransport {
     /// Scripted guest answer to `get_graphical_session` (one JSONL guest
     /// frame). `None` = the guest ignores the request (older runtime).
     pub graphical_session_reply: Option<String>,
+    /// The helper's end of each open egress stream, keyed by computer id:
+    /// `egress_open` really connects to the endpoint the engine created.
+    #[cfg(unix)]
+    pub egress_peers: std::collections::HashMap<String, std::os::unix::net::UnixStream>,
+    /// Scripted `egress_open` failure (error code), for error-path tests.
+    pub egress_open_error: Option<String>,
+    /// When set, `egress_open` answers ok without connecting (a helper
+    /// that lies), so the engine's accept timeout is exercised.
+    pub egress_skip_connect: bool,
+    /// Answer `egress_open` only after this long (a slow helper).
+    pub egress_reply_delay: Option<Duration>,
+    delayed: VecDeque<(std::time::Instant, String)>,
 }
 
 impl FakeTransport {
@@ -386,6 +409,12 @@ impl FakeTransport {
             fail_after_sends: None,
             guest_links: std::collections::HashSet::new(),
             graphical_session_reply: None,
+            #[cfg(unix)]
+            egress_peers: std::collections::HashMap::new(),
+            egress_open_error: None,
+            egress_skip_connect: false,
+            egress_reply_delay: None,
+            delayed: VecDeque::new(),
         }
     }
 
@@ -402,6 +431,52 @@ impl FakeTransport {
             }
             _ => format!(r#"{{"id":{id},"ok":true}}"#),
         }
+    }
+
+    fn fake_egress_open(&mut self, id: u64, cid: &str, endpoint: &str) -> String {
+        if let Some(code) = self.egress_open_error.clone() {
+            return self.respond(id, None, Some((code.as_str(), "scripted failure")));
+        }
+        #[cfg(unix)]
+        {
+            if self.egress_peers.contains_key(cid) {
+                return self.respond(id, None, Some(("egress_failed", "already open")));
+            }
+            if !self.egress_skip_connect {
+                match std::os::unix::net::UnixStream::connect(endpoint) {
+                    Ok(stream) => {
+                        self.egress_peers.insert(cid.to_string(), stream);
+                    }
+                    Err(_) => {
+                        return self.respond(id, None, Some(("egress_failed", "cannot connect")))
+                    }
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = (cid, endpoint);
+        self.respond(id, None, None)
+    }
+
+    fn release_due(&mut self) {
+        while self
+            .delayed
+            .front()
+            .is_some_and(|(due, _)| *due <= std::time::Instant::now())
+        {
+            if let Some((_, line)) = self.delayed.pop_front() {
+                self.pending.push_back(line);
+            }
+        }
+    }
+
+    /// Test helper: the helper reports its egress bridge ended by itself.
+    pub fn inject_egress_closed(&mut self, computer_id: &str, reason: &str) {
+        self.pending.push_back(
+            serde_json::json!({"event":"egress_closed","computer_id":computer_id,
+                "reason":reason})
+            .to_string(),
+        );
     }
 
     /// Test helper: simulate the guest opening the vsock channel.
@@ -557,19 +632,51 @@ impl HostTransport for FakeTransport {
                 self.guest_links.remove(&cid);
                 self.respond(id, None, None)
             }
+            "egress_open" => {
+                let endpoint = v["endpoint"].as_str().unwrap_or("").to_string();
+                let reply = self.fake_egress_open(id, &cid, &endpoint);
+                if let Some(delay) = self.egress_reply_delay {
+                    self.delayed
+                        .push_back((std::time::Instant::now() + delay, reply));
+                    return Ok(());
+                }
+                reply
+            }
+            "egress_close" => {
+                #[cfg(unix)]
+                self.egress_peers.remove(&cid);
+                self.respond(id, None, None)
+            }
             _ => self.respond(id, None, Some(("unknown_command", "unsupported command"))),
         };
         self.pending.push_back(reply);
         Ok(())
     }
 
-    fn recv(&mut self, _timeout: Duration) -> Result<String> {
-        self.pending
-            .pop_front()
-            .ok_or_else(|| ComputerError::Backend("fake host has no reply".to_string()))
+    fn recv(&mut self, timeout: Duration) -> Result<String> {
+        self.release_due();
+        if let Some(line) = self.pending.pop_front() {
+            return Ok(line);
+        }
+        if let Some((due, _)) = self.delayed.front() {
+            // A delayed answer exists: wait for it like a real pipe would.
+            let wait = due.saturating_duration_since(std::time::Instant::now());
+            if wait <= timeout {
+                std::thread::sleep(wait);
+                self.release_due();
+                if let Some(line) = self.pending.pop_front() {
+                    return Ok(line);
+                }
+            } else {
+                std::thread::sleep(timeout);
+                return Err(ComputerError::Timeout("no answer".to_string()));
+            }
+        }
+        Err(ComputerError::Backend("fake host has no reply".to_string()))
     }
 
     fn try_recv(&mut self) -> Option<Result<String>> {
+        self.release_due();
         self.pending.pop_front().map(Ok)
     }
 
@@ -638,6 +745,14 @@ pub(crate) struct NativeInner {
     /// Exclusive ownership of the computer directory while this engine
     /// owns the computer (see `computer_store`).
     lock: Option<crate::computer_store::ComputerLock>,
+    /// The egress stream is open (helper bridging it). Cleared by
+    /// `egress_closed`, stop, destroy, reset and a lost helper.
+    egress_open: bool,
+    /// Request id of an egress open whose answer is awaited outside the
+    /// lock (see `PendingNativeOpen`), and the answer once another round
+    /// trip happened to read it first.
+    egress_awaiting: Option<u64>,
+    egress_reply: Option<crate::vmhost_proto::HostResponse>,
 }
 
 /// Shared engine behind `MacOSVirtualizationBackend` and
@@ -646,8 +761,184 @@ pub(crate) struct NativeInner {
 pub struct NativeHelperBackend {
     images_dir: PathBuf,
     computers_dir: PathBuf,
-    inner: std::sync::Mutex<NativeInner>,
+    inner: std::sync::Arc<std::sync::Mutex<NativeInner>>,
 }
+
+/// Poison-tolerant lock on the engine state (see `lock_inner`).
+fn lock_shared(inner: &std::sync::Mutex<NativeInner>) -> std::sync::MutexGuard<'_, NativeInner> {
+    inner.lock().unwrap_or_else(|e| {
+        // A panic unwound out of a locked section: any flush it was
+        // running is gone, so the re-entrancy guard must not outlive it
+        // (a stuck flag would silence HostHello/Kick for good).
+        let mut inner = e.into_inner();
+        inner.flushing = false;
+        inner
+    })
+}
+
+/// The waiting half of a native egress open. Owns a handle to the engine
+/// state and takes its lock only for short slices, so nothing else (Core's
+/// other commands, the pump) queues behind the helper or the guest.
+struct PendingNativeOpen {
+    inner: std::sync::Arc<std::sync::Mutex<NativeInner>>,
+    computer_id: String,
+    request: u64,
+    endpoint: Option<crate::egress::PendingEndpoint>,
+    accept_timeout: Duration,
+    finished: bool,
+}
+
+impl PendingNativeOpen {
+    /// The helper's answer to the open, waiting in short lock slices.
+    fn wait_reply(&self) -> Result<()> {
+        let deadline = std::time::Instant::now() + crate::egress::EGRESS_HELPER_TIMEOUT;
+        loop {
+            let mut inner = lock_shared(&self.inner);
+            if let Some(resp) = inner.egress_reply.take() {
+                return Self::answer(resp);
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                let e = ComputerError::Timeout(format!(
+                    "no answer after {}s",
+                    crate::egress::EGRESS_HELPER_TIMEOUT.as_secs()
+                ));
+                NativeHelperBackend::abandon_transport(&mut inner, &e);
+                return Err(e);
+            }
+            if inner.transport.as_mut().map(|t| t.alive()) != Some(true) {
+                inner.cached = ComputerState::Error;
+                return Err(ComputerError::BackendDisconnected(format!(
+                    "{} is not running",
+                    inner.profile.helper_display_name
+                )));
+            }
+            let slice = remaining.min(EGRESS_WAIT_SLICE);
+            let received = inner.transport.as_mut().map(|t| t.recv(slice));
+            match received {
+                Some(Ok(raw)) => match parse_line(&raw) {
+                    Ok(HostLine::Response(resp)) if resp.id == self.request => {
+                        return Self::answer(resp)
+                    }
+                    Ok(HostLine::Response(other)) => {
+                        NativeHelperBackend::note_stray_response(&mut inner, other)
+                    }
+                    Ok(HostLine::Event(ev)) => {
+                        let mut obs = Vec::new();
+                        NativeHelperBackend::apply_event(
+                            &mut inner,
+                            &Some(self.computer_id.clone()),
+                            ev,
+                            &mut obs,
+                        );
+                        NativeHelperBackend::defer_observations(&mut inner, obs);
+                    }
+                    Err(e) => {
+                        return Err(ComputerError::Backend(format!("bad vm host line: {e}")));
+                    }
+                },
+                // A quiet slice: release the lock for other callers, retry.
+                Some(Err(ComputerError::Timeout(_))) => {}
+                Some(Err(e)) => {
+                    NativeHelperBackend::abandon_transport(&mut inner, &e);
+                    return Err(e);
+                }
+                None => return Err(ComputerError::NotCreated),
+            }
+            drop(inner);
+            // `Mutex` is not fair: without a real gap this loop would take
+            // the lock straight back from a caller queued behind it.
+            std::thread::sleep(EGRESS_WAIT_GAP);
+        }
+    }
+
+    fn answer(resp: crate::vmhost_proto::HostResponse) -> Result<()> {
+        if resp.ok {
+            return Ok(());
+        }
+        let err = resp
+            .error
+            .unwrap_or_else(|| crate::vmhost_proto::HostError {
+                code: crate::vmhost_proto::HostErrorCode::Internal,
+                message: String::new(),
+            });
+        Err(match err.code {
+            crate::vmhost_proto::HostErrorCode::GuestUnavailable => {
+                ComputerError::GuestUnavailable(err.message)
+            }
+            _ => ComputerError::Backend(err.message),
+        })
+    }
+
+    /// The open did not complete: forget it and, if the helper may have
+    /// opened its side, tell it to close (fire and forget, never waited).
+    fn undo(&mut self, tell_helper: bool) {
+        let mut inner = lock_shared(&self.inner);
+        if inner.egress_awaiting == Some(self.request) {
+            inner.egress_awaiting = None;
+            inner.egress_reply = None;
+        }
+        inner.egress_open = false;
+        if tell_helper {
+            let _ = NativeHelperBackend::send_only(
+                &mut inner,
+                HostCommand::EgressClose {
+                    computer_id: self.computer_id.clone(),
+                },
+            );
+        }
+    }
+}
+
+impl crate::egress::PendingEgressOpen for PendingNativeOpen {
+    fn wait(mut self: Box<Self>) -> Result<crate::egress::EgressEndpoint> {
+        self.finished = true;
+        let Some(endpoint) = self.endpoint.take() else {
+            return Err(ComputerError::Backend(
+                "the egress open was already waited for".to_string(),
+            ));
+        };
+        if let Err(e) = self.wait_reply() {
+            // The helper refused or is gone: nothing of ours stays open.
+            self.undo(false);
+            return Err(e);
+        }
+        {
+            let mut inner = lock_shared(&self.inner);
+            if inner.egress_awaiting == Some(self.request) {
+                inner.egress_awaiting = None;
+            }
+            // A stop or helper event may have closed it meanwhile.
+            if !inner.egress_open {
+                return Err(ComputerError::Backend(
+                    "the egress stream was closed while it opened".to_string(),
+                ));
+            }
+        }
+        match endpoint.accept(self.accept_timeout) {
+            Ok(stream) => Ok(stream),
+            Err(e) => {
+                // The helper said ok but never reached us: undo.
+                self.undo(true);
+                Err(e)
+            }
+        }
+    }
+}
+
+impl Drop for PendingNativeOpen {
+    fn drop(&mut self) {
+        // Never waited for (the caller gave up): close what was begun.
+        if !self.finished {
+            self.undo(true);
+        }
+    }
+}
+
+/// Longest the engine lock is held while waiting for the helper's answer.
+const EGRESS_WAIT_SLICE: Duration = Duration::from_millis(50);
+/// Pause between slices, with the lock released.
+const EGRESS_WAIT_GAP: Duration = Duration::from_millis(3);
 
 impl std::fmt::Debug for NativeHelperBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -674,6 +965,9 @@ impl NativeHelperBackend {
             instance: None,
             deferred: VecDeque::new(),
             lock: None,
+            egress_open: false,
+            egress_awaiting: None,
+            egress_reply: None,
         }
     }
 
@@ -736,7 +1030,7 @@ impl NativeHelperBackend {
         Self {
             images_dir,
             computers_dir,
-            inner: std::sync::Mutex::new(Self::fresh_inner(profile)),
+            inner: std::sync::Arc::new(std::sync::Mutex::new(Self::fresh_inner(profile))),
         }
     }
 
@@ -744,14 +1038,7 @@ impl NativeHelperBackend {
     /// must not turn every later lifecycle call (including stop) into a
     /// second panic; the state machine re-validates on the next call.
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, NativeInner> {
-        self.inner.lock().unwrap_or_else(|e| {
-            // A panic unwound out of a locked section: any flush it was
-            // running is gone, so the re-entrancy guard must not outlive it
-            // (a stuck flag would silence HostHello/Kick for good).
-            let mut inner = e.into_inner();
-            inner.flushing = false;
-            inner
-        })
+        lock_shared(&self.inner)
     }
 
     /// Test injection: pre-opened transport instead of spawning a process.
@@ -859,7 +1146,7 @@ impl NativeHelperBackend {
                     }
                     return Ok(resp.state);
                 }
-                Ok(HostLine::Response(_)) => continue, // not ours; keep waiting
+                Ok(HostLine::Response(other)) => Self::note_stray_response(inner, other),
                 Ok(HostLine::Event(ev)) => {
                     let mut obs = Vec::new();
                     Self::apply_event(inner, &computer_id_for(&command), ev, &mut obs);
@@ -872,11 +1159,20 @@ impl NativeHelperBackend {
         }
     }
 
+    /// A response nobody is blocked on: the pending egress open's answer
+    /// is kept for it; anything else is a stray and is dropped.
+    fn note_stray_response(inner: &mut NativeInner, resp: crate::vmhost_proto::HostResponse) {
+        if inner.egress_awaiting == Some(resp.id) {
+            inner.egress_reply = Some(resp);
+        }
+    }
+
     /// The helper hung or died mid-request. Terminate it (dropping the
     /// transport kills the child, and the VM with it) so no VM outlives
     /// the host's ability to control it, then surface Error.
     fn abandon_transport(inner: &mut NativeInner, cause: &ComputerError) {
         inner.cached = ComputerState::Error;
+        inner.egress_open = false;
         inner.pending_outbound.clear();
         if inner.transport.take().is_some() {
             let reason = match cause {
@@ -913,6 +1209,11 @@ impl NativeHelperBackend {
             }
             E::VmFailed { .. } => {
                 inner.cached = ComputerState::Error;
+                Vec::new()
+            }
+            // The helper's bridge ended by itself (guest or app side).
+            E::EgressClosed { .. } => {
+                inner.egress_open = false;
                 Vec::new()
             }
             // Queued actions belong to the connection that caused them: a
@@ -1051,7 +1352,7 @@ impl NativeHelperBackend {
             };
             bytes += line.len();
             match parse_line(&line) {
-                Ok(HostLine::Response(_)) => {} // stray; calls consume their own
+                Ok(HostLine::Response(other)) => Self::note_stray_response(inner, other),
                 Ok(HostLine::Event(ev)) => {
                     Self::apply_event(inner, &computer_id, ev, &mut observations)
                 }
@@ -1163,7 +1464,7 @@ impl NativeHelperBackend {
                         ));
                     }
                 }
-                Ok(HostLine::Response(_)) => continue,
+                Ok(HostLine::Response(other)) => Self::note_stray_response(inner, other),
                 Err(_) => continue,
             }
         }
@@ -1348,6 +1649,7 @@ impl NativeHelperBackend {
         inner.guest.on_vm_stopped();
         inner.deferred.clear();
         inner.instance = None;
+        inner.egress_open = false;
         drop(inner);
         self.enforce_log_caps();
         Ok(state)
@@ -1420,6 +1722,7 @@ impl NativeHelperBackend {
         inner.deferred.clear();
         inner.pending_outbound.clear();
         inner.instance = None;
+        inner.egress_open = false;
         if inner.transport.as_mut().map(|t| t.alive()) == Some(true) {
             let _ = Self::call(
                 &mut inner,
@@ -1482,10 +1785,125 @@ impl NativeHelperBackend {
         inner.paths = None;
         inner.cached = ComputerState::Stopped;
         inner.instance = None;
+        inner.egress_open = false;
         inner.guest.on_vm_stopped();
         inner.pending_outbound.clear();
         inner.deferred.clear();
         Ok(())
+    }
+
+    // --- egress stream (docs/EGRESS.md) -------------------------------
+
+    /// Open the egress stream and wait for it (blocking; tests and
+    /// callers without a lock to release). Core uses
+    /// [`backend_begin_open_egress`](Self::backend_begin_open_egress) and
+    /// waits with its lock released.
+    pub fn backend_open_egress(&self) -> Result<crate::egress::EgressEndpoint> {
+        self.backend_open_egress_within(crate::egress::EGRESS_ACCEPT_TIMEOUT)
+    }
+
+    pub(crate) fn backend_open_egress_within(
+        &self,
+        accept_timeout: Duration,
+    ) -> Result<crate::egress::EgressEndpoint> {
+        use crate::egress::PendingEgressOpen;
+        Box::new(self.begin_open_egress_within(accept_timeout)?).wait()
+    }
+
+    /// Quick half of an egress open: create the local endpoint (it listens
+    /// before the helper is asked) and send the helper's command. Nothing
+    /// waits here; the returned handle waits for the answer and the
+    /// guest's connection without the engine lock.
+    pub fn backend_begin_open_egress(&self) -> Result<Box<dyn crate::egress::PendingEgressOpen>> {
+        Ok(Box::new(self.begin_open_egress_within(
+            crate::egress::EGRESS_ACCEPT_TIMEOUT,
+        )?))
+    }
+
+    fn begin_open_egress_within(&self, accept_timeout: Duration) -> Result<PendingNativeOpen> {
+        use crate::egress::PendingEndpoint;
+        let mut inner = self.lock_inner();
+        let id = inner.id.ok_or(ComputerError::NotCreated)?.to_string();
+        if inner.cached != ComputerState::Running {
+            return Err(ComputerError::WrongState {
+                expected: ComputerState::Running,
+                actual: inner.cached,
+            });
+        }
+        if inner.egress_open {
+            return Err(ComputerError::Backend(
+                "the egress stream is already open".to_string(),
+            ));
+        }
+        Self::ensure_transport(&mut inner, None)?;
+        let data_root = self.computers_dir.parent().ok_or_else(|| {
+            ComputerError::Backend("the computers folder has no parent".to_string())
+        })?;
+        // The endpoint exists (and listens) before the helper is asked.
+        let endpoint = PendingEndpoint::create(data_root)?;
+        let request = Self::send_only(
+            &mut inner,
+            HostCommand::EgressOpen {
+                computer_id: id.clone(),
+                endpoint: endpoint.wire_endpoint(),
+            },
+        )?; // `endpoint` drops on failure: removed
+        inner.egress_open = true;
+        inner.egress_awaiting = Some(request);
+        inner.egress_reply = None;
+        Ok(PendingNativeOpen {
+            inner: self.inner.clone(),
+            computer_id: id,
+            request,
+            endpoint: Some(endpoint),
+            accept_timeout,
+            finished: false,
+        })
+    }
+
+    /// Sends a command without waiting for its answer; returns its id.
+    fn send_only(inner: &mut NativeInner, command: HostCommand) -> Result<u64> {
+        if inner.transport.as_mut().map(|t| t.alive()) != Some(true) {
+            inner.cached = ComputerState::Error;
+            return Err(ComputerError::BackendDisconnected(format!(
+                "{} is not running",
+                inner.profile.helper_display_name
+            )));
+        }
+        let id = inner.next_id;
+        inner.next_id += 1;
+        let line = format_request(id, &command);
+        if let Some(transport) = inner.transport.as_mut() {
+            if let Err(e) = transport.send(&line) {
+                inner.cached = ComputerState::Error;
+                return Err(e);
+            }
+        }
+        Ok(id)
+    }
+
+    /// Ask the helper to close the egress stream (idempotent).
+    pub fn backend_close_egress(&self) -> Result<()> {
+        let mut inner = self.lock_inner();
+        let Some(id) = inner.id.map(|i| i.to_string()) else {
+            return Ok(());
+        };
+        if !inner.egress_open {
+            return Ok(());
+        }
+        inner.egress_open = false;
+        if inner.transport.as_mut().map(|t| t.alive()) != Some(true) {
+            return Ok(());
+        }
+        let result = Self::call(
+            &mut inner,
+            HostCommand::EgressClose {
+                computer_id: id.clone(),
+            },
+            crate::egress::EGRESS_CLOSE_TIMEOUT,
+        );
+        Self::flush_outbound(&mut inner, &Some(id));
+        result.map(|_| ())
     }
 
     pub fn computer_id(&self) -> Option<ComputerId> {
@@ -1602,8 +2020,11 @@ impl NativeHelperBackend {
                 Ok(HostLine::Event(E::VmFailed { .. })) => {
                     inner.cached = ComputerState::Error;
                 }
-                Ok(HostLine::Response(_)) => {} // owned by in-flight calls
-                Err(_) => {}                    // stay live on garbage
+                Ok(HostLine::Event(E::EgressClosed { .. })) => {
+                    inner.egress_open = false;
+                }
+                Ok(HostLine::Response(other)) => Self::note_stray_response(&mut inner, other),
+                Err(_) => {} // stay live on garbage
             }
         }
         out
@@ -2014,7 +2435,9 @@ fn computer_id_for(command: &HostCommand) -> Option<String> {
         | HostCommand::Destroy { computer_id }
         | HostCommand::GuestSend { computer_id, .. }
         | HostCommand::GuestStatus { computer_id }
-        | HostCommand::GuestDisconnect { computer_id } => Some(computer_id.clone()),
+        | HostCommand::GuestDisconnect { computer_id }
+        | HostCommand::EgressOpen { computer_id, .. }
+        | HostCommand::EgressClose { computer_id } => Some(computer_id.clone()),
     }
 }
 

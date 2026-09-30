@@ -38,6 +38,11 @@ pub trait AgentComputer: Send + Sync {
     fn set_status(&self, task: TaskId, status: TaskStatus) -> Result<(), String>;
     /// Publish an event on the Core bus.
     fn publish(&self, event: AgentEvent);
+    /// The internet this run's computer actually has right now (only
+    /// while a session is open); `None` when offline.
+    fn internet(&self) -> Option<pegoles_protocol::InternetAccess> {
+        None
+    }
 }
 
 /// Hard limits for one task run. Deterministic; never model-controlled.
@@ -313,6 +318,12 @@ impl Run<'_> {
                     .unwrap_or((RunEnd::Failed, format!("Could not see the screen: {e}")))
             }
         };
+        planner.set_internet_note(
+            self.computer
+                .internet()
+                .as_ref()
+                .and_then(crate::planner::internet_note),
+        );
         if let Err(e) = planner.start(objective, &first) {
             return (RunEnd::Failed, planner_failure(&e));
         }

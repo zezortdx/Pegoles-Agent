@@ -6,10 +6,12 @@
 pub mod agent;
 pub mod commands;
 pub mod consent;
+pub mod diagnostics;
 pub mod local;
 #[cfg(target_os = "macos")]
 mod native_display;
 pub mod nav_guard;
+pub mod onboarding;
 pub mod state;
 pub mod webview_egress;
 
@@ -83,9 +85,19 @@ pub fn run() {
             ))));
             #[cfg(debug_assertions)]
             grant_debug_commands(app)?;
+            // Pegoles is open again: the one-time "resume after the
+            // setup restart" entry has done its job (no-op elsewhere).
+            pegoles_computer::windows::clear_resume_after_restart();
             // The only window, with navigation kept on the app origin and
             // new windows refused (see nav_guard.rs).
-            nav_guard::build_main_window(app)?;
+            let boot = {
+                let shared: SharedState = app.state::<SharedState>().inner().clone();
+                let local = app.state::<local::LocalModels>().inner().clone();
+                onboarding::boot_script(&pegoles_computer::pegoles_data_dir(), || {
+                    commands::already_set_up(&shared, &local)
+                })
+            };
+            nav_guard::build_main_window(app, boot)?;
             // Platform display adapter (macOS: in-process VM host + native
             // framebuffer view). Failure is recorded, never fatal, never
             // replaced by a fake display.
@@ -113,6 +125,33 @@ pub fn run() {
                     }
                 }
             });
+            // The task's internet (docs/EGRESS.md): Stop, pause, takeover and
+            // exit cut it through a lock-free handle, and every proxy
+            // decision (host, verdict, reason code, bytes, time) is streamed
+            // to the UI as `pegoles://egress`.
+            {
+                let (kill, mut decisions) = {
+                    let guard = commands::lock_state(&shared);
+                    (
+                        guard.registry.egress_kill_handle(),
+                        guard.registry.subscribe_egress(),
+                    )
+                };
+                app.state::<AgentSupervisor>().set_internet_kill(kill);
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::sync::broadcast::error::RecvError;
+                    loop {
+                        match decisions.recv().await {
+                            Ok(decision) => {
+                                let _ = handle.emit("pegoles://egress", &decision);
+                            }
+                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Closed) => break,
+                        }
+                    }
+                });
+            }
             // Core maintenance does not depend on the UI polling (a hidden
             // window must not let the guest session time out). Skips a
             // tick when a command holds the state.
@@ -149,6 +188,10 @@ pub fn run() {
             // its own when this process closes its stdin (see
             // native/macos/pegoles-vm-host/Sources/Host.swift).
             app.state::<AgentSupervisor>().cancel(None);
+            // The internet ends first, even if a command holds the app
+            // lock (closing the process would end it anyway).
+            app.state::<AgentSupervisor>()
+                .cut_internet("Pegoles is closing");
             app.state::<commands::ScriptCancel>().trip();
             app.state::<local::LocalModels>().shutdown();
         }

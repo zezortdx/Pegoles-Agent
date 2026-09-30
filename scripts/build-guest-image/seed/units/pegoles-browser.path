@@ -1,0 +1,13 @@
+# Starts the browser when the panel launcher creates the trigger file.
+# PathExists re-arms by itself: pegoles-browser.service deletes the file
+# at start and at stop, so a second click while it runs does not reopen
+# it after it is closed.
+[Unit]
+Description=Pegoles browser launcher (panel click)
+
+[Path]
+PathExists=/run/pegoles/launch-browser
+Unit=pegoles-browser.service
+
+[Install]
+WantedBy=multi-user.target
