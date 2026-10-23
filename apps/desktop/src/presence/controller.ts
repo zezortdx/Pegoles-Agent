@@ -41,6 +41,19 @@ export function engineStateForMode(mode: PresenceMode, size: number): StateId {
   return state === "orbit" && size < MIN_ORBIT_SIZE ? "thinking" : state;
 }
 
+function expressionForMode(mode: PresenceMode) {
+  return EXPRESSION_BY_ID.get(SCRIPTS[mode].expression ?? "attentive") ?? null;
+}
+
+function sampleStaticPose(mode: PresenceMode, state: StateId): BotFrame {
+  return new BotEngine(BODY_RADIUS, state, null, expressionForMode(mode)).sample(POSES[state]);
+}
+
+/** Safe synchronous first paint while a new Core signal replaces an old sampler. */
+export function staticFrameForMode(mode: PresenceMode, size: number): BotFrame {
+  return sampleStaticPose(mode, engineStateForMode(mode, size));
+}
+
 export type AvatarReaction = "acknowledge" | "nudge";
 const REACTIONS = {
   acknowledge: { state: "wink", duration: 1.6 },
@@ -72,7 +85,7 @@ export class AvatarController {
   get still(): boolean { return SCRIPTS[this.mode].still === true; }
 
   private expression() {
-    return EXPRESSION_BY_ID.get(SCRIPTS[this.mode].expression ?? "attentive") ?? null;
+    return expressionForMode(this.mode);
   }
 
   setMode(mode: PresenceMode, size: number): void {
@@ -85,7 +98,16 @@ export class AvatarController {
     this.engine.setExpression(this.expression(), this.time);
     // A new Core signal takes priority over an old orbit or one-shot gesture.
     this.engine.reset(state, this.time);
-    this.engine.setLook(null, this.time, 0);
+    this.engine.setLook(null, this.time);
+    this.looking = false;
+  }
+
+  /** Clear transient gestures when motion is disabled. */
+  settle(): void {
+    this.reaction = null;
+    this.blockStart = this.time;
+    this.engine.reset(this.baseState, this.time);
+    this.engine.setLook(null, this.time);
     this.looking = false;
   }
 
@@ -133,7 +155,6 @@ export class AvatarController {
 
   /** New sampler: no pending morph, reaction, pointer or advancing clock. */
   staticFrame(): BotFrame {
-    const engine = new BotEngine(BODY_RADIUS, this.baseState, null, this.expression());
-    return engine.sample(POSES[this.baseState]);
+    return sampleStaticPose(this.mode, this.baseState);
   }
 }

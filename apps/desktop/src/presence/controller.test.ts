@@ -32,6 +32,20 @@ describe("Core presence mode to avatar engine", () => {
     expect(new AvatarController("using-computer", 56).staticFrame().arcs.length).toBeGreaterThan(0);
   });
 
+  it("keeps transition frames finite when clearing the gaze", () => {
+    const avatar = new AvatarController("idle", 152);
+    avatar.setLook({ x: 0.5, y: -0.5 });
+    avatar.sample(0.1);
+    for (const mode of ["attentive", "using-computer", "needs-user", "idle"] as const) {
+      avatar.setMode(mode, 152);
+      expect(JSON.stringify(avatar.sample(0))).not.toMatch(/NaN|Infinity/);
+    }
+    avatar.react("acknowledge");
+    avatar.settle();
+    expect(avatar.engineState).toBe("idle");
+    expect(JSON.stringify(avatar.sample(0))).not.toMatch(/NaN|Infinity/);
+  });
+
   it("cycles real work without changing the app mode", () => {
     const avatar = new AvatarController("working", 152);
     avatar.sample(3.5);
