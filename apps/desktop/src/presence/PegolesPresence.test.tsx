@@ -65,9 +65,10 @@ describe("PegolesPresence", () => {
   });
 
   it("reacts to a new keystroke through the avatar controller", () => {
-    const view = render(<PegolesPresence mode="idle" size={152} nudge={0} />);
+    const view = render(<PegolesPresence mode="attentive" size={152} nudge={0} />);
     const root = view.container.querySelector<HTMLElement>(".presence");
-    view.rerender(<PegolesPresence mode="idle" size={152} nudge={1} />);
+    expect(root?.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("idle");
+    view.rerender(<PegolesPresence mode="attentive" size={152} nudge={1} />);
     expect(root?.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("wide");
   });
 

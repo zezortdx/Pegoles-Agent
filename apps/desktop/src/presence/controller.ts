@@ -20,7 +20,8 @@ interface Script {
 const SCRIPTS: Readonly<Record<PresenceMode, Script>> = {
   offline: { state: "idle", expression: "sad", still: true },
   idle: { state: "idle" },
-  attentive: { state: "wide" },
+  // Composer focus needs a base face for gaze and a distinct typing reaction.
+  attentive: { state: "idle", expression: "attentive" },
   acknowledging: { state: "idle" },
   thinking: { state: "thinking" },
   planning: { state: "thinking" },

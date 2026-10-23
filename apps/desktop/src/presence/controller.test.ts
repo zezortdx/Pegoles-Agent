@@ -3,7 +3,7 @@ import { AvatarController, engineStateForMode } from "./controller";
 import type { PresenceMode } from "./modes";
 
 const cases: [PresenceMode, string][] = [
-  ["offline", "idle"], ["idle", "idle"], ["attentive", "wide"],
+  ["offline", "idle"], ["idle", "idle"], ["attentive", "idle"],
   ["acknowledging", "idle"], ["thinking", "thinking"], ["planning", "thinking"],
   ["working", "orbit"], ["using-computer", "orbit"], ["waiting", "notify"],
   ["needs-user", "notify"], ["blocked", "exclaim"], ["done", "idle"], ["error", "exclaim"],
@@ -30,6 +30,22 @@ describe("Core presence mode to avatar engine", () => {
   it("keeps the orbit at the 56 px boundary", () => {
     expect(engineStateForMode("using-computer", 56)).toBe("orbit");
     expect(new AvatarController("using-computer", 56).staticFrame().arcs.length).toBeGreaterThan(0);
+  });
+
+  it("visibly reacts to typing while the composer is attentive", () => {
+    const resting = new AvatarController("attentive", 152, 7);
+    const typing = new AvatarController("attentive", 152, 7);
+    typing.react("nudge");
+    expect(typing.sample(0.12).eyes).not.toEqual(resting.sample(0.12).eyes);
+    typing.sample(0.2);
+    expect(typing.engineState).toBe("idle");
+  });
+
+  it("follows a gaze target while the composer is attentive", () => {
+    const resting = new AvatarController("attentive", 152, 7);
+    const looking = new AvatarController("attentive", 152, 7);
+    looking.setLook({ x: 0.6, y: 1 });
+    expect(looking.sample(0.2).eyes).not.toEqual(resting.sample(0.2).eyes);
   });
 
   it("keeps transition frames finite when clearing the gaze", () => {
