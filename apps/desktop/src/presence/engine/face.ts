@@ -89,7 +89,10 @@ const BLINKS: number[] = (() => {
   return out;
 })();
 const BLINK_DUR = 0.18;
+// Repeat the bounded schedule with a quiet seam after the final full blink.
+const BLINK_PERIOD = BLINKS[BLINKS.length - 1] + 1.9;
 function blinkLid(t: number): number {
+  t = ((t % BLINK_PERIOD) + BLINK_PERIOD) % BLINK_PERIOD;
   for (let i = 0; i < BLINKS.length; i++) {
     const start = BLINKS[i];
     if (t < start)

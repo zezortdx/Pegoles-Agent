@@ -13,5 +13,6 @@ ported source file carries the copyright and MIT attribution.
 Pegoles adapts the TypeScript port with English identifiers and comments.
 The React renderer and controller use Pegoles' silver brand tokens and
 existing Core presence signals. The upstream geometry, timings, expression
-profiles, blink schedule and gaze calculations are retained. No upstream
+profiles and gaze calculations are retained. The deterministic blink schedule
+repeats so blinking continues during long sessions. No upstream
 application services or runtime dependencies are included.
