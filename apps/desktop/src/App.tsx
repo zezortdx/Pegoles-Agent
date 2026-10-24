@@ -1,3 +1,5 @@
+import { ApprovalCard } from "./approvals/ApprovalCard";
+import { ApprovalSetting } from "./approvals/ApprovalSetting";
 import { t, useLocale } from "./i18n";
 import { MakeAgentDialog } from "./preferences/MakeAgentDialog";
 import { PreferencesProvider, usePreferences } from "./preferences/PreferencesProvider";
@@ -351,6 +353,12 @@ function AppContent() {
   const modelName = provider === "anthropic" ? (modelSettings.settings ? modelLabel(modelSettings.settings.model) : undefined) : "Pegoles Local";
   const setupLabel = provider === "anthropic" ? undefined : local.stage === "preparing" ? t("Setting up Pegoles Local…") : t("Set up Pegoles Local");
 
+  const resolveApproval = async (id: string, decision: "approve_once" | "deny") => {
+    try { await api.resolveApproval(id, decision); } finally {
+      await core.refresh();
+      window.requestAnimationFrame(() => document.querySelector<HTMLElement>(".approval-inbox > summary")?.focus());
+    }
+  };
   // ── The work column's views ─────────────────────────────────────
   let content: ReactNode;
   if (view.kind === "task" && selected && activity && pill) {
@@ -359,6 +367,7 @@ function AppContent() {
         key={selected.id}
         task={selected}
         items={transcript}
+        approvalCards={core.approvals?.pending.filter((p) => p.task_id === selected.id).map((p) => <ApprovalCard key={p.id} approval={p} resolve={resolveApproval} />)}
         historyEnabled={core.native && connected}
         historyRevision={`${selected.updated_at}:${events.length}`}
         activity={activity}
@@ -387,6 +396,7 @@ function AppContent() {
         headingRef={headingRef} connected={connected} native={core.native} status={status} host={core.host} computer={computer}
         intelligence={intelligence} model={modelSettings} quality={quality} resolvedQuality={tier === "full" ? "full" : "reduced"} onQuality={chooseQuality}
         systemReducedMotion={systemReducedMotion} eventCount={events.length} anchor={anchor}
+        approvalSetting={core.approvals && <ApprovalSetting enabled={core.approvals.ask_before_input} refresh={core.refresh} />}
       />
     );
   } else {
@@ -473,6 +483,10 @@ function AppContent() {
               onNewTask={newTask}
               onToggleComputer={toggleComputer}
             />
+            {core.approvals && <details className="approval-inbox">
+              <summary><span aria-live="polite">{t("Approvals ({0})", { 0: core.approvals.pending.length })}</span></summary>
+              {core.approvals.pending.length === 0 ? <p>{t("No pending approvals.")}</p> : core.approvals.pending.map((p) => <ApprovalCard key={p.id} approval={p} resolve={resolveApproval} />)}
+            </details>}
             <div className="work__views">
               <AnimatePresence mode="popLayout" initial={false}>
                 <m.div

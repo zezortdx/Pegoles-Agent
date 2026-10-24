@@ -45,6 +45,7 @@ beforeEach(() => {
   vi.spyOn(api, "getStatus").mockResolvedValue(status);
   vi.spyOn(api, "listEvents").mockResolvedValue([]);
   vi.spyOn(api, "listTasks").mockResolvedValue([]);
+  vi.spyOn(api, "getApprovals").mockResolvedValue({ask_before_input:false,pending:[]});
   vi.spyOn(api, "getHistoryStatus").mockResolvedValue({read_only:false,previous_task_ids:[]});
   vi.spyOn(api, "getTaskHistory").mockResolvedValue(null);
   vi.spyOn(api, "getModelSettings").mockResolvedValue(noModel);
@@ -434,4 +435,20 @@ describe("desktop shell", () => {
     await waitFor(() => expect(document.documentElement.hasAttribute("data-reduce-transparency")).toBe(false));
     expect(document.documentElement.hasAttribute("data-increase-contrast")).toBe(true);
   });
+});
+
+it("shows the real bounded approvals inbox and waits for Core decisions", async () => {
+  const pending = { id: "opaque-request", task_id: task.id, computer_id: "computer", summary: "VM input: key_press", expires_at: new Date(Date.now() + 120000).toISOString() };
+  vi.mocked(api.getApprovals).mockResolvedValue({ask_before_input:true,pending:[pending]});
+  vi.spyOn(api, "resolveApproval").mockImplementation(async (id, decision) => {
+    expect(id).toBe("opaque-request"); expect(decision).toBe("deny");
+    vi.mocked(api.getApprovals).mockResolvedValue({ask_before_input:true,pending:[]});
+    return null;
+  });
+  render(<App />);
+  const title = await screen.findByText("Approvals (1)");
+  fireEvent.click(title);
+  fireEvent.click(await screen.findByRole("button", {name:"Deny"}));
+  await screen.findByText("Approvals (0)");
+  expect(screen.queryByRole("button", {name:"Approve once"})).toBeNull();
 });

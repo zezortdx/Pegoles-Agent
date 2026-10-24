@@ -133,3 +133,26 @@ No VM/cloud call or installed-app restart is claimed by unit tests.
 | Least privilege | Two read-only IPCs in `ipc_commands.rs`/main-window capability; exact `ipcSurface.test.ts` payloads and Rust ACL tests; no path/URL/write/action command or filesystem permission. |
 | Full repository checks | `pnpm install --frozen-lockfile --ignore-scripts`, then `RUSTUP_TOOLCHAIN=1.97.1 RUST_TEST_THREADS=1 bash scripts/check.sh`; logs in ignored `target/review/agent-2.0/pr3-*.log`. Serial Rust tests avoid the documented baseline image-test environment race. |
 | Manual acceptance pending | Installed app: complete one task, quit/relaunch, find previous result; quit mid-run/approval/pending and verify cancelled/no dispatch; make history unavailable and verify persistent warning/no overwrite. VoiceOver/table navigation, native display interaction, and Windows ACL/reparse-point semantics require platform hardware checks. |
+
+### Agent 2.0 human approvals — offline evidence, hardware pending
+
+Required offline gates: strict optional exhaustive policy preserves all Deny
+rules; real Core executor suspends without holding locks, approves the original
+ID exactly once and rejects replay; deny/cancel/stale identity/control/expiry,
+queue bounds, whole-text tripwire and sliced-prefix accounting; runner deadline
+settles waiting tasks without repeated requests; native refusal and post-dialog
+races through injected deciders; unknown model/guest approval tags rejected;
+closed IPC enum, release capabilities and exact bridge shapes; UI hostile text,
+native pending/refusal, expiry, keyboard focus and localized session setting.
+Run the ordinary complete `scripts/check.sh` with `RUST_TEST_THREADS=1` (existing
+image tests mutate process-global environment). No native dialogs are opened in
+tests. Existing history taint, recovery, retention and preferences gates remain.
+
+Manual acceptance remains pending: installed app, enable the session toggle via
+native confirmation, submit a task, inspect inline card/inbox/count/deadline,
+approve once, deny, let 120 seconds expire, cancel/stop/take control while the
+native dialog is open, and verify no stale dispatch. Test long typing with Stop
+between slices, app restart resetting the visibly session-only toggle, en/pt-BR
+copy, keyboard focus, VoiceOver and actual VM behavior. Native dialogs/VM/cloud
+inference were not exercised during implementation; offline tests are not that
+evidence. Approval changes do not certify hardware, packaging or release signing.

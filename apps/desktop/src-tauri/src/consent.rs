@@ -21,6 +21,13 @@ pub const KEY_CANCELLED: &str = "the macOS key window was cancelled, so nothing 
 /// The questions Pegoles asks outside the webview. A trait so tests can
 /// answer them; `Err` means the question could not be asked at all.
 pub trait Consent: Send + Sync {
+    fn confirm_agent_input(&self, _summary: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn change_input_policy(&self, _enabled: bool) -> Result<bool, String> {
+        Ok(false)
+    }
+
     /// Ask before tasks start going to `provider`. `Ok(true)` only when
     /// the user chose to continue.
     fn allow_cloud_planner(&self, provider: Provider) -> Result<bool, String>;
@@ -135,6 +142,7 @@ mod native {
         open: AtomicBool,
         cloud_backoff: Mutex<DeclineBackoff>,
         key_backoff: Mutex<DeclineBackoff>,
+        input_backoff: Mutex<DeclineBackoff>,
     }
 
     struct Reopen<'a>(&'a AtomicBool);
@@ -152,7 +160,31 @@ mod native {
                 open: AtomicBool::new(false),
                 cloud_backoff: Mutex::new(DeclineBackoff::default()),
                 key_backoff: Mutex::new(DeclineBackoff::default()),
+                input_backoff: Mutex::new(DeclineBackoff::default()),
             }
+        }
+
+        fn confirm_input(&self, summary: String) -> Result<bool, String> {
+            if lock(&self.input_backoff).closed(Instant::now()) {
+                return Err(PROMPT_PAUSED.into());
+            }
+            let allowed = self.ask(move |mtm| {
+                let alert = alert(mtm, "Pegoles human confirmation", &summary, "Confirm once");
+                let buttons = alert.buttons();
+                if let (Some(confirm), Some(cancel)) = (buttons.firstObject(), buttons.lastObject())
+                {
+                    confirm.setKeyEquivalent(&NSString::from_str(""));
+                    cancel.setKeyEquivalent(&NSString::from_str("\r"));
+                }
+                alert.runModal() == NSAlertFirstButtonReturn
+            })?;
+            let mut backoff = lock(&self.input_backoff);
+            if allowed {
+                backoff.accepted();
+            } else {
+                backoff.declined(Instant::now());
+            }
+            Ok(allowed)
         }
 
         /// Run `show` on the main thread (AppKit) and wait for the answer.
@@ -191,6 +223,15 @@ mod native {
     }
 
     impl Consent for NativeConsent {
+        fn confirm_agent_input(&self, summary: &str) -> Result<bool, String> {
+            self.confirm_input(format!("Approve this exact pending action once?\n{summary}\nThe request expires after 120 seconds. Typed text is never shown here."))
+        }
+        fn change_input_policy(&self, enabled: bool) -> Result<bool, String> {
+            self.confirm_input(if enabled {
+                "Ask before every modifying agent input in the VM for this session? This setting resets to off when Pegoles restarts."
+            } else { "Stop asking before agent input for this session? Built-in policy denials still apply." }.into())
+        }
+
         fn allow_cloud_planner(&self, provider: Provider) -> Result<bool, String> {
             let name = match provider {
                 Provider::Anthropic => "Anthropic",

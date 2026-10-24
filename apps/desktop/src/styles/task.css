@@ -258,3 +258,9 @@
 @media (prefers-reduced-transparency: reduce) {
   .dock { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--material-float-solid); }
 }
+
+/* Bounded inbox and keyboard-operable one-shot decisions. */
+.approval-inbox { flex: 0 0 auto; max-height: min(40vh, 24rem); overflow-y: auto; padding: 8px var(--gutter); }
+.approval-inbox > summary { cursor: pointer; color: var(--text-2); font: var(--type-small); }
+.approval-inbox .ask { margin-block: 12px; }
+.ask__actions { display: flex; flex-wrap: wrap; gap: 8px; }

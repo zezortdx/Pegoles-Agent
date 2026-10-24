@@ -1,5 +1,5 @@
 import { t, useLocale } from "../i18n";
-import { useEffect, useRef, type Ref } from "react";
+import { useEffect, useRef, type Ref, type ReactNode } from "react";
 import { m } from "motion/react";
 import type { AgentTask } from "../lib/tauri";
 import type { TaskActivity } from "../state/agentState";
@@ -15,6 +15,7 @@ import { Narrative } from "./Narrative";
 
 export interface TaskViewProps {
   readonly task: AgentTask;
+  readonly approvalCards?: ReactNode;
   readonly items: readonly TranscriptItem[];
   readonly activity: TaskActivity;
   readonly state: ActivityPill;
@@ -173,6 +174,7 @@ export function TaskView(props: TaskViewProps) {
             <NotStarted activity={activity} onOpenComputer={props.onOpenComputer} onModelSettings={props.onModelSettings}
               onStart={props.onStart} starting={props.starting} startError={props.startError} local={props.local} />
           )}
+          {props.approvalCards}
           <Narrative items={items} animated={props.animated} live={activity.live} failedAt={task.status === "failed" ? activity.detail : undefined} />
           <TaskArtifacts taskId={task.id} revision={props.historyRevision ?? task.updated_at} enabled={props.historyEnabled ?? false} />
           {waitingFirst && <p className="narrative__waiting"><span className="narrative__pulse pg-work-anim" aria-hidden="true" />{t("Waiting for the first action")}</p>}

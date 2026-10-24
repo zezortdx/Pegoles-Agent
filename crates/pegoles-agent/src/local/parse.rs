@@ -586,6 +586,23 @@ mod tests {
     }
 
     #[test]
+    fn model_cannot_approve_itself_or_change_human_policy() {
+        for family in [ModelFamily::MaiUi, ModelFamily::Qwen3Vl] {
+            for name in ["approve_once", "resolve_approval", "set_input_approval"] {
+                let raw = format!(
+                    r#"<tool_call>{{"name":"{name}","arguments":{{"id":"x","decision":"approve_once"}}}}</tool_call>"#
+                );
+                assert!(parse(family, &raw, false, None).is_err());
+                let raw = format!(
+                    r#"<tool_call>{{"name":"{}","arguments":{{"action":"{name}"}}}}</tool_call>"#,
+                    tool_name(family)
+                );
+                assert!(parse(family, &raw, false, None).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn qwen_click_maps_relative_coordinates() {
         let p = q(
             r#"{"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,250]}}"#,

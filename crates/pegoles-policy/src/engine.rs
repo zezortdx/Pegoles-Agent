@@ -5,15 +5,43 @@ fn in_unit_square(x: f64, y: f64) -> bool {
     x.is_finite() && y.is_finite() && (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)
 }
 
-/// Task-scoped evaluation context. Empty today: every action in the
-/// vocabulary is judged on its own shape. Future grants (e.g. a task that
-/// may use the network) belong here, set by Core, never by a model.
+/// Core-owned stricter input policy. This can add approval, never remove a Deny.
 #[derive(Clone, Debug, Default)]
-pub struct PolicyContext {}
+pub struct PolicyContext {
+    pub ask_before_input: bool,
+}
 
 /// Deterministic policy entry point. The match is exhaustive: a new
 /// action variant does not compile until it gets a rule here.
-pub fn evaluate(req: &ActionRequest, _ctx: &PolicyContext) -> PolicyVerdict {
+pub fn evaluate(req: &ActionRequest, ctx: &PolicyContext) -> PolicyVerdict {
+    let verdict = evaluate_shape(req);
+    let modifies = match req.action {
+        ComputerAction::ObserveScreen
+        | ComputerAction::GetDisplayInfo
+        | ComputerAction::Wait { .. } => false,
+        ComputerAction::MovePointer { .. }
+        | ComputerAction::Click { .. }
+        | ComputerAction::DoubleClick { .. }
+        | ComputerAction::MouseDown { .. }
+        | ComputerAction::MouseUp { .. }
+        | ComputerAction::Drag { .. }
+        | ComputerAction::Scroll { .. }
+        | ComputerAction::KeyPress { .. }
+        | ComputerAction::KeyChord { .. }
+        | ComputerAction::TypeText { .. } => true,
+    };
+    if ctx.ask_before_input && modifies && verdict.decision == Decision::Allow {
+        PolicyVerdict {
+            decision: Decision::RequireApproval,
+            reason: "Human approval required for VM input".into(),
+            ..verdict
+        }
+    } else {
+        verdict
+    }
+}
+
+fn evaluate_shape(req: &ActionRequest) -> PolicyVerdict {
     use pegoles_protocol::keys::{normalize_key_name, validate_chord};
     use pegoles_protocol::text::is_invisible_format;
     match &req.action {
@@ -141,6 +169,43 @@ mod tests {
 
     fn ctx() -> PolicyContext {
         PolicyContext::default()
+    }
+
+    #[test]
+    fn strict_policy_only_adds_approval_and_never_overrides_denial() {
+        let strict = PolicyContext {
+            ask_before_input: true,
+        };
+        for (action, expected) in [
+            (ComputerAction::ObserveScreen, Decision::Allow),
+            (ComputerAction::Wait { duration_ms: 20 }, Decision::Allow),
+            (
+                ComputerAction::KeyPress {
+                    key: "Enter".into(),
+                },
+                Decision::RequireApproval,
+            ),
+            (
+                ComputerAction::TypeText {
+                    text: "safe".into(),
+                    sensitive: false,
+                },
+                Decision::RequireApproval,
+            ),
+            (
+                ComputerAction::TypeText {
+                    text: "-----BEGIN PRIVATE KEY-----".into(),
+                    sensitive: false,
+                },
+                Decision::Deny,
+            ),
+            (
+                ComputerAction::MovePointer { x: 2.0, y: 0.0 },
+                Decision::Deny,
+            ),
+        ] {
+            assert_eq!(evaluate(&req(action), &strict).decision, expected);
+        }
     }
 
     #[test]
@@ -366,7 +431,7 @@ mod tests {
     #[test]
     fn nothing_in_the_vocabulary_requires_approval_or_is_high_risk() {
         // Allowed actions are Low; denials are Blocked. RequireApproval is
-        // reserved for future out-of-VM capabilities.
+        // absent from the default compatibility policy.
         use pegoles_protocol::PointerButton;
         let actions = [
             ComputerAction::ObserveScreen,

@@ -344,3 +344,35 @@ OS-lock file. Reads/writes hold the same nonblocking OS lock before bounded,
 no-follow recovery of reserved abandoned stages; busy/invalid/unrecoverable
 stores report read-only, never cleanup an active writer. Exact item/scan limits,
 taint suppression and recovery semantics are in [PRIVACY.md](PRIVACY.md). Raw live events are not replayed on restart.
+
+### Human approval (session only)
+
+- `get_approvals()` returns `{ ask_before_input: boolean, pending: PendingApproval[] }`.
+  At most eight pending entries: `{ id, task_id, computer_id, summary, expires_at }`.
+  `id` is the opaque UUID of the original action; summaries contain only a
+  Core-generated VM-input verb. No typed payload, key names, paths or arguments.
+- `set_input_approval({ enabled: boolean })` requires native confirmation for
+  either direction. The Core-owned flag defaults to false and resets to false
+  on app restart. It is absent from appearance preferences and model tools.
+- `resolve_approval({ id: UUID, decision: "approve_once" | "deny" })` accepts no
+  replacement action or blanket grant. Approve once opens the existing native
+  ConsentGate with Core's safe summary, outside the AppState lock. Native refusal
+  denies. Deny needs no native prompt. The command rechecks the task and exact
+  pending record after the native response; a stale response cannot dispatch.
+
+Only the local main window gets these commands in the release ACL. The typed
+planner/guest vocabularies have no approval or policy-changing action. Core's
+120-second `Instant` deadline is authoritative; `expires_at` is display-only.
+The runner publishes a bounded Core-owned denial/expiry/interruption reason
+in the live activity feed (not persisted). Current policy, control generation/owner, computer identity, cancellation,
+input shape and backend capability checks still apply on dispatch. One grant
+covers only the stored action; long typing slices that stored payload, with
+whole-payload checks and cancellation between slices. Transport primitive IDs
+include the completed character offset so slices never reuse an acknowledgement ID. No approval survives
+restart, stop, reset, task completion or control changes. A denial/expiry ends
+the current run without inviting the planner to keep requesting approval.
+
+Pending requests/grants are in memory only. Cleared payloads leave at most eight
+content-free terminal rows (IDs, reason, successful typed-prefix counts), consumed
+by the waiting runner. History keeps its existing status-only audit and privacy
+taint behavior. Raw input and approval grants never enter its persisted schema.

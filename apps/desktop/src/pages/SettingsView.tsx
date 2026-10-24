@@ -1,7 +1,7 @@
 import type { CopyKey } from "../i18n/catalog";
 import { usePreferences } from "../preferences/PreferencesProvider";
 import { t, useLocale } from "../i18n";
-import { useEffect, type Ref } from "react";
+import { useEffect, type Ref, type ReactNode } from "react";
 import type { ComputerModel } from "../state/computerModel";
 import type { ModelSettingsState } from "../state/useModelSettings";
 import type { IntelligenceState } from "../state/useIntelligence";
@@ -22,6 +22,7 @@ export const QUALITY_SEGMENTS = [
 ] as const satisfies readonly { value: QualityChoice; label: string }[];
 
 export interface SettingsViewProps {
+  readonly approvalSetting?: ReactNode;
   readonly headingRef?: Ref<HTMLHeadingElement>;
   readonly connected: boolean;
   readonly native: boolean;
@@ -118,8 +119,9 @@ export function SettingsView(props: SettingsViewProps) {
 
       <Section
         id="settings-security" title={t("Security")} lead={t("Built-in rules")}
-        note={t("Pegoles Core checks every action against these rules before it runs, so they don’t depend on the model behaving. They’re fixed in this build, and Pegoles can’t ask you for approval yet: anything the rules don’t allow is refused.")}
+        note={t("Core checks every action. Approval never overrides a safety denial.")}
       >
+        {props.approvalSetting}
         {SECURITY_RULES.map((rule) => (
           <Row key={rule.label} label={t(rule.label)}>
             <span className="security-value" data-tone={rule.tone}>{t(rule.value)}</span>

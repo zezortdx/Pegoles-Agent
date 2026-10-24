@@ -308,6 +308,9 @@ export interface Intelligence {
 export const MODEL_INSTALL_EVENT = "pegoles://model-install";
 
 export const api = {
+  getApprovals: () => invoke<ApprovalsPayload>("get_approvals"),
+  setInputApproval: (enabled: boolean) => invoke<null>("set_input_approval", { enabled }),
+  resolveApproval: (id: string, decision: "approve_once" | "deny") => invoke<null>("resolve_approval", { id, decision }),
   getPreferences: () => invoke<Preferences>("get_preferences"),
   setPreferences: (preferences: Preferences) => invoke<Preferences>("set_preferences", { preferences }),
   createTask: (title: string) => invoke<AgentTask>("create_task", { title }),
@@ -400,3 +403,6 @@ export const debugApi = {
       last_frame: FrameMetaWire | null;
     }>("input_status"),
 };
+
+export interface PendingApproval { id: string; task_id: string; computer_id: string; summary: string; expires_at: string }
+export interface ApprovalsPayload { ask_before_input: boolean; pending: PendingApproval[] }

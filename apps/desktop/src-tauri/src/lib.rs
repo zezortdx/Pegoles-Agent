@@ -4,6 +4,7 @@
 //! `commands.rs`): the in-process VM needs the main queue free.
 
 pub mod agent;
+mod approval_commands;
 pub mod commands;
 pub mod consent;
 pub mod local;

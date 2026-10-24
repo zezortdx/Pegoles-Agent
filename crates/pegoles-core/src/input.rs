@@ -265,6 +265,7 @@ impl ComputerRegistry {
     /// Cooperative cancel for the running agent sequence (takeover,
     /// pause, stop, shutdown). Releases pressed state best-effort.
     pub fn cancel_agent_input(&mut self, reason: &str) {
+        self.invalidate_approvals();
         self.agent_cancel.cancel();
         self.release_pressed_state(reason);
     }
@@ -291,6 +292,7 @@ impl ComputerRegistry {
         ControlArbiter::agent_may_act(self.display.control)
             .map_err(CoreError::ControlUnavailable)?;
         self.require_running()?;
+        self.invalidate_approvals();
         self.agent_cancel = CancellationToken::new();
         self.set_control(id, ControlOwner::Agent, out);
         Ok(id)
@@ -298,6 +300,7 @@ impl ComputerRegistry {
 
     /// End an agent session: release pressed state, return control to None.
     pub fn end_agent_session(&mut self, out: &mut Vec<AgentEvent>) {
+        self.invalidate_approvals();
         self.release_pressed_state("session end");
         if self.display.control == ControlOwner::Agent {
             if let Some(id) = self.current_id() {
@@ -352,7 +355,7 @@ impl ComputerRegistry {
         cancel: &CancellationToken,
         manage_control: bool,
     ) -> (ActionResult, Vec<AgentEvent>) {
-        let mut out = Vec::new();
+        let out = Vec::new();
         let started_wall = Utc::now();
         // A fresh managed action is a new user intent: stale takeover
         // state from an older sequence must not block it. (Runner steps
@@ -375,6 +378,21 @@ impl ComputerRegistry {
         };
         let mut req = ActionRequest::new(task_id, computer_id, action);
         req.observe_after = observe_after;
+        self.execute_request(req, ctx, cancel, manage_control, None)
+    }
+
+    pub(crate) fn execute_request(
+        &mut self,
+        req: ActionRequest,
+        ctx: &PolicyContext,
+        cancel: &CancellationToken,
+        manage_control: bool,
+        approved_offset: Option<usize>,
+    ) -> (ActionResult, Vec<AgentEvent>) {
+        let mut out = Vec::new();
+        let started_wall = Utc::now();
+        let computer_id = req.computer_id;
+        let task_id = req.task_id;
         let redacted = req.redacted_for_event();
         self.emit(
             AgentEvent::ActionRequested {
@@ -405,7 +423,10 @@ impl ComputerRegistry {
         }
 
         // Policy gate: every action, even inside the isolated VM.
-        let verdict = evaluate(&req, ctx);
+        let effective = PolicyContext {
+            ask_before_input: ctx.ask_before_input || self.approvals.strict,
+        };
+        let verdict = evaluate(&req, &effective);
         self.emit(
             AgentEvent::ActionEvaluated {
                 request: redacted.clone(),
@@ -432,31 +453,31 @@ impl ComputerRegistry {
                 self.audit_action(&req, &decision_name, &result);
                 return (result, out);
             }
-            Decision::RequireApproval => {
+            Decision::RequireApproval if approved_offset.is_none() => {
+                let queued = self.queue_approval(req.clone());
                 let result = ActionResult::failed(
                     req.action_id,
                     started_wall,
-                    ActionOutcome::NeedsApproval,
-                    verdict.reason.clone(),
+                    if queued.is_ok() {
+                        ActionOutcome::NeedsApproval
+                    } else {
+                        ActionOutcome::Interrupted
+                    },
+                    queued
+                        .err()
+                        .unwrap_or_else(|| "Waiting for human approval".into()),
                 );
                 self.emit(
                     AgentEvent::ApprovalRequested {
                         task_id,
-                        reason: verdict.reason,
+                        reason: "Human approval required for VM input".into(),
                         at: Utc::now(),
                     },
                     &mut out,
                 );
-                self.emit(
-                    AgentEvent::ActionCompleted {
-                        request: redacted,
-                        result: result.clone(),
-                    },
-                    &mut out,
-                );
-                self.audit_action(&req, &decision_name, &result);
                 return (result, out);
             }
+            Decision::RequireApproval => {}
             Decision::Allow => {}
         }
 
@@ -519,7 +540,7 @@ impl ComputerRegistry {
             &mut out,
         );
 
-        let result = self.dispatch(req.clone(), cancel, &mut out);
+        let result = self.dispatch(req.clone(), cancel, &mut out, approved_offset.unwrap_or(0));
 
         if manage_control && acquired_here {
             self.release_pressed_state("action end");
@@ -674,6 +695,7 @@ impl ComputerRegistry {
         req: ActionRequest,
         cancel: &CancellationToken,
         out: &mut Vec<AgentEvent>,
+        primitive_offset: usize,
     ) -> ActionResult {
         let started_wall = Utc::now();
         // Wait is pure timing (cancellable slices); display info is
@@ -763,7 +785,7 @@ impl ComputerRegistry {
                     return self.failed_result(&req, started_wall, "op exceeds guest bounds", out);
                 }
             }
-            let request_id = format!("{}:{i}", req.action_id);
+            let request_id = format!("{}:{primitive_offset}:{i}", req.action_id);
             let outcome = match self.backend.as_deref_mut() {
                 Some(backend) => backend.input_execute_cancellable(&request_id, op, &cancelled),
                 None => {

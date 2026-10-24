@@ -1545,3 +1545,53 @@ mod tests {
         assert_eq!(g.animate_ms, 0, "animate_ms is optional");
     }
 }
+
+#[derive(Serialize)]
+pub struct ApprovalsPayload {
+    ask_before_input: bool,
+    pending: Vec<pegoles_core::approvals::PendingApproval>,
+}
+
+#[tauri::command]
+pub async fn get_approvals(
+    state: tauri::State<'_, SharedState>,
+) -> Result<ApprovalsPayload, String> {
+    with_state(state.inner().clone(), |s| {
+        Ok(ApprovalsPayload {
+            ask_before_input: s.registry.ask_before_input(),
+            pending: s.registry.list_approvals(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_input_approval(
+    state: tauri::State<'_, SharedState>,
+    consent: tauri::State<'_, ConsentGate>,
+    enabled: bool,
+) -> Result<(), String> {
+    let shared = state.inner().clone();
+    let consent = consent.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::approval_commands::change_policy(&shared, consent.0.as_ref(), enabled)
+    })
+    .await
+    .map_err(|_| "Native confirmation failed")?
+}
+
+#[tauri::command]
+pub async fn resolve_approval(
+    state: tauri::State<'_, SharedState>,
+    consent: tauri::State<'_, ConsentGate>,
+    id: pegoles_protocol::ActionId,
+    decision: pegoles_core::approvals::ApprovalDecision,
+) -> Result<(), String> {
+    let shared = state.inner().clone();
+    let consent = consent.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::approval_commands::resolve(&shared, consent.0.as_ref(), id, decision)
+    })
+    .await
+    .map_err(|_| "Native confirmation failed")?
+}
