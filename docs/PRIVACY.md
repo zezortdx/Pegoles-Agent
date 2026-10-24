@@ -62,7 +62,7 @@ the computer image and the current computer's disk, the local models,
 log. Appearance and language preferences live in `preferences/profile.json`.
 
 `history/tasks.json` keeps up to **100 tasks**, for **30 days since the last
-update**, within **512 KiB serialized JSON total**. Oldest updated tasks are
+update**, within **512 KiB serialized JSON in the canonical snapshot**. Oldest updated tasks are
 removed first when count or byte limits apply; startup and subsequent changes
 apply retention on disk. With a storage failure, expired bytes may remain until
 the store can be repaired; the app shows a read-only warning. Data is private
@@ -81,6 +81,19 @@ Secret-shaped objectives become `Private task`. The secret-pattern tripwire
 is a heuristic: ordinary objectives and allowed summaries can still contain
 private information. All on-disk task content should be treated as private.
 The live event list remains session-only and bounded to 200 events.
+
+Atomic replacement uses one fixed private `.tasks.tmp` staging slot, capped at
+another 512 KiB: canonical + stage is at most **1 MiB** while saving or after
+an interrupted save, plus an empty `.tasks.lock` file. The next open/read/write
+holds a nonblocking OS file lock and discards abandoned stages before using the
+store. A bounded metadata-only scan (at most 256 directory entries, including
+unrelated entries) also removes recognized legacy `.tasks-<uuid>.tmp` files.
+Only regular files with those reserved staging names are removed; stages are
+never promoted, symlinks are refused, and unrelated files remain untouched.
+The empty lock file is never removed; crashes release the OS lock automatically.
+Lock contention, unsupported locking, scan overflow, invalid entries or failed
+cleanup/sync produces the same read-only warning. An app that remains closed
+cannot remove a crash-left stage; a successful subsequent open discards it.
 
 Open tasks (including pending and waiting for approval) recover as cancelled;
 restart never resumes work or grants permission. Invalid, oversized, symlinked

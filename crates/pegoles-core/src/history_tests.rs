@@ -175,6 +175,14 @@ fn symlinks_are_refused_and_modes_are_private() {
             & 0o777,
         0o700
     );
+    assert_eq!(
+        fs::metadata(store.path().parent().unwrap().join(".tasks.lock"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
     let outside = dir.path().join("outside");
     fs::write(&outside, "untouched").unwrap();
     fs::remove_file(store.path()).unwrap();
@@ -183,6 +191,7 @@ fn symlinks_are_refused_and_modes_are_private() {
     assert!(store.write(&History::default(), Utc::now()).is_err());
     assert_eq!(fs::read_to_string(outside).unwrap(), "untouched");
     fs::remove_file(store.path()).unwrap();
+    fs::remove_file(store.path().parent().unwrap().join(".tasks.lock")).unwrap();
     fs::remove_dir(store.path().parent().unwrap()).unwrap();
     symlink(dir.path(), store.path().parent().unwrap()).unwrap();
     assert!(store.read(Utc::now()).is_err());
@@ -309,4 +318,178 @@ fn taint_survives_retention_eviction_of_an_active_task() {
     h.update_tasks(std::slice::from_ref(&a));
     h.record(&summary(a.id, "sensitive sentinel"));
     assert!(h.detail(a.id).unwrap().artifact.is_none());
+}
+
+#[test]
+fn reopening_discards_crash_left_snapshots_with_bounded_repeated_replacements() {
+    let (_dir, store) = store();
+    let now = Utc::now();
+    let mut h = History::default();
+    let a = task("Current objective");
+    h.update_tasks(std::slice::from_ref(&a));
+    store.write(&h, now).unwrap();
+    let canonical = fs::read(store.path()).unwrap();
+    let scratch = store.path().parent().unwrap().join(".tasks.tmp");
+    let mut orphan = History::default();
+    let mut expired = task("Expired private objective");
+    expired.created_at = now - chrono::Duration::days(31);
+    expired.updated_at = expired.created_at;
+    expired.status = TaskStatus::Completed;
+    orphan.update_tasks(std::slice::from_ref(&expired));
+    orphan.record(&summary(expired.id, "Expired private result"));
+    let mut orphan_bytes = serde_json::to_vec(&orphan).unwrap();
+    orphan_bytes.resize(MAX_HISTORY_BYTES, b' ');
+    for _ in 0..10 {
+        // A complete private snapshot left between write and rename by a crash.
+        fs::write(&scratch, &orphan_bytes).unwrap();
+        assert!(
+            fs::read_dir(store.path().parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().metadata().unwrap().len())
+                .sum::<u64>()
+                <= (2 * MAX_HISTORY_BYTES) as u64
+        );
+        let reopened = HistoryStore::new(store.path().parent().unwrap().to_path_buf());
+        assert_eq!(reopened.read(now).unwrap().tasks().len(), 1);
+        assert!(
+            !scratch.exists(),
+            "uncommitted private bytes must leave disk on reopen"
+        );
+        assert_eq!(fs::read(store.path()).unwrap(), canonical);
+        let entries: Vec<_> = fs::read_dir(store.path().parent().unwrap())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            entries.len() <= 2,
+            "only canonical snapshot and empty lock remain"
+        );
+        let bytes: u64 = entries.iter().map(|e| e.metadata().unwrap().len()).sum();
+        assert!(bytes <= MAX_HISTORY_BYTES as u64);
+    }
+}
+
+#[test]
+fn recovery_removes_only_recognized_legacy_stages_and_preserves_corrupt_canonical() {
+    let (_dir, store) = store();
+    fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+    let parent = store.path().parent().unwrap().to_path_buf();
+    let legacy = parent.join(format!(".tasks-{}.tmp", uuid::Uuid::new_v4()));
+    let unrelated = [
+        parent.join("notes.txt"),
+        parent.join(".tasks-not-a-uuid.tmp"),
+        parent.join(".tasks.tmp.backup"),
+    ];
+    for path in &unrelated {
+        fs::write(path, "unrelated").unwrap();
+    }
+    fs::write(&legacy, "expired private snapshot").unwrap();
+    fs::write(store.path(), "corrupt canonical preserved").unwrap();
+    assert!(store.read(Utc::now()).is_err());
+    assert!(
+        !legacy.exists(),
+        "legacy crash snapshots must not escape retention"
+    );
+    assert_eq!(
+        fs::read_to_string(store.path()).unwrap(),
+        "corrupt canonical preserved"
+    );
+    assert!(store.write(&History::default(), Utc::now()).is_err());
+    assert_eq!(
+        fs::read_to_string(store.path()).unwrap(),
+        "corrupt canonical preserved"
+    );
+    for path in unrelated {
+        assert_eq!(fs::read_to_string(path).unwrap(), "unrelated");
+    }
+}
+
+#[test]
+fn a_live_store_lock_prevents_cleanup_or_another_writer_from_touching_its_stage() {
+    let (_dir, store) = store();
+    store.write(&History::default(), Utc::now()).unwrap();
+    let parent = store.path().parent().unwrap().to_path_buf();
+    let lock = private_options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(parent.join(".tasks.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    let scratch = parent.join(".tasks.tmp");
+    fs::write(&scratch, "active writer private bytes").unwrap();
+    let original = fs::read(store.path()).unwrap();
+    assert!(
+        store.read(Utc::now()).is_err(),
+        "read must not clean an active writer's stage"
+    );
+    assert!(store.write(&History::default(), Utc::now()).is_err());
+    assert_eq!(
+        fs::read_to_string(&scratch).unwrap(),
+        "active writer private bytes"
+    );
+    assert_eq!(fs::read(store.path()).unwrap(), original);
+    assert_eq!(
+        fs::read_dir(&parent).unwrap().count(),
+        3,
+        "a competing write cannot create a random stage"
+    );
+    drop(lock);
+    assert!(store.read(Utc::now()).is_ok());
+    assert!(!scratch.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn recovery_never_follows_staging_or_lock_symlinks_or_removes_nonregular_entries() {
+    use std::os::unix::fs::symlink;
+    let (dir, store) = store();
+    store.write(&History::default(), Utc::now()).unwrap();
+    let outside = dir.path().join("outside");
+    fs::write(&outside, "untouched outside bytes").unwrap();
+    let parent = store.path().parent().unwrap().to_path_buf();
+    for name in [
+        ".tasks.tmp".to_string(),
+        format!(".tasks-{}.tmp", uuid::Uuid::new_v4()),
+        ".tasks.lock".to_string(),
+    ] {
+        let path = parent.join(name);
+        if path.exists() {
+            fs::remove_file(&path).unwrap();
+        }
+        symlink(&outside, &path).unwrap();
+        assert!(store.read(Utc::now()).is_err());
+        assert!(store.write(&History::default(), Utc::now()).is_err());
+        assert_eq!(
+            fs::read_to_string(&outside).unwrap(),
+            "untouched outside bytes"
+        );
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_file(path).unwrap();
+    }
+    fs::create_dir(parent.join(".tasks.tmp")).unwrap();
+    assert!(store.read(Utc::now()).is_err());
+    assert!(parent.join(".tasks.tmp").is_dir());
+}
+
+#[test]
+fn recovery_directory_scan_has_an_exact_finite_limit_and_leaves_unrelated_files() {
+    let (_dir, store) = store();
+    store.write(&History::default(), Utc::now()).unwrap();
+    let parent = store.path().parent().unwrap().to_path_buf();
+    // Canonical snapshot + permanent empty lock + 254 unrelated files = 256.
+    for i in 0..254 {
+        fs::write(parent.join(format!("unrelated-{i}")), "x").unwrap();
+    }
+    assert!(store.read(Utc::now()).is_ok());
+    fs::write(parent.join("one-too-many"), "x").unwrap();
+    let canonical = fs::read(store.path()).unwrap();
+    assert!(store.read(Utc::now()).is_err());
+    assert!(store.write(&History::default(), Utc::now()).is_err());
+    assert_eq!(fs::read(store.path()).unwrap(), canonical);
+    assert_eq!(fs::read_dir(parent).unwrap().count(), 257);
 }

@@ -197,6 +197,38 @@ mod tests {
     }
 
     #[test]
+    fn staging_recovery_failure_exposes_read_only_without_replacing_canonical() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "pegoles-history-stage-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = pegoles_core::history::HistoryStore::new(dir.clone());
+        store
+            .write(
+                &pegoles_core::history::History::default(),
+                chrono::Utc::now(),
+            )
+            .unwrap();
+        let canonical = std::fs::read(store.path()).unwrap();
+        std::fs::create_dir(dir.join(".tasks.tmp")).unwrap();
+        let mut state = AppState::with_history_store(
+            |bus| {
+                ComputerRegistry::with_dirs(bus.clone(), BackendKind::Mock, dir.join("computers"))
+            },
+            store,
+        );
+        assert!(state.history_status().read_only);
+        state.tasks.submit_task("New task in memory").unwrap();
+        state.sync_history();
+        assert_eq!(std::fs::read(dir.join("tasks.json")).unwrap(), canonical);
+        assert!(dir.join(".tasks.tmp").is_dir());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn startup_removes_expired_records_from_disk_not_just_the_view() {
         let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "pegoles-history-age-{}",

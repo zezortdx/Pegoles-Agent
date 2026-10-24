@@ -9,6 +9,10 @@ pub const MAX_AGE_DAYS: i64 = 30;
 pub const MAX_HISTORY_BYTES: usize = 512 * 1024;
 pub const MAX_RESULT_CHARS: usize = 4_000;
 pub const MAX_AUDIT: usize = 32;
+/// Bounded metadata-only scan, including unrelated entries; overflow fails closed.
+pub const MAX_HISTORY_DIRECTORY_ENTRIES: usize = 256;
+const STAGING_NAME: &str = ".tasks.tmp";
+const LOCK_NAME: &str = ".tasks.lock";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -304,6 +308,121 @@ impl HistoryStore {
         self.directory.join("tasks.json")
     }
     pub fn read(&self, now: DateTime<Utc>) -> Result<History, String> {
+        let Some(_lock) = self.acquire_lock(false)? else {
+            return Ok(History::default());
+        };
+        self.discard_abandoned_stages()?;
+        self.read_canonical(now)
+    }
+
+    /// The permanent empty lock is never unlinked: replacing its inode could
+    /// let another process acquire a different lock while a writer is active.
+    /// Nonblocking OS locks are released automatically if the process crashes.
+    fn acquire_lock(&self, create: bool) -> Result<Option<std::fs::File>, String> {
+        check_directories(&self.directory)?;
+        match std::fs::symlink_metadata(&self.directory) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(&self.directory)
+                    .map_err(|_| "Could not create history directory.")?;
+            }
+            Err(_) => return Err("Could not inspect history directory.".into()),
+        }
+        check_directories(&self.directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.directory, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| "Could not secure history directory.")?;
+        }
+        let path = self.directory.join(LOCK_NAME);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != 0 => {
+                return Err("Invalid history lock.".into())
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("Could not inspect history lock.".into()),
+        }
+        let lock = private_options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|_| "Could not open history lock.")?;
+        let meta = lock
+            .metadata()
+            .map_err(|_| "Could not inspect history lock.")?;
+        if !meta.is_file() || meta.len() != 0 {
+            return Err("Invalid history lock.".into());
+        }
+        lock.try_lock()
+            .map_err(|_| "History storage is busy or cannot be locked.")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            lock.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| "Could not secure history lock.")?;
+        }
+        Ok(Some(lock))
+    }
+
+    /// Called only under the OS lock. Never reads staging contents or recurses;
+    /// only reserved store-owned filenames can be unlinked, and only if regular.
+    /// Canonical data is never promoted from a stage or deleted on recovery.
+    fn discard_abandoned_stages(&self) -> Result<(), String> {
+        let entries =
+            std::fs::read_dir(&self.directory).map_err(|_| "Could not inspect history staging.")?;
+        let mut abandoned = Vec::new();
+        for (count, entry) in entries.enumerate() {
+            if count >= MAX_HISTORY_DIRECTORY_ENTRIES {
+                return Err("History directory has too many entries.".into());
+            }
+            let entry = entry.map_err(|_| "Could not inspect history staging.")?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let legacy = name
+                .strip_prefix(".tasks-")
+                .and_then(|name| name.strip_suffix(".tmp"))
+                .is_some_and(|id| {
+                    uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
+                });
+            if name != STAGING_NAME && !legacy {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(entry.path())
+                .map_err(|_| "Could not inspect history staging.")?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err("Invalid history staging file.".into());
+            }
+            abandoned.push(entry.path());
+        }
+        let changed = !abandoned.is_empty();
+        for path in abandoned {
+            std::fs::remove_file(path)
+                .map_err(|_| "Could not remove abandoned history staging.")?;
+        }
+        if changed {
+            self.sync_directory()?;
+        }
+        Ok(())
+    }
+
+    fn sync_directory(&self) -> Result<(), String> {
+        #[cfg(unix)]
+        private_options()
+            .read(true)
+            .open(&self.directory)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|_| "Could not sync history directory.")?;
+        Ok(())
+    }
+
+    fn read_canonical(&self, now: DateTime<Utc>) -> Result<History, String> {
         use std::io::Read;
         check_directories(&self.directory)?;
         let path = self.path();
@@ -353,25 +472,18 @@ impl HistoryStore {
     }
     pub fn write(&self, history: &History, now: DateTime<Utc>) -> Result<(), String> {
         use std::io::Write;
+        let _lock = self
+            .acquire_lock(true)?
+            .ok_or("Could not lock history storage.")?;
+        self.discard_abandoned_stages()?;
         // Validate the existing file before replacement; never erase corruption.
-        self.read(now)?;
+        self.read_canonical(now)?;
         let mut h = history.clone();
         h.retain(now)?;
         h.validate()?;
         let bytes = serde_json::to_vec(&h).map_err(|_| "Could not encode history.")?;
-        check_directories(&self.directory)?;
-        std::fs::create_dir_all(&self.directory)
-            .map_err(|_| "Could not create history directory.")?;
-        check_directories(&self.directory)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.directory, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| "Could not secure history.")?;
-        }
-        let temporary = self
-            .directory
-            .join(format!(".tasks-{}.tmp", uuid::Uuid::new_v4()));
+        // One exclusive fixed staging slot bounds even crash-left private data.
+        let temporary = self.directory.join(STAGING_NAME);
         let result = (|| {
             let mut file = private_options()
                 .write(true)
@@ -382,12 +494,7 @@ impl HistoryStore {
                 .map_err(|_| "Could not write history.")?;
             file.sync_all().map_err(|_| "Could not sync history.")?;
             std::fs::rename(&temporary, self.path()).map_err(|_| "Could not replace history.")?;
-            #[cfg(unix)]
-            private_options()
-                .read(true)
-                .open(&self.directory)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|_| "Could not sync history directory.")?;
+            self.sync_directory()?;
             Ok(())
         })();
         if result.is_err() {

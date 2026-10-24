@@ -338,5 +338,9 @@ Markdown interpreter or executor permission. Unknown task IDs return null;
 malformed UUIDs reject before the lookup. The main-window ACL grants only
 these reads; there is no webview/model history write command.
 
-Exact disk and item limits, taint suppression and read-only recovery are in
-[PRIVACY.md](PRIVACY.md). Raw live events are not replayed on restart.
+The canonical JSON cap is 512 KiB. One fixed ≤512 KiB stage bounds aggregate
+snapshot bytes to 1 MiB during/interrupted replacement, plus an empty permanent
+OS-lock file. Reads/writes hold the same nonblocking OS lock before bounded,
+no-follow recovery of reserved abandoned stages; busy/invalid/unrecoverable
+stores report read-only, never cleanup an active writer. Exact item/scan limits,
+taint suppression and recovery semantics are in [PRIVACY.md](PRIVACY.md). Raw live events are not replayed on restart.
