@@ -10,6 +10,8 @@ pub mod local;
 #[cfg(target_os = "macos")]
 mod native_display;
 pub mod nav_guard;
+pub mod preference_commands;
+pub mod preferences;
 pub mod state;
 pub mod webview_egress;
 
