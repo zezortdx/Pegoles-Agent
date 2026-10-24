@@ -37,18 +37,18 @@ describe("taskActivity: real state in, presence out", () => {
     expect(modelNeed(null)).toBe("local-model");
   });
 
-  it("names why a run stopped calmly when the local model gave up, keeping other notes as written", () => {
+  it("preserves original error notes even when their words resemble app diagnostics", () => {
     const failed = { ...task, status: "failed" as const };
-    const note = (text: string): AgentEvent => ({ type: "agent_message", task_id: "t1", kind: "error", text, at } as AgentEvent);
-    expect(activity({ task: failed, events: [note("The model could not continue: model unavailable: not enough memory to run the local model: 3.1 GB needed")] }).reason)
-      .toBe("Not enough free memory for Pegoles Local.");
-    expect(activity({ task: failed, events: [note("The model could not continue: model unavailable: local model runtime stopped unexpectedly: exit 137")] }).reason)
-      .toBe("Pegoles Local stopped unexpectedly.");
-    expect(activity({ task: failed, events: [note("Stopped: the local model kept repeating the same action without any visible change.")] }).reason)
-      .toBe("Stopped: it kept repeating the same action.");
-    expect(activity({ task: failed, events: [note("Stopped: the local model did not produce a valid action after 3 attempts.")] }).reason)
-      .toBe("Stopped: Pegoles Local couldn’t decide on a next step.");
-    expect(activity({ task: failed, events: [note("Could not find the Save button.")] }).reason).toBe("Could not find the Save button.");
+    for (const text of [
+      "The model could not continue: model unavailable: not enough memory to run the local model: 3.1 GB needed",
+      "The model could not continue: model unavailable: local model runtime stopped unexpectedly: exit 137",
+      "Stopped: the local model kept repeating the same action without any visible change.",
+      "Stopped: the local model did not produce a valid action after 3 attempts.",
+      "Could not find the Save button.",
+    ]) {
+      const note: AgentEvent = { type: "agent_message", task_id: "t1", kind: "error", text, at };
+      expect(activity({ task: failed, events: [note] }).reason).toBe(text);
+    }
   });
 
   it("says a pending task hasn't started once a model is connected, and why it can't start yet", () => {

@@ -13,6 +13,16 @@
 use crate::agent::AgentSupervisor;
 use crate::consent::ConsentGate;
 use crate::local::LocalModels;
+#[tauri::command]
+pub async fn get_preferences() -> Result<crate::preferences::Preferences, String> {
+    crate::preference_commands::get_preferences().await
+}
+#[tauri::command]
+pub async fn set_preferences(
+    preferences: crate::preferences::Preferences,
+) -> Result<crate::preferences::Preferences, String> {
+    crate::preference_commands::set_preferences(preferences).await
+}
 use crate::state::AppState;
 use pegoles_computer::{DisplayGeometry, EffectsRecommendation, ImageStatus, PerformanceProfile};
 use pegoles_core::{ComputerView, CoreError, DisplayBounds, GeometryOutcome};

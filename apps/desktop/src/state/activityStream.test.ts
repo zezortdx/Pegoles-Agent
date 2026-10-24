@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { activateLocale } from "../i18n";
+import { ptBR } from "../i18n/catalog";
+import { afterEach, describe, expect, it } from "vitest";
 import { activityStream, activitySummary, filterDays, tasksWithoutActivity } from "./activityStream";
 import type { AgentEvent, AgentTask } from "../lib/tauri";
 
@@ -13,7 +15,18 @@ const task = (id: string, title: string, status: AgentTask["status"]): AgentTask
   ({ id, title, status, created_at: "2026-09-24T10:05:00Z", updated_at: "2026-09-24T10:05:00Z" });
 const tasks: AgentTask[] = [task("t1", "Later task", "pending")];
 
+afterEach(() => activateLocale("en"));
+
 describe("activityStream", () => {
+  it("localizes an app-owned interruption suffix while keeping its raw diagnostic original", () => {
+    activateLocale("pt-BR");
+    const diagnostic = "interrupted: original <detail>";
+    const [today] = activityStream([
+      { type: "action_failed", action_id: "i18n-interrupted", request: req("i18n-interrupted", "click"), error: diagnostic, at: "2026-09-24T10:00:00Z" },
+    ], [], now);
+    expect(today.entries[0].text).toBe(`${ptBR.Clicking} — ${ptBR.interrupted}`);
+    expect(today.entries[0].details).toContain(diagnostic);
+  });
   it("orders newest first, collapses an action to one past-tense sentence and hides pointer moves", () => {
     const events = [
       { type: "action_requested", request: req("m1", "move_pointer", { x: 0.1, y: 0.1 }) },

@@ -1,3 +1,7 @@
+import type { CSSProperties } from "react";
+import { usePreferences } from "../preferences/PreferencesProvider";
+import type { AvatarProfile } from "../preferences/types";
+import { useLocale } from "../i18n";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { observeOffscreen, useAmbientState, useFluxGlass } from "@pegoles/ui";
 import { useSystemReducedMotion } from "../lib/useSystemReducedMotion";
@@ -5,10 +9,11 @@ import { subscribeAvatarClock } from "./animationClock";
 import { AvatarController, engineStateForMode, MIN_ORBIT_SIZE, staticFrameForMode } from "./controller";
 import type { BotFrame } from "./engine/engine";
 import { createThrottle } from "./life";
-import { PRESENCE_LABEL, WORK_MODES, type PresenceMode } from "./modes";
+import { presenceLabel, WORK_MODES, type PresenceMode } from "./modes";
 import "./presence.css";
 
 export interface PresenceAvatarProps {
+  readonly profile?: AvatarProfile;
   readonly mode: PresenceMode;
   readonly size: number;
   readonly look?: { readonly x: number; readonly y: number } | null;
@@ -47,14 +52,17 @@ export function pointerPose(dx: number, dy: number): PointerPose {
 
 /** SVG geometry is generated locally from typed poses, never from guest/model markup. */
 export function PresenceAvatar({ mode, size, look = null, interactive = false, pulse = 0, nudge = 0, reaction = 0,
-  field = size >= 40, decorative = false, label, className }: PresenceAvatarProps) {
+  field = size >= 40, decorative = false, label, className, profile: draftProfile }: PresenceAvatarProps) {
+  useLocale();
+  const { preferences } = usePreferences();
+  const profile = draftProfile ?? preferences.avatar;
   const { reducedMotion, tier } = useFluxGlass();
   const systemReducedMotion = useSystemReducedMotion();
   const ambient = useAmbientState();
   const staticPose = reducedMotion || systemReducedMotion || tier === "minimal" || ["offline", "blocked", "error"].includes(mode);
-  const [controller] = useState(() => new AvatarController(mode, size));
-  const presentationKey = `${mode}:${size < MIN_ORBIT_SIZE}:${staticPose}`;
-  const fallbackFrame = useMemo(() => staticFrameForMode(mode, size), [mode, size]);
+  const [controller] = useState(() => new AvatarController(mode, size, undefined, profile));
+  const presentationKey = `${mode}:${size < MIN_ORBIT_SIZE}:${staticPose}:${profile.shape}:${profile.expression}`;
+  const fallbackFrame = useMemo(() => staticFrameForMode(mode, size, profile), [mode, size, profile]);
   const [sample, setSample] = useState(() => ({
     key: presentationKey, frame: staticPose ? fallbackFrame : controller.sample(0), engineState: controller.engineState,
   }));
@@ -80,12 +88,13 @@ export function PresenceAvatar({ mode, size, look = null, interactive = false, p
   const running = !staticPose && !offscreen && (!ambient || (working ? ambient.visible : ambient.running));
 
   useEffect(() => {
+    controller.setProfile(profile);
     controller.setMode(mode, size);
     if (staticPose) controller.settle();
     else if (previousMode.current !== mode && (mode === "acknowledging" || mode === "done")) controller.react("acknowledge");
     previousMode.current = mode;
     updateFrame(staticPose ? controller.staticFrame() : controller.sample(0));
-  }, [controller, mode, size, staticPose, updateFrame]);
+  }, [controller, mode, size, profile, staticPose, updateFrame]);
 
   useEffect(() => {
     const changed = nudge !== previousNudge.current;
@@ -149,9 +158,14 @@ export function PresenceAvatar({ mode, size, look = null, interactive = false, p
       ? <path key={index} d={dot.d} transform={`translate(${dot.x} ${dot.y}) rotate(${dot.rot ?? 0}) scale(100)`} fill={fill} opacity={dot.opacity} />
       : <circle key={index} cx={dot.x} cy={dot.y} r={dot.r} fill={fill} opacity={dot.opacity} />;
   });
-  const a11y = decorative ? { "aria-hidden": true as const } : { role: "img", "aria-label": label ?? PRESENCE_LABEL[mode] };
+  const a11y = decorative ? { "aria-hidden": true as const } : { role: "img", "aria-label": label ?? presenceLabel(mode, profile.name) };
 
-  return <svg ref={root} className={className ? `presence-avatar ${className}` : "presence-avatar"}
+  const palette = {
+    silver: { "--presence-white": "#f5f5f3", "--presence-silver": "#a7abb0", "--presence-face": "#000000" },
+    graphite: { "--presence-white": "#c9cbd0", "--presence-silver": "#7c8189", "--presence-face": "#050608" },
+    pearl: { "--presence-white": "#ffffff", "--presence-silver": "#d0d2d5", "--presence-face": "#151619" },
+  } as const;
+  return <svg ref={root} style={palette[profile.color] as CSSProperties} data-shape={profile.shape} data-color={profile.color} className={className ? `presence-avatar ${className}` : "presence-avatar"}
     width={size} height={size} viewBox="-112 -112 224 224" focusable="false" data-mode={mode}
     data-frame={staticPose ? "static" : "live"} data-engine-state={engineState} {...a11y}>
     <defs>

@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 /** Friendly one-liner for a structured action (mirrors the Rust
  * `ComputerAction::describe`; never raw protocol JSON). Secret typing
  * shows no text (the wire already arrives redacted). */
@@ -5,47 +6,47 @@ export function describeAction(action: { type: string; [k: string]: unknown }): 
   switch (action.type) {
     case "screenshot":
     case "observe_screen":
-      return "Looking at the screen";
+      return t("Looking at the screen");
     case "get_display_info":
-      return "Checking display size";
+      return t("Checking display size");
     case "move_pointer":
-      return "Moving pointer";
+      return t("Moving pointer");
     case "click":
-      return "Clicking";
+      return t("Clicking");
     case "double_click":
-      return "Double-clicking";
+      return t("Double-clicking");
     case "mouse_down":
-      return "Pressing pointer";
+      return t("Pressing pointer");
     case "mouse_up":
-      return "Releasing pointer";
+      return t("Releasing pointer");
     case "drag":
-      return "Dragging";
+      return t("Dragging");
     case "scroll":
-      return "Scrolling";
+      return t("Scrolling");
     case "key_press":
-      return typeof action.key === "string" ? `Pressing ${action.key}` : "Pressing key";
+      return typeof action.key === "string" ? t("Pressing {0}", { "0": action.key }) : t("Pressing key");
     case "key_chord":
-      return Array.isArray(action.keys) ? `Pressing ${(action.keys as string[]).join("+")}` : "Pressing keys";
+      return Array.isArray(action.keys) ? t("Pressing {0}", { "0": (action.keys as string[]).join("+") }) : t("Pressing keys");
     case "type_text":
     case "type": {
-      if (action.sensitive === true) return "Typing";
+      if (action.sensitive === true) return t("Typing");
       const text = typeof action.text === "string" ? action.text : "";
-      if (text.length === 0) return "Typing";
+      if (text.length === 0) return t("Typing");
       const short = [...text].slice(0, 42).join("");
-      return text.length > 42 ? `Typing “${short}…”` : `Typing “${short}”`;
+      return text.length > 42 ? t("Typing “{0}…”", { "0": short }) : t("Typing “{0}”", { "0": short });
     }
     case "wait":
-      return "Waiting";
+      return t("Waiting");
     case "open_url":
-      return "Opening link";
+      return t("Opening link");
     case "shell":
-      return "Running a command";
+      return t("Running a command");
     case "read_file":
-      return "Reading a file";
+      return t("Reading a file");
     case "list_directory":
-      return "Looking through a folder";
+      return t("Looking through a folder");
     case "write_file":
-      return "Writing a file";
+      return t("Writing a file");
     default:
       return String(action.type).replaceAll("_", " ");
   }
@@ -57,42 +58,42 @@ export function describePast(action: { type: string; [k: string]: unknown }): st
   switch (action.type) {
     case "screenshot":
     case "observe_screen":
-      return "Looked at the screen";
+      return t("Looked at the screen");
     case "get_display_info":
-      return "Checked the display";
+      return t("Checked the display");
     case "move_pointer":
-      return "Moved the pointer";
+      return t("Moved the pointer");
     case "click":
-      return "Clicked";
+      return t("Clicked");
     case "double_click":
-      return "Double-clicked";
+      return t("Double-clicked");
     case "mouse_down":
-      return "Pressed the pointer";
+      return t("Pressed the pointer");
     case "mouse_up":
-      return "Released the pointer";
+      return t("Released the pointer");
     case "drag":
-      return "Dragged";
+      return t("Dragged");
     case "scroll":
-      return "Scrolled";
+      return t("Scrolled");
     case "key_press":
-      return typeof action.key === "string" ? `Pressed ${action.key}` : "Pressed a key";
+      return typeof action.key === "string" ? t("Pressed {0}", { "0": action.key }) : t("Pressed a key");
     case "key_chord":
-      return Array.isArray(action.keys) ? `Pressed ${(action.keys as string[]).join("+")}` : "Pressed keys";
+      return Array.isArray(action.keys) ? t("Pressed {0}", { "0": (action.keys as string[]).join("+") }) : t("Pressed keys");
     case "type_text":
     case "type":
-      return "Typed text";
+      return t("Typed text");
     case "wait":
-      return "Waited";
+      return t("Waited");
     case "open_url":
-      return "Opened a website";
+      return t("Opened a website");
     case "shell":
-      return "Ran a command";
+      return t("Ran a command");
     case "read_file":
-      return "Read a file";
+      return t("Read a file");
     case "list_directory":
-      return "Looked through a folder";
+      return t("Looked through a folder");
     case "write_file":
-      return "Wrote a file";
+      return t("Wrote a file");
     default:
       return String(action.type).replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
   }

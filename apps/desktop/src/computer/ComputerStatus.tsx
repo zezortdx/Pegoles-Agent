@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import type { CSSProperties } from "react";
 import type { ComputerCommand, ComputerModel } from "../state/computerModel";
 import type { HumanError } from "../state/errors";
@@ -5,13 +6,14 @@ import { wakeLevel } from "./MachineScreen";
 import { PowerIcon } from "../ui/icons";
 
 function BootSteps({ model }: { model: ComputerModel }) {
+  useLocale();
   return (
-    <ol className="boot" aria-label="Startup">
+    <ol className="boot" aria-label={t("Startup")}>
       {model.steps.map((step) => (
         <li key={step.label} className="boot__step" data-state={step.state}>
           <span className="boot__mark pg-work-anim" aria-hidden="true" />
           {step.label}
-          <span className="visually-hidden">{step.state === "done" ? ", done" : step.state === "active" ? ", in progress" : ""}</span>
+          <span className="visually-hidden">{step.state === "done" ? ", done" : step.state === "active" ? t(", in progress") : ""}</span>
         </li>
       ))}
     </ol>
@@ -31,9 +33,10 @@ interface ComputerStatusProps {
  * glass brightening through the real boot stages, at most one action.
  */
 export function ComputerStatus({ model, busy, error, onCommand, onDismissError }: ComputerStatusProps) {
+  useLocale();
   const headline = error ? error.title : model.headline;
   const body = error ? error.hint : model.body;
-  const primary = error && model.primary ? { ...model.primary, label: "Try again" } : model.primary;
+  const primary = error && model.primary ? { ...model.primary, label: t("Try again") } : model.primary;
   const showPrimary = primary && primary.command !== "take" && primary.command !== "return";
   const dark = model.phase === "off" || model.phase === "needs-setup" || model.phase === "error" || model.phase === "unavailable" || !!error;
   return (
@@ -49,10 +52,10 @@ export function ComputerStatus({ model, busy, error, onCommand, onDismissError }
         <div className="machine-state__actions">
           {showPrimary && (
             <button type="button" className={primary.command === "start" || primary.command === "install" ? "btn btn--primary" : "btn btn--line"} disabled={busy} onClick={() => onCommand(primary.command)}>
-              {busy ? <><span className="spinner" aria-hidden="true" />Working…</> : primary.label}
+              {busy ? <><span className="spinner" aria-hidden="true" />{t("Working…")}</> : primary.label}
             </button>
           )}
-          {error && <button type="button" className="btn btn--quiet" onClick={onDismissError}>Dismiss</button>}
+          {error && <button type="button" className="btn btn--quiet" onClick={onDismissError}>{t("Dismiss")}</button>}
         </div>
       )}
     </div>

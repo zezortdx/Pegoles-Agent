@@ -2,6 +2,8 @@
  * Real presence modes select bloub poses; this layer owns animation time only.
  * It never derives progress, task outcomes or speech from model text.
  */
+import type { AvatarProfile } from "../preferences/types";
+import { SHAPE_BY_ID } from "./engine/skins";
 import { BotEngine, type BotFrame } from "./engine/engine";
 import { EXPRESSION_BY_ID, type ExpressionId } from "./engine/expressions";
 import { PITCH, PITCH_MAX, YAW_MAX } from "./engine/gaze";
@@ -42,17 +44,17 @@ export function engineStateForMode(mode: PresenceMode, size: number): StateId {
   return state === "orbit" && size < MIN_ORBIT_SIZE ? "thinking" : state;
 }
 
-function expressionForMode(mode: PresenceMode) {
-  return EXPRESSION_BY_ID.get(SCRIPTS[mode].expression ?? "attentive") ?? null;
+function expressionForMode(mode: PresenceMode, expression = "attentive") {
+  return EXPRESSION_BY_ID.get(SCRIPTS[mode].expression ?? expression) ?? null;
 }
 
-function sampleStaticPose(mode: PresenceMode, state: StateId): BotFrame {
-  return new BotEngine(BODY_RADIUS, state, null, expressionForMode(mode)).sample(POSES[state]);
+function sampleStaticPose(mode: PresenceMode, state: StateId, profile?: AvatarProfile): BotFrame {
+  return new BotEngine(BODY_RADIUS, state, profile ? SHAPE_BY_ID.get(profile.shape)?.radii : null, expressionForMode(mode, profile?.expression)).sample(POSES[state]);
 }
 
 /** Safe synchronous first paint while a new Core signal replaces an old sampler. */
-export function staticFrameForMode(mode: PresenceMode, size: number): BotFrame {
-  return sampleStaticPose(mode, engineStateForMode(mode, size));
+export function staticFrameForMode(mode: PresenceMode, size: number, profile?: AvatarProfile): BotFrame {
+  return sampleStaticPose(mode, engineStateForMode(mode, size), profile);
 }
 
 export type AvatarReaction = "acknowledge" | "nudge";
@@ -65,6 +67,7 @@ let nextSeed = 1;
 
 export class AvatarController {
   private readonly engine: BotEngine;
+  private profile?: AvatarProfile;
   private mode: PresenceMode;
   private baseState: StateId;
   private time: number;
@@ -72,13 +75,14 @@ export class AvatarController {
   private reaction: { state: StateId; duration: number; start: number } | null = null;
   private looking = false;
 
-  constructor(mode: PresenceMode, size: number, seed = nextSeed++) {
+  constructor(mode: PresenceMode, size: number, seed = nextSeed++, profile?: AvatarProfile) {
+    this.profile = profile;
     this.mode = mode;
     this.baseState = engineStateForMode(mode, size);
     // Different phases keep simultaneous avatars from blinking in unison.
     this.time = createRng(seed * 7919 + 13)() * 600;
     this.blockStart = this.time;
-    this.engine = new BotEngine(BODY_RADIUS, this.baseState, null, this.expression());
+    this.engine = new BotEngine(BODY_RADIUS, this.baseState, profile ? SHAPE_BY_ID.get(profile.shape)?.radii : null, this.expression());
     this.engine.reset(this.baseState, this.time);
   }
 
@@ -86,7 +90,14 @@ export class AvatarController {
   get still(): boolean { return SCRIPTS[this.mode].still === true; }
 
   private expression() {
-    return expressionForMode(this.mode);
+    return expressionForMode(this.mode, this.profile?.expression);
+  }
+
+  setProfile(profile: AvatarProfile): void {
+    if (this.profile?.shape === profile.shape && this.profile?.expression === profile.expression) return;
+    this.profile = profile;
+    this.engine.setShape(SHAPE_BY_ID.get(profile.shape)?.radii ?? null, this.time);
+    this.engine.setExpression(this.expression(), this.time);
   }
 
   setMode(mode: PresenceMode, size: number): void {
@@ -156,6 +167,6 @@ export class AvatarController {
 
   /** New sampler: no pending morph, reaction, pointer or advancing clock. */
   staticFrame(): BotFrame {
-    return sampleStaticPose(this.mode, this.baseState);
+    return sampleStaticPose(this.mode, this.baseState, this.profile);
   }
 }

@@ -1,3 +1,4 @@
+import { DEFAULT_PREFERENCES } from "../preferences/types";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
@@ -122,6 +123,21 @@ function expectInert() {
 const shows = (text: string) => expect(document.body.textContent ?? "").toContain(text);
 
 describe("untrusted text renders as inert text", () => {
+  it("keeps model error words original in pt-BR even when they resemble app diagnostic phrases", async () => {
+    const original = `local model timed out: ${P.img}\nKeep this second line original.`;
+    vi.spyOn(api, "getPreferences").mockResolvedValue({ ...DEFAULT_PREFERENCES, locale: "pt-BR" });
+    vi.mocked(api.listEvents).mockResolvedValue([
+      { type: "agent_message", task_id: task.id, kind: "error", text: original, at: at(14) },
+    ]);
+    render(<App />);
+    const localizedSidebar = await screen.findByRole("complementary", { name: "Barra lateral" });
+    fireEvent.click(await within(localizedSidebar).findByRole("button", { name: /xss-script/ }));
+    expect(await screen.findByRole("heading", { level: 1, name: TITLE })).toBeTruthy();
+    await waitFor(() => expect(document.querySelector(".dock__detail")?.textContent).toContain(original));
+    shows(original);
+    expectInert();
+  });
+
   it("in a task: its title, the model's narration, file paths and action failures", async () => {
     render(<App />);
     fireEvent.click(await within(sidebar()).findByRole("button", { name: /xss-script/ }));

@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { currentLocale, t } from "../i18n";
 import type { TaskStatusWire } from "@pegoles/ui";
 import { describeAction, describePast } from "../lib/events";
 import { agentMessageOf, firstLine } from "../lib/execution";
@@ -59,7 +61,7 @@ export interface ActivityDay {
 
 export const COMPUTER_GROUP_TITLE = "Pegoles Computer";
 
-export const GROUP_STATUS: Record<TaskStatusWire, { label: string; tone: GroupStatusTone }> = {
+export const GROUP_STATUS: Record<TaskStatusWire, { label: CopyKey; tone: GroupStatusTone }> = {
   pending: { label: "Not started", tone: "quiet" },
   running: { label: "Working", tone: "active" },
   waiting_for_approval: { label: "Needs you", tone: "attention" },
@@ -108,7 +110,7 @@ export function actionLabel(action: ActionRequestWire["action"], voice: Voice = 
   if (action.type === "open_url") {
     const host = hostOf(action.url);
     if (!host) return { text: base, context: null };
-    return { text: `${voice === "past" ? "Visited" : "Opening"} ${host}`, context: null };
+    return { text: `${voice === "past" ? t("Visited") : t("Opening")} ${host}`, context: null };
   }
   if (typeof action.path === "string" && FILE_ACTIONS.has(action.type)) {
     const { name, parent } = pathParts(action.path);
@@ -132,13 +134,13 @@ function actionEntry(events: readonly AgentEvent[], request: ActionRequestWire):
   let tone: EntryTone = "normal";
   let outcome: EntryOutcome = "done";
   if (terminal?.type === "action_denied") {
-    label = present; suffix = " — blocked by policy"; tone = "attention"; outcome = "attention";
+    label = present; suffix = t(" — blocked by policy"); tone = "attention"; outcome = "attention";
   } else if (terminal?.type === "action_failed") {
     const error = "error" in terminal && typeof terminal.error === "string" ? terminal.error : "";
-    label = present; suffix = ` — ${error.startsWith("interrupted") ? "interrupted" : "didn’t work"}`; tone = "error"; outcome = "error";
+    label = present; suffix = ` — ${error.startsWith("interrupted") ? t("interrupted") : t("didn’t work")}`; tone = "error"; outcome = "error";
   } else if (terminal?.type === "action_completed") {
     const result = ("result" in terminal ? terminal.result : undefined) as { outcome?: string } | undefined;
-    if (result?.outcome === "needs_approval") { label = present; suffix = " — needs approval"; tone = "attention"; outcome = "attention"; }
+    if (result?.outcome === "needs_approval") { label = present; suffix = t(" — needs approval"); tone = "attention"; outcome = "attention"; }
     else if (result?.outcome && result.outcome !== "executed") {
       label = present; suffix = ` — ${result.outcome.replaceAll("_", " ")}`; tone = "attention"; outcome = "attention";
     }
@@ -160,17 +162,17 @@ const TONE_OUTCOME: Record<EntryTone, EntryOutcome> = { quiet: "neutral", normal
 function sentence(event: AgentEvent): { text: string; tone: EntryTone } | null {
   const e = event as Record<string, unknown>;
   switch (event.type) {
-    case "task_created": return { text: "You handed this over", tone: "normal" };
+    case "task_created": return { text: t("You handed this over"), tone: "normal" };
     case "task_status_changed":
       switch (e.to) {
-        case "running": return { text: "Started working", tone: "normal" };
-        case "completed": return { text: "Finished", tone: "done" };
-        case "failed": return { text: "Couldn’t finish", tone: "error" };
-        case "waiting_for_approval": return { text: "Asked for your approval", tone: "attention" };
-        case "cancelled": return { text: "Cancelled", tone: "quiet" };
+        case "running": return { text: t("Started working"), tone: "normal" };
+        case "completed": return { text: t("Finished"), tone: "done" };
+        case "failed": return { text: t("Couldn’t finish"), tone: "error" };
+        case "waiting_for_approval": return { text: t("Asked for your approval"), tone: "attention" };
+        case "cancelled": return { text: t("Cancelled"), tone: "quiet" };
         default: return null;
       }
-    case "approval_requested": return { text: typeof e.reason === "string" ? `Asked for approval: ${e.reason}` : "Asked for your approval", tone: "attention" };
+    case "approval_requested": return { text: typeof e.reason === "string" ? t("Asked for approval: {0}", { "0": e.reason }) : t("Asked for your approval"), tone: "attention" };
     case "agent_message": {
       // Pegoles' own words, first line only (the whole note is in its task and under Details).
       const message = agentMessageOf(event);
@@ -178,25 +180,25 @@ function sentence(event: AgentEvent): { text: string; tone: EntryTone } | null {
       const line = firstLine(message.text, 120);
       return { text: line, tone: message.kind === "summary" ? "done" : message.kind === "error" ? "error" : "normal" };
     }
-    case "computer_created": return { text: "Set up its computer", tone: "normal" };
+    case "computer_created": return { text: t("Set up its computer"), tone: "normal" };
     case "computer_state_changed":
       switch (e.to) {
-        case "running": return { text: "Started its computer", tone: "normal" };
-        case "stopped": return e.from === "stopped" ? null : { text: "Stopped its computer", tone: "quiet" };
-        case "paused": return { text: "Paused its computer", tone: "quiet" };
-        case "error": return { text: "Its computer ran into a problem", tone: "error" };
+        case "running": return { text: t("Started its computer"), tone: "normal" };
+        case "stopped": return e.from === "stopped" ? null : { text: t("Stopped its computer"), tone: "quiet" };
+        case "paused": return { text: t("Paused its computer"), tone: "quiet" };
+        case "error": return { text: t("Its computer ran into a problem"), tone: "error" };
         default: return null;
       }
     case "guest_runtime_ready":
-      return { text: typeof e.ready_in_ms === "number" ? `Its computer is ready · ${(e.ready_in_ms / 1000).toFixed(1)} s` : "Its computer is ready", tone: "done" };
-    case "guest_runtime_disconnected": return { text: "Lost the connection to its computer", tone: "error" };
-    case "guest_runtime_incompatible": return { text: "Its computer needs an update", tone: "error" };
-    case "guest_runtime_error": return { text: "Its computer reported a problem", tone: "error" };
-    case "graphical_session_failed": return { text: "Its computer’s display couldn’t start", tone: "error" };
+      return { text: typeof e.ready_in_ms === "number" ? t("Its computer is ready · {0} s", { "0": (e.ready_in_ms / 1000).toFixed(1) }) : t("Its computer is ready"), tone: "done" };
+    case "guest_runtime_disconnected": return { text: t("Lost the connection to its computer"), tone: "error" };
+    case "guest_runtime_incompatible": return { text: t("Its computer needs an update"), tone: "error" };
+    case "guest_runtime_error": return { text: t("Its computer reported a problem"), tone: "error" };
+    case "graphical_session_failed": return { text: t("Its computer’s display couldn’t start"), tone: "error" };
     case "control_ownership_changed":
-      if (e.to === "user") return { text: "You took control of its computer", tone: "attention" };
-      if (e.to === "agent") return { text: "Pegoles took control of its computer", tone: "normal" };
-      return e.from === "user" ? { text: "You gave the computer back", tone: "normal" } : null;
+      if (e.to === "user") return { text: t("You took control of its computer"), tone: "attention" };
+      if (e.to === "agent") return { text: t("Pegoles took control of its computer"), tone: "normal" };
+      return e.from === "user" ? { text: t("You gave the computer back"), tone: "normal" } : null;
     case "guest_runtime_waiting": case "guest_runtime_connected": case "guest_handshake_completed":
     case "display_attached": case "display_ready": case "display_detached": case "graphical_session_ready":
     case "frame_observed": case "input_capability_changed":
@@ -211,11 +213,11 @@ function dayKey(date: Date): string {
 }
 
 function dayLabel(date: Date, now: Date): string {
-  if (dayKey(date) === dayKey(now)) return "Today";
+  if (dayKey(date) === dayKey(now)) return t("Today");
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  if (dayKey(date) === dayKey(yesterday)) return "Yesterday";
-  return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  if (dayKey(date) === dayKey(yesterday)) return t("Yesterday");
+  return date.toLocaleDateString(currentLocale(), { weekday: "short", month: "short", day: "numeric" });
 }
 
 /** "17:42" in the viewer's clock. Empty when the timestamp is unreadable. */
@@ -291,9 +293,9 @@ export function activityStream(events: readonly AgentEvent[], tasks: readonly Ag
         key: `${taskId ?? "computer"}-${run[0].id}`,
         kind: taskId ? "task" : "computer",
         taskId,
-        title: taskId ? task?.title ?? createdTitles.get(taskId) ?? "Task" : COMPUTER_GROUP_TITLE,
+        title: taskId ? task?.title ?? createdTitles.get(taskId) ?? t("Task") : COMPUTER_GROUP_TITLE,
         status,
-        statusLabel: status ? GROUP_STATUS[status].label : null,
+        statusLabel: status ? t(GROUP_STATUS[status].label) : null,
         statusTone: status ? GROUP_STATUS[status].tone : null,
         at: run[0].at,
         entries: run,

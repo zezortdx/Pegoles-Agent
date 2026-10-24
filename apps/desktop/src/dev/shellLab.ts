@@ -1,3 +1,4 @@
+import { DEFAULT_PREFERENCES, type Preferences } from "../preferences/types";
 /**
  * DEV ONLY — never shipped (main.tsx gates it on import.meta.env.DEV and the
  * production bundle test checks for the marker below).
@@ -365,8 +366,11 @@ export function installShellLab(hash: string): void {
   };
   const say = (taskId: string, kind: AgentMessageKind, text: string) => { state.events = [...state.events, note(taskId, kind, text, 0)]; };
 
+  let preferences: Preferences = structuredClone(DEFAULT_PREFERENCES);
   const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
     get_status: () => state.status,
+    get_preferences: () => structuredClone(preferences),
+    set_preferences: (args) => { preferences = structuredClone(args.preferences as Preferences); return structuredClone(preferences); },
     list_events: () => state.events,
     list_tasks: () => state.tasks,
     get_model_settings: () => model,

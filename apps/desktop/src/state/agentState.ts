@@ -1,8 +1,9 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t } from "../i18n";
 import type { PresenceMode } from "../presence";
 import { describeAction, describePast } from "../lib/events";
 import { agentMessageOf, capabilityFor, firstLine, requestOf, type Capability } from "../lib/execution";
 import type { ActionRequestWire, AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
-import { stopReason } from "./errors";
 
 /**
  * VisualStateAdapter: real Core state in, what Pegoles looks like out.
@@ -29,7 +30,7 @@ export type StartState = "needs-model" | "ready" | "busy";
 /** What a task that needs a model waits for: Pegoles Local set up (the default), or a key for the chosen cloud model. */
 export type ModelNeed = "local-model" | "cloud-key";
 
-export const NEEDS_MODEL_DETAIL: Record<ModelNeed, string> = {
+export const NEEDS_MODEL_DETAIL: Record<ModelNeed, CopyKey> = {
   "local-model": "Pegoles needs its local model to work on tasks. Set up Pegoles Local (free, runs on this Mac), or connect a cloud model in Settings. The task is kept while the app is open, and its computer still works.",
   "cloud-key": "Cloud mode needs an Anthropic API key. Add one in Settings, or switch back to Pegoles Local (free, runs on this Mac). The task is kept while the app is open, and its computer still works.",
 };
@@ -116,7 +117,7 @@ export function actionSteps(events: readonly AgentEvent[]): ActionStep[] {
 }
 
 /** What a capability looks like as a headline while it is in use. */
-const CAPABILITY_HEADLINE: Record<Capability, string> = {
+const CAPABILITY_HEADLINE: Record<Capability, CopyKey> = {
   Computer: "Using its computer",
   Files: "Working with files",
   Shell: "Running a command",
@@ -144,11 +145,11 @@ export function modelNeed(status: StatusPayload | null): ModelNeed {
   return status?.provider === "anthropic" ? "cloud-key" : "local-model";
 }
 
-/** The latest note of a kind Pegoles wrote for this task, as one line. */
+/** Progress is summarized; untrusted error notes retain their original text. */
 function latestNote(events: readonly AgentEvent[], kind: "progress" | "error"): string | undefined {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const message = agentMessageOf(events[i]);
-    if (message?.kind === kind) return firstLine(message.text);
+    if (message?.kind === kind) return kind === "error" ? message.text : firstLine(message.text);
   }
   return undefined;
 }
@@ -169,29 +170,29 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
   const recent = actionSteps(events).slice(-6);
   const pulse = events.length;
   const base = { recent, pulse };
-  if (!connected) return { ...base, mode: "offline", headline: "Waiting for Pegoles Core", live: false };
+  if (!connected) return { ...base, mode: "offline", headline: t("Waiting for Pegoles Core"), live: false };
   const last = recent[recent.length - 1];
-  if (task.status === "completed") return { ...base, mode: "done", headline: "Done", live: false, at: task.updated_at };
+  if (task.status === "completed") return { ...base, mode: "done", headline: t("Done"), live: false, at: task.updated_at };
   if (task.status === "failed") {
     const stopped = [...recent].reverse().find((step) => step.outcome !== "done");
     const note = latestNote(events, "error");
-    return { ...base, mode: "error", headline: "Couldn’t finish this", detail: stopped?.label, reason: note && stopReason(note), live: false, at: task.updated_at };
+    return { ...base, mode: "error", headline: t("Couldn’t finish this"), detail: stopped?.label, reason: note, live: false, at: task.updated_at };
   }
-  if (task.status === "cancelled") return { ...base, mode: "idle", headline: "Cancelled", reason: latestNote(events, "error"), live: false, at: task.updated_at };
+  if (task.status === "cancelled") return { ...base, mode: "idle", headline: t("Cancelled"), reason: latestNote(events, "error"), live: false, at: task.updated_at };
 
   const needsApproval = task.status === "waiting_for_approval" || last?.outcome === "approval" ||
     (events.length > 0 && events[events.length - 1].type === "approval_requested");
   if (needsApproval) {
-    return { ...base, mode: "needs-user", headline: "Needs your approval", approvalReason: approvalReason(events), live: true };
+    return { ...base, mode: "needs-user", headline: t("Needs your approval"), approvalReason: approvalReason(events), live: true };
   }
   if (last?.outcome === "blocked") {
-    return { ...base, mode: "blocked", headline: "Stopped by a safety rule", detail: last.label, live: true };
+    return { ...base, mode: "blocked", headline: t("Stopped by a safety rule"), detail: last.label, live: true };
   }
   if (last?.outcome === "failed") {
-    return { ...base, mode: "error", headline: "An action didn’t work", detail: last.label, live: true };
+    return { ...base, mode: "error", headline: t("An action didn’t work"), detail: last.label, live: true };
   }
   if (status?.control_owner === "user" && (task.status === "running" || last?.outcome === "running")) {
-    return { ...base, mode: "waiting", headline: "Waiting while you use its computer", live: true };
+    return { ...base, mode: "waiting", headline: t("Waiting while you use its computer"), live: true };
   }
   // "Started" is only believed while Core corroborates that input is busy.
   if (last?.outcome === "running" && status?.agent_busy) {
@@ -199,26 +200,26 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
     return {
       ...base, capability, live: true,
       mode: capability === "Computer" ? "using-computer" : "working",
-      headline: capability ? CAPABILITY_HEADLINE[capability] : last.label,
+      headline: capability ? t(CAPABILITY_HEADLINE[capability]) : last.label,
       detail: capability ? last.detail ?? last.label : last.detail,
     };
   }
-  if (acknowledging) return { ...base, mode: "acknowledging", headline: "Got it", live: true };
+  if (acknowledging) return { ...base, mode: "acknowledging", headline: t("Got it"), live: true };
   // Between actions, the line says what Pegoles last wrote about its work.
-  if (task.status === "running") return { ...base, mode: "thinking", headline: "Working on it", detail: latestNote(events, "progress"), live: true };
+  if (task.status === "running") return { ...base, mode: "thinking", headline: t("Working on it"), detail: latestNote(events, "progress"), live: true };
   // Not started. A start in flight, or a run claimed but not yet reported as running, is starting.
-  if (starting || status?.active_task === task.id) return { ...base, mode: "thinking", headline: "Starting", live: true };
+  if (starting || status?.active_task === task.id) return { ...base, mode: "thinking", headline: t("Starting"), live: true };
   if (!modelConnected(status)) {
     const need = modelNeed(status);
     return {
-      ...base, mode: "blocked", headline: "Can’t start yet", live: true, offerComputer: true, start: "needs-model",
-      waitingFor: need, detail: NEEDS_MODEL_DETAIL[need],
+      ...base, mode: "blocked", headline: t("Can’t start yet"), live: true, offerComputer: true, start: "needs-model",
+      waitingFor: need, detail: t(NEEDS_MODEL_DETAIL[need]),
     };
   }
   if (status?.active_task) {
-    return { ...base, mode: "idle", headline: "Not started", detail: "Pegoles is working on another task", live: false, start: "busy" };
+    return { ...base, mode: "idle", headline: t("Not started"), detail: t("Pegoles is working on another task"), live: false, start: "busy" };
   }
-  return { ...base, mode: "idle", headline: "Not started", live: false, start: "ready" };
+  return { ...base, mode: "idle", headline: t("Not started"), live: false, start: "ready" };
 }
 
 export interface GlobalPresenceInputs {

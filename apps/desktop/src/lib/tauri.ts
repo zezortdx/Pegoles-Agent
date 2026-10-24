@@ -1,3 +1,4 @@
+import type { Preferences } from "../preferences/types";
 import type { EffectsTier, ViewportState, TaskStatusWire } from "@pegoles/ui";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -298,6 +299,8 @@ export interface Intelligence {
 export const MODEL_INSTALL_EVENT = "pegoles://model-install";
 
 export const api = {
+  getPreferences: () => invoke<Preferences>("get_preferences"),
+  setPreferences: (preferences: Preferences) => invoke<Preferences>("set_preferences", { preferences }),
   createTask: (title: string) => invoke<AgentTask>("create_task", { title }),
   listTasks: () => invoke<AgentTask[]>("list_tasks"),
   /** Start the agent on a pending task (it prepares its computer itself). */

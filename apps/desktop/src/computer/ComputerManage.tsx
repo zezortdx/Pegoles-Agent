@@ -1,9 +1,11 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { ComputerCommand } from "../state/computerModel";
 
 export type ManageCommand = Extract<ComputerCommand, "reset" | "remove">;
 
-const CONFIRM: Record<ManageCommand, { readonly question: string; readonly body: string; readonly action: string }> = {
+const CONFIRM: Record<ManageCommand, { readonly question: CopyKey; readonly body: CopyKey; readonly action: CopyKey }> = {
   reset: {
     question: "Reset its computer?",
     body: "Everything done inside it is erased: its apps, files and settings go back to the sealed Pegoles image.",
@@ -31,6 +33,7 @@ export interface ComputerManageProps {
  * window) with Cancel focused, and both wait while a task is running.
  */
 export function ComputerManage({ available, locked, busy, onCommand }: ComputerManageProps) {
+  useLocale();
   const [confirming, setConfirming] = useState<ManageCommand | null>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const triggers = useRef<Partial<Record<ManageCommand, HTMLButtonElement | null>>>({});
@@ -58,13 +61,13 @@ export function ComputerManage({ available, locked, busy, onCommand }: ComputerM
     };
     return (
       <div className="manage manage--confirm" role="group" aria-labelledby={titleId} onKeyDown={onKeyDown}>
-        <p id={titleId} className="manage__question">{copy.question}</p>
-        <p className="manage__body">{copy.body}</p>
+        <p id={titleId} className="manage__question">{t(copy.question)}</p>
+        <p className="manage__body">{t(copy.body)}</p>
         <div className="manage__actions">
-          <button ref={cancelRef} type="button" className="btn btn--quiet btn--small" onClick={dismiss}>Cancel</button>
+          <button ref={cancelRef} type="button" className="btn btn--quiet btn--small" onClick={dismiss}>{t("Cancel")}</button>
           <button type="button" className="btn btn--danger btn--small" disabled={busy}
             onClick={() => { onCommand(open); setConfirming(null); }}>
-            {copy.action}
+            {t(copy.action)}
           </button>
         </div>
       </div>
@@ -72,17 +75,15 @@ export function ComputerManage({ available, locked, busy, onCommand }: ComputerM
   }
   return (
     <div className="manage">
-      <div className="manage__actions" role="group" aria-label="Start its computer over">
+      <div className="manage__actions" role="group" aria-label={t("Start its computer over")}>
         <button ref={(element) => { triggers.current.reset = element; }} type="button" className="btn btn--quiet btn--small"
           disabled={locked || busy} onClick={() => setConfirming("reset")}>
-          Reset computer…
-        </button>
+          {t("Reset computer…")}</button>
         <button ref={(element) => { triggers.current.remove = element; }} type="button" className="btn btn--quiet btn--small manage__remove"
           disabled={locked || busy} onClick={() => setConfirming("remove")}>
-          Remove computer…
-        </button>
+          {t("Remove computer…")}</button>
       </div>
-      {locked && <p className="manage__why">Stop the running task to reset or remove its computer.</p>}
+      {locked && <p className="manage__why">{t("Stop the running task to reset or remove its computer.")}</p>}
     </div>
   );
 }

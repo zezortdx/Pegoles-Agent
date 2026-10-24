@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t } from "../i18n";
 import type { InstallErrorKind, Intelligence, LocalModelInfo, ModelInstallStatus } from "../lib/tauri";
 import { formatBytes } from "../lib/format";
 
@@ -48,7 +50,7 @@ export interface LocalView {
 
 const ACTIVE = new Set<ModelInstallStatus["phase"]>(["downloading", "verifying", "finalizing"]);
 
-export const STEP_LABEL: Record<PreparingStep, string> = {
+export const STEP_LABEL: Record<PreparingStep, CopyKey> = {
   downloading: "Downloading model…",
   verifying: "Verifying…",
   finishing: "Finishing…",
@@ -111,7 +113,7 @@ export function localView(intelligence: Intelligence | null): LocalView {
   const partial = model.state === "partial" ? model.partial_bytes ?? 0 : 0;
   if (job?.phase === "failed") {
     return {
-      ...base, stage: "failed", error: job.error ?? "The setup didn’t finish.", errorKind: job.error_kind,
+      ...base, stage: "failed", error: job.error ?? t("The setup didn’t finish."), errorKind: job.error_kind,
       doneBytes: partial || undefined, totalBytes: model.size_bytes,
     };
   }
@@ -133,12 +135,12 @@ export function percentOf(done: number | undefined, total: number | undefined): 
 /** What the button that (re)starts the setup says in each stage. */
 export function setupAction(view: LocalView): string {
   switch (view.stage) {
-    case "paused": return "Resume";
-    case "damaged": return "Set up again";
+    case "paused": return t("Resume");
+    case "damaged": return t("Set up again");
     case "failed":
-      if (view.errorKind === "corrupted") return "Download again";
-      return view.errorKind === "network" && view.doneBytes ? "Resume" : "Try again";
-    default: return "Set up";
+      if (view.errorKind === "corrupted") return t("Download again");
+      return view.errorKind === "network" && view.doneBytes ? t("Resume") : t("Try again");
+    default: return t("Set up");
   }
 }
 

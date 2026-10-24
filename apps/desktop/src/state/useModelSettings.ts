@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type ModelSettings } from "../lib/tauri";
 import { errorText } from "./errors";
@@ -55,7 +56,7 @@ export function useModelSettings(enabled: boolean, onChanged?: () => void): Mode
       if (op !== "load") changed.current?.();
       return true;
     } catch (raw) {
-      if (alive.current) setError({ op, text: errorText(raw).trim() || "No details were reported." });
+      if (alive.current) setError({ op, text: errorText(raw).trim() || t("No details were reported.") });
       return false;
     } finally {
       busy.current = false;

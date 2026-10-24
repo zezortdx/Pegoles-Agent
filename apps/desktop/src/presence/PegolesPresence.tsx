@@ -1,5 +1,7 @@
+import { usePreferences } from "../preferences/PreferencesProvider";
+import { useLocale } from "../i18n";
 import { useState, type CSSProperties, type KeyboardEvent } from "react";
-import { PRESENCE_LABEL } from "./modes";
+import { presenceLabel } from "./modes";
 import type { PresenceMode } from "./modes";
 import { PresenceAvatar } from "./PresenceAvatar";
 import "./presence.css";
@@ -34,6 +36,8 @@ export interface PegolesPresenceProps {
 /** Existing shell API; state derivation stays in the Core visual adapter. */
 export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0, interactive = false,
   pressable = false, onPress, field, decorative = false, label, className }: PegolesPresenceProps) {
+  useLocale();
+  const { preferences } = usePreferences();
   const [presses, setPresses] = useState(0);
   const press = () => {
     setPresses((count) => count + 1);
@@ -45,10 +49,10 @@ export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0,
     if (!event.repeat) press();
   };
   const a11y = pressable
-    ? { role: "button", tabIndex: 0, "aria-label": label ?? PRESENCE_LABEL[mode], onClick: press, onKeyDown }
+    ? { role: "button", tabIndex: 0, "aria-label": label ?? presenceLabel(mode, preferences.avatar.name), onClick: press, onKeyDown }
     : decorative
       ? { "aria-hidden": true as const }
-      : { role: "img", "aria-label": label ?? PRESENCE_LABEL[mode] };
+      : { role: "img", "aria-label": label ?? presenceLabel(mode, preferences.avatar.name) };
 
   return <div className={className ? `presence ${className}` : "presence"} data-mode={mode}
     data-small={size < 28 || undefined} data-pressable={pressable || undefined}

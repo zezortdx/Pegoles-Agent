@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { AnimatePresence, m } from "motion/react";
 import type { HumanError } from "../state/errors";
 import { duration, ease } from "../lib/motion";
@@ -5,6 +6,7 @@ import { CloseIcon } from "../ui/icons";
 
 /** General problems only: task and computer errors live where they happened. */
 export function Toast({ error, onDismiss }: { error: HumanError | null; onDismiss: () => void }) {
+  useLocale();
   return (
     <AnimatePresence>
       {error && (
@@ -20,11 +22,11 @@ export function Toast({ error, onDismiss }: { error: HumanError | null; onDismis
             <p className="toast__title">{error.title}</p>
             {error.hint && <p className="toast__hint">{error.hint}</p>}
             <details className="details">
-              <summary>Details</summary>
+              <summary>{t("Details")}</summary>
               <pre className="diagnostic">{error.detail}</pre>
             </details>
           </div>
-          <button type="button" className="icon-btn" aria-label="Dismiss" onClick={onDismiss}><CloseIcon size={14} /></button>
+          <button type="button" className="icon-btn" aria-label={t("Dismiss")} onClick={onDismiss}><CloseIcon size={14} /></button>
         </m.div>
       )}
     </AnimatePresence>

@@ -1,8 +1,9 @@
+import { currentLocale, t } from "../i18n";
 /** Presentation helpers shared by transcript artifacts. Pure. */
 
 export function timeOf(iso: string): string {
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString(currentLocale(), { hour: "numeric", minute: "2-digit" });
 }
 
 export function basename(path: string): string {
@@ -28,5 +29,11 @@ export function formatDuration(ms: number): string {
 }
 
 export function plural(count: number, one: string, many = `${one}s`): string {
+  // Only these built-in nouns are localized; caller-provided data is never a key.
+  if (one === "action") return t(count === 1 ? "{count} action" : "{count} actions", { count });
+  if (one === "task") return t(count === 1 ? "{count} task" : "{count} tasks", { count });
+  if (one === "file") return t(count === 1 ? "{count} file" : "{count} files", { count });
+  if (one === "step") return t(count === 1 ? "{count} step" : "{count} steps", { count });
+  if (one === "earlier step") return t(count === 1 ? "{count} earlier step" : "{count} earlier steps", { count });
   return `${count} ${count === 1 ? one : many}`;
 }

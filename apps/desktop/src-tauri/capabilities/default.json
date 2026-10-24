@@ -11,6 +11,8 @@
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "allow-get-status",
+    "allow-get-preferences",
+    "allow-set-preferences",
     "allow-create-computer",
     "allow-start-computer",
     "allow-pause-computer",

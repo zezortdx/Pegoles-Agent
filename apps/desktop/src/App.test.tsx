@@ -1,3 +1,4 @@
+import { DEFAULT_PREFERENCES } from "./preferences/types";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listen } from "@tauri-apps/api/event";
@@ -39,6 +40,8 @@ beforeEach(() => {
     matches: query.includes("min-width"), media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
   }));
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} });
+  vi.spyOn(api, "getPreferences").mockResolvedValue(DEFAULT_PREFERENCES);
+  vi.spyOn(api, "setPreferences").mockImplementation(async (preferences) => preferences);
   vi.spyOn(api, "getStatus").mockResolvedValue(status);
   vi.spyOn(api, "listEvents").mockResolvedValue([]);
   vi.spyOn(api, "listTasks").mockResolvedValue([]);
@@ -65,6 +68,45 @@ const ready = async () => waitFor(() => expect(composer().disabled).toBe(false))
 const machineRow = (state: RegExp) => within(sidebar()).findByRole("button", { name: state });
 
 describe("desktop shell", () => {
+  it("changes product language without changing the selected task, original narration, or composer draft", async () => {
+    const working = { ...task, status: "running" as const, title: "Original <task> text" };
+    const request = { action_id: "i18n-action", task_id: task.id, computer_id: "vm", action: { type: "click", x: 0.2, y: 0.4 }, requested_at: task.created_at };
+    vi.mocked(api.listTasks).mockResolvedValue([working]);
+    vi.mocked(api.listEvents).mockResolvedValue([
+      { type: "action_started", action_id: request.action_id, request, at: task.created_at },
+      { type: "agent_message", task_id: task.id, kind: "progress", text: "Keep this model <text> original", at: task.created_at },
+    ]);
+    vi.mocked(api.getStatus).mockResolvedValue({ ...status, ...running, agent_busy: true, active_task: task.id, control_owner: "agent" });
+    render(<App />); await ready();
+    fireEvent.change(composer(), { target: { value: "Keep my <draft> original" } });
+    fireEvent.click(await within(sidebar()).findByRole("button", { name: /Original <task> text/ }));
+    expect(await screen.findByRole("heading", { level: 1, name: working.title })).toBeTruthy();
+    fireEvent.click(within(sidebar()).getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Make your agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "Make your agent" });
+    const cloud = within(dialog).getByRole("radio", { name: "Cloud" });
+    cloud.focus();
+    fireEvent.keyDown(cloud, { key: "n", metaKey: true });
+    fireEvent.keyDown(cloud, { key: "k", ctrlKey: true });
+    fireEvent.keyDown(cloud, { key: "j", metaKey: true });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Make your agent" })).toBe(dialog);
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Language" }), { target: { value: "pt-BR" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("heading", { level: 1, name: "Configurações" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Inteligência" })).toBeTruthy();
+    expect(screen.getByText("Recomendado")).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Principal" })).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "Nova tarefa" }) as HTMLTextAreaElement).value).toBe("Keep my <draft> original");
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Barra lateral" })).getByRole("button", { name: /Original <task> text/ }));
+    expect(await screen.findByRole("heading", { level: 1, name: working.title })).toBeTruthy();
+    expect(document.body.textContent).toContain("Keep this model <text> original");
+    expect(document.body.textContent).toContain("Clicando");
+    expect(api.cancelTask).not.toHaveBeenCalled();
+    expect(api.runTask).not.toHaveBeenCalled();
+  });
+
   it("keeps a browser preview disconnected and never invokes the backend", () => {
     bridge.native = false;
     render(<App />);

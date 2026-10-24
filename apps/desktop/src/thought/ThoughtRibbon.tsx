@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
 import { useId, useLayoutEffect, useRef } from "react";
 import { PresenceMark } from "../presence/PresenceMark";
 import type { PresenceMode } from "../presence/modes";
@@ -29,7 +31,7 @@ const SHIFT_MS = 240;
 const FADE_MS = 160;
 const EASE_OUT = "cubic-bezier(0.23, 1, 0.32, 1)";
 
-const SR_PHASE: Record<RibbonPhase, string> = {
+const SR_PHASE: Record<RibbonPhase, CopyKey> = {
   sprouting: "starting",
   approval: "needs your approval",
   running: "in progress",
@@ -78,6 +80,7 @@ function animate(el: Element | null | undefined, keyframes: Keyframe[], options:
  * animation (the glow is a pre-blurred duplicate path).
  */
 export function ThoughtRibbon({ model, size = 36, reducedMotion = false, anchored = false, className }: ThoughtRibbonProps) {
+  useLocale();
   const root = useRef<HTMLDivElement>(null);
   const glowId = `thought-ribbon-glow-${useId().replaceAll(":", "")}`;
   const seen = useRef<Map<string, { phase: RibbonPhase; y: number }> | null>(null);
@@ -144,11 +147,11 @@ export function ThoughtRibbon({ model, size = 36, reducedMotion = false, anchore
         </g>;
       })}
     </svg>
-    <ul className="thought-ribbon__labels" aria-label="What Pegoles is doing">
+    <ul className="thought-ribbon__labels" aria-label={t("What Pegoles is doing")}>
       {rows.map(({ strand, y }) => <li key={strand.id} className="thought-ribbon__label" data-strand={strand.id}
         data-active={strand.id === model.activeId || undefined} data-phase={strand.phase}
         style={{ top: y - 8, left: x1 + 6 }}>
-        {strand.label}<span className="thought-ribbon__sr">, {SR_PHASE[strand.phase]}</span>
+        {strand.label}<span className="thought-ribbon__sr">, {t(SR_PHASE[strand.phase])}</span>
       </li>)}
     </ul>
   </div>;

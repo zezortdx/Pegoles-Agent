@@ -11,6 +11,8 @@
 ipc_commands! {
     release: [
         get_status,
+        get_preferences,
+        set_preferences,
         create_computer,
         start_computer,
         pause_computer,

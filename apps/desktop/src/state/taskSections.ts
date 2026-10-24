@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t } from "../i18n";
 import type { AgentTask } from "../lib/tauri";
 
 /**
@@ -14,7 +16,7 @@ export interface TaskSection {
   readonly tasks: readonly AgentTask[];
 }
 
-const LABEL: Record<SectionKey, string> = {
+const LABEL: Record<SectionKey, CopyKey> = {
   "needs-you": "Needs you",
   working: "Working",
   today: "Today",
@@ -53,6 +55,6 @@ export function taskSections(tasks: readonly AgentTask[], now: number = Date.now
     const list = buckets.get(key);
     if (!list?.length) return [];
     const sorted = [...list].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.created_at.localeCompare(a.created_at));
-    return [{ key, label: LABEL[key], tasks: sorted }];
+    return [{ key, label: t(LABEL[key]), tasks: sorted }];
   });
 }

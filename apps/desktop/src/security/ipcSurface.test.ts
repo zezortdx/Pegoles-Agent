@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { DEFAULT_PREFERENCES } from "../preferences/types";
+import { describe, expect, it, vi } from "vitest";
 import { api, debugApi } from "../lib/tauri";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 /**
  * The release web view is granted exactly the commands in `api`
@@ -13,6 +17,18 @@ const product = import.meta.glob<string>(
 );
 
 describe("IPC surface of the product", () => {
+  it("preferences expose only fixed get/set payloads, without paths or styling parameters", async () => {
+    vi.mocked(invoke).mockClear();
+    await api.getPreferences();
+    await api.setPreferences(DEFAULT_PREFERENCES);
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["get_preferences"],
+      ["set_preferences", { preferences: DEFAULT_PREFERENCES }],
+    ]);
+    expect(Object.keys(DEFAULT_PREFERENCES).sort()).toEqual(["avatar", "locale", "schema_version"]);
+    expect(Object.keys(DEFAULT_PREFERENCES.avatar).sort()).toEqual(["color", "expression", "name", "shape"]);
+  });
+
   it("every command the release bridge exposes is called by the product", () => {
     const sources = Object.values(product);
     expect(sources.length).toBeGreaterThan(20);

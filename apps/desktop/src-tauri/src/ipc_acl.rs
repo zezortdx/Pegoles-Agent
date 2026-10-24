@@ -242,12 +242,16 @@ fn the_acl_allows_the_product_commands_and_denies_the_rest() {
         "set_provider",
         "enter_api_key",
         "capture_screen",
+        "get_preferences",
+        "set_preferences",
     ] {
         assert!(denied(&call(&main, cmd, "https://evil.example")), "{cmd}");
     }
     // Any other window gets nothing.
     let other = window(&app, "other");
-    assert!(denied(&call(&other, "get_status", LOCAL)));
+    for cmd in ["get_status", "get_preferences", "set_preferences"] {
+        assert!(denied(&call(&other, cmd, LOCAL)), "{cmd}");
+    }
 
     // Debug builds add the Design Lab capability at startup.
     crate::grant_debug_commands(&app).unwrap();

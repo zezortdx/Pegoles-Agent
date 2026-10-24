@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { useEffect, useRef, type CSSProperties } from "react";
 import { AgentCursorOverlay } from "@pegoles/ui";
 import type { ComputerCommand, ComputerModel } from "../state/computerModel";
@@ -64,16 +65,17 @@ function stateTone(model: ComputerModel): string {
 function ageOf(at: number | null, now: number): string | null {
   if (!at) return null;
   const seconds = Math.max(0, Math.round((now - at) / 1000));
-  return seconds < 5 ? "just now" : seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`;
+  return seconds < 5 ? t("just now") : seconds < 60 ? t("{0}s ago", { "0": seconds }) : t("{0}m ago", { "0": Math.floor(seconds / 60) });
 }
 
 /** Running, with no live view and no picture yet: the same frame, said plainly. */
 function ScreenPlaceholder({ model, snapshot }: { model: ComputerModel; snapshot: Snapshot | null }) {
+  useLocale();
   const paused = model.phase === "paused";
-  const title = paused ? "Paused" : snapshot?.loading ? "Looking at its screen…" : "Its screen isn’t available";
-  const body = paused ? "Its apps and files are kept exactly as they were."
-    : snapshot?.error ? "Pegoles couldn’t capture its screen just now. Everything it does still appears in the task."
-      : "Everything Pegoles does on it still appears in the task.";
+  const title = paused ? t("Paused") : snapshot?.loading ? t("Looking at its screen…") : t("Its screen isn’t available");
+  const body = paused ? t("Its apps and files are kept exactly as they were.")
+    : snapshot?.error ? t("Pegoles couldn’t capture its screen just now. Everything it does still appears in the task.")
+      : t("Everything Pegoles does on it still appears in the task.");
   return (
     <div className="screen-placeholder" data-paused={paused || undefined}>
       <p className="screen-placeholder__title">{title}</p>
@@ -88,10 +90,11 @@ function shortPath(detail: string): string {
 }
 
 function StepsHere({ steps }: { steps: readonly ActionStep[] }) {
+  useLocale();
   if (!steps.length) return null;
   return (
     <section className="computer__section" aria-labelledby="computer-steps">
-      <h3 id="computer-steps" className="computer__section-title">Latest on this computer</h3>
+      <h3 id="computer-steps" className="computer__section-title">{t("Latest on this computer")}</h3>
       <ol className="here">
         {steps.map((step) => (
           <li key={step.id} className="here__row" data-outcome={step.outcome}>
@@ -115,6 +118,7 @@ function StepsHere({ steps }: { steps: readonly ActionStep[] }) {
  * transforms or filters.
  */
 export function ComputerPanel(props: ComputerPanelProps) {
+  useLocale();
   const { model, level, status, busy, error, onCommand, snapshot } = props;
   const heading = useRef<HTMLHeadingElement>(null);
   const full = level === "full";
@@ -136,30 +140,29 @@ export function ComputerPanel(props: ComputerPanelProps) {
       <div className="computer__inner">
         <header className="computer__head" data-tauri-drag-region>
           {full && (
-            <button type="button" className="btn btn--quiet btn--small computer__back" onClick={() => props.onLevel("focus")} title="Back to the task (Esc)">
-              <ArrowLeftIcon size={13} />Task
-            </button>
+            <button type="button" className="btn btn--quiet btn--small computer__back" onClick={() => props.onLevel("focus")} title={t("Back to the task (Esc)")}>
+              <ArrowLeftIcon size={13} />{t("Task")}</button>
           )}
-          <h2 id="computer-title" ref={heading} tabIndex={-1} className="computer__title">Computer</h2>
+          <h2 id="computer-title" ref={heading} tabIndex={-1} className="computer__title">{t("Computer")}</h2>
           <span className="state-label computer__state" data-tone={stateTone(model)}>
             <span className="state-dot" data-tone={stateTone(model)} data-live={model.transitioning || model.phase === "agent" || undefined} aria-hidden="true" />
             {model.chip}
           </span>
           <span className="computer__head-space" data-tauri-drag-region />
           {screenUp && !full && (
-            <button type="button" className="icon-btn" aria-label={level === "focus" ? "Show beside the task" : "Focus its computer"}
-              title={level === "focus" ? "Beside the task" : "Focus"} onClick={() => props.onLevel(level === "focus" ? "side" : "focus")}>
+            <button type="button" className="icon-btn" aria-label={level === "focus" ? t("Show beside the task") : t("Focus its computer")}
+              title={level === "focus" ? t("Beside the task") : t("Focus")} onClick={() => props.onLevel(level === "focus" ? "side" : "focus")}>
               {level === "focus" ? <UnfocusIcon size={16} /> : <FocusIcon size={16} />}
             </button>
           )}
           {screenUp && (
-            <button type="button" className="icon-btn" aria-label={full ? "Leave full window" : "Fill the window"}
-              title={full ? "Leave full window (Esc)" : "Fill the window"} onClick={() => props.onLevel(full ? "focus" : "full")}>
+            <button type="button" className="icon-btn" aria-label={full ? t("Leave full window") : t("Fill the window")}
+              title={full ? t("Leave full window (Esc)") : t("Fill the window")} onClick={() => props.onLevel(full ? "focus" : "full")}>
               {full ? <ExitFullscreenIcon size={15} /> : <FullscreenIcon size={15} />}
             </button>
           )}
           {!full && (
-            <button type="button" className="icon-btn" aria-label="Close computer" title={locked ? "Give control back first" : "Close (Esc)"} disabled={locked} onClick={props.onClose}>
+            <button type="button" className="icon-btn" aria-label={t("Close computer")} title={locked ? t("Give control back first") : t("Close (Esc)")} disabled={locked} onClick={props.onClose}>
               <CloseIcon size={15} />
             </button>
           )}
@@ -173,7 +176,7 @@ export function ComputerPanel(props: ComputerPanelProps) {
                   <>
                     <NativeSlot enabled={props.slotEnabled} obscured={props.obscured || props.moving} onError={props.onSlotError} display={display}>
                       {showSnapshot
-                        ? <img className="screen-snapshot" src={snapshot?.src ?? undefined} alt="Latest snapshot of Pegoles’ computer screen" draggable={false} />
+                        ? <img className="screen-snapshot" src={snapshot?.src ?? undefined} alt={t("Latest snapshot of Pegoles’ computer screen")} draggable={false} />
                         : <ScreenPlaceholder model={model} snapshot={snapshot} />}
                     </NativeSlot>
                     <AgentCursorOverlay source={actionCursorSource} />
@@ -185,7 +188,7 @@ export function ComputerPanel(props: ComputerPanelProps) {
             </div>
             {screenUp && error && (
               <p className="computer__inline-error" role="alert">
-                {error.title} <button type="button" className="link-btn" onClick={props.onDismissError}>Dismiss</button>
+                {error.title} <button type="button" className="link-btn" onClick={props.onDismissError}>{t("Dismiss")}</button>
               </p>
             )}
             {screenUp && (
