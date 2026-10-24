@@ -1,6 +1,6 @@
 //! Pegoles Core: coordinates tasks, computers, actions, policy, events.
 //!
-//! Phase 1 is in-memory only (no SQLite). UI never touches internals
+//! Tasks have bounded local history (no SQLite). UI never touches internals
 //! directly; it goes through this crate (via Tauri commands) and
 //! subscribes to [`AgentEvent`]s.
 
@@ -9,6 +9,7 @@ pub mod display;
 mod display_tests;
 pub mod error;
 pub mod events;
+pub mod history;
 pub mod input;
 pub mod registry;
 pub mod tasks;

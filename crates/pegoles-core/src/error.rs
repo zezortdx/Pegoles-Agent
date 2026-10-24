@@ -24,6 +24,8 @@ pub enum CoreError {
     /// Take Control refused: the display is not ready to be controlled.
     #[error("control unavailable: {0}")]
     ControlUnavailable(String),
+    #[error("invalid stored task history")]
+    InvalidTaskHistory,
     #[error("invalid task title: {0}")]
     InvalidTaskTitle(String),
 }
