@@ -69,7 +69,7 @@ impl Pending {
     }
 }
 impl Stopped {
-    fn progress(self) -> ApprovalProgress {
+    fn progress(&self) -> ApprovalProgress {
         let message = match self.reason {
             ApprovalStopReason::Denied => "Action denied by the human",
             ApprovalStopReason::Expired => "Approval expired",
@@ -92,6 +92,7 @@ fn annotate_partial(result: &mut ActionResult, typed: usize, total: usize) {
             "{} (the first {typed} of {total} characters were typed)",
             result.message
         );
+        result.error = Some(result.message.clone());
     }
 }
 pub enum ApprovalProgress {
@@ -116,8 +117,23 @@ impl ComputerRegistry {
     pub(crate) fn invalidate_approvals(&mut self) {
         self.approvals.generation = self.approvals.generation.wrapping_add(1);
         for p in std::mem::take(&mut self.approvals.pending) {
-            self.remember_stop(p.stopped(ApprovalStopReason::ControlChanged));
+            self.remember_pending_stop(p, ApprovalStopReason::ControlChanged);
         }
+    }
+    fn settle_approval(&mut self, p: &Pending, result: &ActionResult) {
+        self.publish_action_result(&p.req, result, &mut Vec::new());
+        self.audit_action(&p.req, "RequireApproval", result);
+    }
+    fn stop_pending(&mut self, p: &Pending, reason: ApprovalStopReason) -> ApprovalProgress {
+        let progress = p.stopped(reason).progress();
+        if let ApprovalProgress::Stopped { result, .. } = &progress {
+            self.settle_approval(p, result);
+        }
+        progress
+    }
+    fn remember_pending_stop(&mut self, p: Pending, reason: ApprovalStopReason) {
+        self.stop_pending(&p, reason);
+        self.remember_stop(p.stopped(reason));
     }
     fn remember_stop(&mut self, stop: Stopped) {
         if self.approvals.stopped.len() >= MAX_PENDING {
@@ -128,7 +144,7 @@ impl ComputerRegistry {
     fn expire_approvals(&mut self) {
         for p in std::mem::take(&mut self.approvals.pending) {
             if Instant::now() >= p.deadline {
-                self.remember_stop(p.stopped(ApprovalStopReason::Expired));
+                self.remember_pending_stop(p, ApprovalStopReason::Expired);
             } else {
                 self.approvals.pending.push(p);
             }
@@ -228,7 +244,7 @@ impl ComputerRegistry {
             .position(|p| p.req.action_id == id)
         {
             let p = self.approvals.pending.remove(index);
-            self.remember_stop(p.stopped(ApprovalStopReason::Cancelled));
+            self.remember_pending_stop(p, ApprovalStopReason::Cancelled);
         }
     }
     /// Poll under a short Core lock; wait outside it. No replacement arguments.
@@ -291,7 +307,7 @@ impl ComputerRegistry {
             None
         };
         if let Some(reason) = reason {
-            return p.stopped(reason).progress();
+            return self.stop_pending(&p, reason);
         }
         match p.decision {
             None => {
@@ -299,7 +315,7 @@ impl ComputerRegistry {
                 return ApprovalProgress::Waiting;
             }
             Some(ApprovalDecision::Deny) => {
-                return p.stopped(ApprovalStopReason::Denied).progress()
+                return self.stop_pending(&p, ApprovalStopReason::Denied)
             }
             Some(ApprovalDecision::ApproveOnce) => {}
         }
@@ -307,11 +323,11 @@ impl ComputerRegistry {
             ask_before_input: self.approvals.strict,
         };
         if pegoles_policy::evaluate(&p.req, &ctx).decision == Decision::Deny {
-            return p.stopped(ApprovalStopReason::Stale).progress();
+            return self.stop_pending(&p, ApprovalStopReason::Stale);
         }
         let mut part = p.req.clone();
         let mut more = false;
-        let mut next_count = 0;
+
         if let ComputerAction::TypeText { text, sensitive } = &p.req.action {
             let total = text.chars().count();
             let next: String = text
@@ -319,19 +335,25 @@ impl ComputerRegistry {
                 .skip(p.typed)
                 .take(4 * pegoles_computer::input::TYPE_SLICE_CHARS)
                 .collect();
-            next_count = next.chars().count();
+            let next_count = next.chars().count();
             more = p.typed + next_count < total;
             part.action = ComputerAction::TypeText {
                 text: next,
                 sensitive: *sensitive,
             };
         }
-        let mut result = self
-            .execute_request(part, &ctx, cancel, false, Some(p.typed))
-            .0;
-        if result.success {
-            p.typed += next_count;
-        } else {
+        if p.typed == 0 {
+            self.bus
+                .publish(pegoles_protocol::AgentEvent::ActionStarted {
+                    action_id: p.req.action_id,
+                    request: p.req.redacted_for_event(),
+                    at: Utc::now(),
+                });
+        }
+        let (mut result, confirmed_typed) =
+            self.execute_approved_slice(part, &ctx, cancel, p.typed);
+        p.typed += confirmed_typed;
+        if !result.success {
             let info = p.stopped(ApprovalStopReason::Cancelled);
             annotate_partial(&mut result, info.typed, info.total);
         }
@@ -339,6 +361,7 @@ impl ComputerRegistry {
             self.approvals.pending.push(p);
             ApprovalProgress::Continue
         } else {
+            self.settle_approval(&p, &result);
             ApprovalProgress::Finished(result)
         }
     }
@@ -460,7 +483,7 @@ mod tests {
                     }
                 ));
                 assert!(r.list_approvals().is_empty());
-                assert!(r.audit_rows(500).is_empty());
+                assert_eq!(r.audit_rows(500).last().unwrap().outcome, "Interrupted");
             }
         }
     }
@@ -610,10 +633,133 @@ mod tests {
         assert!(r.list_approvals().is_empty());
     }
 
+    #[test]
+    fn approved_typing_emits_one_whole_action_terminal_with_confirmed_prefix() {
+        use pegoles_protocol::AgentEvent;
+        let mut streams = Vec::new();
+        for mode in 0..6 {
+            let (mut r, _dir) = rig();
+            let mut rx = r.bus.subscribe();
+            let task = TaskId::new();
+            let cancel = CancellationToken::new();
+            let id = r
+                .execute_action(
+                    task,
+                    ComputerAction::TypeText {
+                        text: "private marker".repeat(40),
+                        sensitive: true,
+                    },
+                    false,
+                    &pegoles_policy::PolicyContext::default(),
+                    &cancel,
+                    false,
+                )
+                .0
+                .action_id;
+            r.resolve_approval(id, ApprovalDecision::ApproveOnce)
+                .unwrap();
+            assert!(matches!(
+                r.poll_approval(id, task, &cancel),
+                ApprovalProgress::Continue
+            ));
+            let mut before = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                before.push(event);
+            }
+            match mode {
+                1 => cancel.cancel(),
+                2 => {
+                    r.approvals.pending[0].deadline = Instant::now();
+                    r.list_approvals();
+                }
+                3 => {
+                    for _ in 0..pegoles_protocol::limits::MAX_ACTIONS_PER_SEC {
+                        r.rate_limiter.check(crate::input::input_clock_ms());
+                    }
+                }
+                4 => r.cancel_agent_input("takeover"),
+                5 => r.discard_approval(id),
+                _ => {}
+            }
+            let result = loop {
+                match r.poll_approval(id, task, &cancel) {
+                    ApprovalProgress::Continue => continue,
+                    ApprovalProgress::Finished(result)
+                    | ApprovalProgress::Stopped { result, .. } => break result,
+                    ApprovalProgress::Waiting => panic!("already approved"),
+                }
+            };
+            let mut after = before.clone();
+            while let Ok(event) = rx.try_recv() {
+                after.push(event);
+            }
+            assert_eq!(result.success, mode == 0);
+            if mode != 0 {
+                assert!(
+                    result.message.contains("first 256 of 560"),
+                    "{}",
+                    result.message
+                );
+            }
+            // Captured real Core events also exercise the frontend projection.
+            streams.push(serde_json::json!({ "mode": mode, "before": before, "after": after, "result": result }));
+        }
+        println!(
+            "APPROVAL_STREAMS={}",
+            serde_json::to_string(&streams).unwrap()
+        );
+        for stream in &streams {
+            let before: Vec<AgentEvent> = serde_json::from_value(stream["before"].clone()).unwrap();
+            let after: Vec<AgentEvent> = serde_json::from_value(stream["after"].clone()).unwrap();
+            let terminal = |e: &&AgentEvent| {
+                matches!(
+                    e,
+                    AgentEvent::ActionCompleted { .. }
+                        | AgentEvent::ActionFailed { .. }
+                        | AgentEvent::ActionDenied { .. }
+                )
+            };
+            assert_eq!(
+                before.iter().filter(terminal).count(),
+                0,
+                "no terminal event before whole action settles"
+            );
+            assert_eq!(
+                after.iter().filter(terminal).count(),
+                1,
+                "exactly one terminal event"
+            );
+            let result: ActionResult = serde_json::from_value(stream["result"].clone()).unwrap();
+            let event = after.iter().find(terminal).unwrap();
+            match event {
+                AgentEvent::ActionCompleted {
+                    request,
+                    result: published,
+                } => {
+                    assert_eq!(request.action_id, result.action_id);
+                    assert_eq!(published.message, result.message);
+                    assert!(result.success);
+                }
+                AgentEvent::ActionFailed {
+                    action_id, error, ..
+                } => {
+                    assert_eq!(*action_id, result.action_id);
+                    assert_eq!(error, &result.message);
+                    assert!(!result.success);
+                }
+                _ => panic!("unexpected terminal"),
+            }
+            assert!(!serde_json::to_string(&after)
+                .unwrap()
+                .contains("private marker"));
+        }
+    }
+
     // Real executor with a backend that rejects duplicate transport IDs.
     struct UniqueIdsBackend {
         inner: pegoles_computer::MockComputerBackend,
         seen: std::collections::HashSet<String>,
+        fail_after: Option<usize>,
     }
     macro_rules! forward_mut {
         ($($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => { $(
@@ -657,6 +803,9 @@ mod tests {
             id: &str,
             op: &pegoles_computer::InputOp,
         ) -> pegoles_computer::InputOutcome {
+            if self.fail_after == Some(self.seen.len()) {
+                return pegoles_computer::InputOutcome::failed("injected input failure");
+            }
             if !self.seen.insert(id.into()) {
                 return pegoles_computer::InputOutcome::failed("duplicate transport ID");
             }
@@ -676,6 +825,7 @@ mod tests {
         r.create_default_on(Box::new(UniqueIdsBackend {
             inner,
             seen: Default::default(),
+            fail_after: None,
         }))
         .unwrap();
         r.start().unwrap();
@@ -708,6 +858,78 @@ mod tests {
         };
         assert_eq!(result.action_id, id);
         assert!(result.success, "{}", result.message);
+    }
+
+    #[test]
+    fn failed_primitive_reports_only_acknowledged_characters_in_single_terminal() {
+        use pegoles_protocol::AgentEvent;
+        for successful_primitives in [0, 1, 4, 5, 8] {
+            let dir = tempfile::tempdir().unwrap();
+            let bus = EventBus::new();
+            let mut rx = bus.subscribe();
+            let mut r =
+                ComputerRegistry::with_dirs(bus, BackendKind::Mock, dir.path().to_path_buf());
+            let mut inner = pegoles_computer::MockComputerBackend::new();
+            inner.set_input_enabled(true);
+            r.create_default_on(Box::new(UniqueIdsBackend {
+                inner,
+                seen: Default::default(),
+                fail_after: Some(successful_primitives),
+            }))
+            .unwrap();
+            r.start().unwrap();
+            r.set_ask_before_input(true);
+            r.begin_agent_session(&mut Vec::new()).unwrap();
+            let task = TaskId::new();
+            let cancel = CancellationToken::new();
+            let id = r
+                .execute_action(
+                    task,
+                    ComputerAction::TypeText {
+                        text: "x".repeat(560),
+                        sensitive: true,
+                    },
+                    false,
+                    &pegoles_policy::PolicyContext::default(),
+                    &cancel,
+                    false,
+                )
+                .0
+                .action_id;
+            r.resolve_approval(id, ApprovalDecision::ApproveOnce)
+                .unwrap();
+            let result = loop {
+                match r.poll_approval(id, task, &cancel) {
+                    ApprovalProgress::Continue => {}
+                    ApprovalProgress::Finished(result) => break result,
+                    _ => panic!("expected dispatch failure"),
+                }
+            };
+            assert!(!result.success);
+            if successful_primitives == 0 {
+                assert_eq!(result.message, "injected input failure");
+            } else {
+                assert!(
+                    result.message.ends_with(&format!(
+                        "(the first {} of 560 characters were typed)",
+                        successful_primitives * pegoles_computer::input::TYPE_SLICE_CHARS
+                    )),
+                    "{}",
+                    result.message
+                );
+            }
+            let mut terminals = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    AgentEvent::ActionCompleted { .. } => panic!("partial input cannot complete"),
+                    AgentEvent::ActionFailed {
+                        action_id, error, ..
+                    } => terminals.push((action_id, error)),
+                    _ => {}
+                }
+            }
+            assert_eq!(terminals, vec![(id, result.message)]);
+        }
     }
 
     #[test]

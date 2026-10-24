@@ -164,12 +164,15 @@ mod native {
             }
         }
 
-        fn confirm_input(&self, summary: String) -> Result<bool, String> {
+        fn confirm_input(&self, prompt: crate::input_consent::InputPrompt) -> Result<bool, String> {
             if lock(&self.input_backoff).closed(Instant::now()) {
                 return Err(PROMPT_PAUSED.into());
             }
             let allowed = self.ask(move |mtm| {
-                let alert = alert(mtm, "Pegoles human confirmation", &summary, "Confirm once");
+                let alert = alert(mtm, prompt.title, &prompt.message, prompt.confirm);
+                if let Some(cancel) = alert.buttons().lastObject() {
+                    cancel.setTitle(&NSString::from_str(prompt.cancel));
+                }
                 let buttons = alert.buttons();
                 if let (Some(confirm), Some(cancel)) = (buttons.firstObject(), buttons.lastObject())
                 {
@@ -185,6 +188,18 @@ mod native {
                 backoff.declined(Instant::now());
             }
             Ok(allowed)
+        }
+
+        fn confirm_saved_input(
+            &self,
+            question: crate::input_consent::InputQuestion<'_>,
+        ) -> Result<bool, String> {
+            let store = crate::preferences::PreferenceStore::new(
+                pegoles_computer::pegoles_data_dir().join("preferences"),
+            );
+            crate::input_consent::confirm_with_store(&store, question, |prompt| {
+                self.confirm_input(prompt)
+            })
         }
 
         /// Run `show` on the main thread (AppKit) and wait for the answer.
@@ -224,12 +239,10 @@ mod native {
 
     impl Consent for NativeConsent {
         fn confirm_agent_input(&self, summary: &str) -> Result<bool, String> {
-            self.confirm_input(format!("Approve this exact pending action once?\n{summary}\nThe request expires after 120 seconds. Typed text is never shown here."))
+            self.confirm_saved_input(crate::input_consent::InputQuestion::Action(summary))
         }
         fn change_input_policy(&self, enabled: bool) -> Result<bool, String> {
-            self.confirm_input(if enabled {
-                "Ask before every modifying agent input in the VM for this session? This setting resets to off when Pegoles restarts."
-            } else { "Stop asking before agent input for this session? Built-in policy denials still apply." }.into())
+            self.confirm_saved_input(crate::input_consent::InputQuestion::Policy(enabled))
         }
 
         fn allow_cloud_planner(&self, provider: Provider) -> Result<bool, String> {

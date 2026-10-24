@@ -1,3 +1,4 @@
+import approvedTyping from "./fixtures/approvedTyping.json";
 import { describe, expect, it } from "vitest";
 import { actionSteps, globalPresence, modelConnected, modelNeed, NEEDS_MODEL_DETAIL, taskActivity } from "./agentState";
 import type { ActionRequestWire, AgentEvent, AgentTask, StatusPayload } from "../lib/tauri";
@@ -110,6 +111,24 @@ describe("actionSteps", () => {
   it("keeps one step per action and never reopens a finished one", () => {
     const echo: AgentEvent = { ...start, at: "2026-09-24T10:00:02Z" };
     expect(actionSteps([start, done, echo])).toEqual([expect.objectContaining({ id: "a1", outcome: "done", at })]);
+  });
+  it("keeps approved typing running until Core settles the entire action", () => {
+    // Captured from approvals::tests::approved_typing_emits_one_whole_action_terminal_with_confirmed_prefix.
+    for (const stream of approvedTyping) {
+      const before = stream.before as AgentEvent[];
+      const after = stream.after as AgentEvent[];
+      expect(actionSteps(before)).toEqual([expect.objectContaining({ outcome: "running", label: "Typing" })]);
+      const step = actionSteps(after)[0];
+      expect(step.id).toBe(stream.result.action_id);
+      expect(step.outcome).toBe(stream.mode === 0 ? "done" : "failed");
+      if (stream.mode !== 0) {
+        const failed = after.find((event) => event.type === "action_failed");
+        expect(failed).toMatchObject({ error: stream.result.message });
+        expect(stream.result.message).toContain("first 256 of 560");
+        expect(activity({ task: { ...task, status: "cancelled" }, events: after }).reason).toBe(stream.result.message);
+      }
+      expect(JSON.stringify(actionSteps(after))).not.toContain("private marker");
+    }
   });
   it("shows only safe targets", () => {
     const open = { ...start, request: { ...request, action: { type: "open_url", url: "https://example.com/private?q=1" } } };
