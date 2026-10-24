@@ -8,7 +8,7 @@ import type { AgentTask } from "../lib/tauri";
  * between "Done" and "Not started" groups; only attention and live work
  * are lifted out of time order.
  */
-export type SectionKey = "needs-you" | "working" | "today" | "yesterday" | "week" | "earlier";
+export type SectionKey = "needs-you" | "working" | "today" | "yesterday" | "week" | "earlier" | "history";
 
 export interface TaskSection {
   readonly key: SectionKey;
@@ -23,9 +23,10 @@ const LABEL: Record<SectionKey, CopyKey> = {
   yesterday: "Yesterday",
   week: "Previous 7 days",
   earlier: "Earlier",
+  history: "Previous tasks",
 };
 
-const ORDER: readonly SectionKey[] = ["needs-you", "working", "today", "yesterday", "week", "earlier"];
+const ORDER: readonly SectionKey[] = ["needs-you", "working", "today", "yesterday", "week", "earlier", "history"];
 const DAY_MS = 86_400_000;
 
 function timeSection(iso: string, startOfToday: number): SectionKey {
@@ -43,12 +44,12 @@ export function sectionOf(task: AgentTask, startOfToday: number): SectionKey {
 }
 
 /** Non-empty sections in display order; newest first inside each. */
-export function taskSections(tasks: readonly AgentTask[], now: number = Date.now()): TaskSection[] {
+export function taskSections(tasks: readonly AgentTask[], now: number = Date.now(), previousIds: readonly string[] = []): TaskSection[] {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   const buckets = new Map<SectionKey, AgentTask[]>();
   for (const task of tasks) {
-    const key = sectionOf(task, start.getTime());
+    const key = previousIds.includes(task.id) ? "history" : sectionOf(task, start.getTime());
     buckets.set(key, [...(buckets.get(key) ?? []), task]);
   }
   return ORDER.flatMap((key) => {

@@ -132,8 +132,11 @@ without a native macOS confirmation.
 - The Claude planner is unit-tested but was not run against the live API
   for this release.
 - No auto-update: for a new version, `git fetch --tags`, check out its
-  tag and run `./scripts/install.sh` again. Task history is kept in
-  memory only.
+  tag and run `./scripts/install.sh` again.
+- Task objectives, status transitions and safe summary results are kept
+  locally for up to 100 tasks / 30 days / 512 KiB. Open tasks recover as
+  cancelled after restart; raw live events are session-only. See
+  [Privacy](docs/PRIVACY.md) for content exclusions and storage failures.
 
 ## Development
 

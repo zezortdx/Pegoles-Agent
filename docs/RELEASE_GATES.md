@@ -117,3 +117,18 @@ or Windows support.
 Visual QA without a real Core may use the existing DEV-only shell bridge at
 `#/dev/shell/home`; preference changes there affect only the in-memory mock.
 It is excluded from the production bundle and is not persistence evidence.
+
+
+## Agent 2.0 task history and artifacts — offline branch gates
+
+These gates describe PR 3 independently of historical 0.1 hardware evidence.
+No VM/cloud call or installed-app restart is claimed by unit tests.
+
+| Gate | Evidence / acceptance required |
+|---|---|
+| Bounded minimized disk history | `cargo test --locked -p pegoles-core history::tests`: actual write/reopen, 100-task/30-day/512-KiB retention, exact read cap, strict nested schemas, content exclusions, artifact association, conservative secret/output taint, no replay/live authority. |
+| Safe filesystem and truthful errors | Same Core tests cover corruption preservation, nonregular/oversized/symlink files, failed writes and Unix private modes. `cargo test --locked -p pegoles-desktop state::tests` verifies temporary-only constructors, startup disk pruning and cancelled recovery, visible read-only status, and event-bus lag suppression. |
+| Artifact rendering/navigation | `TaskArtifacts.test.tsx` and `App.test.tsx`: actual task-id API lookup, hostile text and table cells inert, wrong-task response rejected, honest empty/error/loading states, no previous-task result flash, recovered-task navigation and read-only warning; existing locale/draft retention tests remain green. |
+| Least privilege | Two read-only IPCs in `ipc_commands.rs`/main-window capability; exact `ipcSurface.test.ts` payloads and Rust ACL tests; no path/URL/write/action command or filesystem permission. |
+| Full repository checks | `pnpm install --frozen-lockfile --ignore-scripts`, then `RUSTUP_TOOLCHAIN=1.97.1 RUST_TEST_THREADS=1 bash scripts/check.sh`; logs in ignored `target/review/agent-2.0/pr3-*.log`. Serial Rust tests avoid the documented baseline image-test environment race. |
+| Manual acceptance pending | Installed app: complete one task, quit/relaunch, find previous result; quit mid-run/approval/pending and verify cancelled/no dispatch; make history unavailable and verify persistent warning/no overwrite. VoiceOver/table navigation, native display interaction, and Windows ACL/reparse-point semantics require platform hardware checks. |

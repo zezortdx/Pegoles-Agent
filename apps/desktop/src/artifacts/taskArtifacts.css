@@ -1,0 +1,9 @@
+.task-artifacts { margin: 32px 0; padding-top: 20px; border-top: 1px solid var(--hairline); font-size: 13px; }
+.task-artifacts h2 { font-size: 14px; font-weight: 550; }
+.task-artifacts p, .task-artifacts__label { color: var(--text-2); }
+.task-artifacts__text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; }
+.task-artifacts__table { max-width: 100%; overflow-x: auto; }
+.task-artifacts table { border-collapse: collapse; width: 100%; }
+.task-artifacts th, .task-artifacts td { text-align: start; vertical-align: top; padding: 8px 12px; border: 1px solid var(--hairline); overflow-wrap: anywhere; max-width: 320px; white-space: pre-wrap; }
+.task-artifacts details { margin-top: 20px; }
+.task-artifacts summary { cursor: pointer; }

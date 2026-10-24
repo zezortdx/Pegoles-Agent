@@ -244,12 +244,20 @@ fn the_acl_allows_the_product_commands_and_denies_the_rest() {
         "capture_screen",
         "get_preferences",
         "set_preferences",
+        "get_history_status",
+        "get_task_history",
     ] {
         assert!(denied(&call(&main, cmd, "https://evil.example")), "{cmd}");
     }
     // Any other window gets nothing.
     let other = window(&app, "other");
-    for cmd in ["get_status", "get_preferences", "set_preferences"] {
+    for cmd in [
+        "get_status",
+        "get_preferences",
+        "set_preferences",
+        "get_history_status",
+        "get_task_history",
+    ] {
         assert!(denied(&call(&other, cmd, LOCAL)), "{cmd}");
     }
 

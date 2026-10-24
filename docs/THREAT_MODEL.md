@@ -191,3 +191,15 @@ Localization uses explicit static catalog keys and plain interpolation, without
 HTML sinks or DOM text rewriting. Protocol IDs, task IDs, objectives, model
 narration and guest text retain their original values. Core state precedence,
 network containment, sandbox, policy and planner authority are unchanged.
+
+
+### Local task history and summary artifacts (Agent 2.0, offline verification)
+
+| | |
+|---|---|
+| Surface | Existing user objectives, untrusted final planner Summary text and local JSON bytes; fixed `get_history_status` / `get_task_history(taskId)` IPC reads. |
+| Mitigation | `pegoles-core/src/history.rs`: strict versioned/nested schema, duplicate-ID/association/title/time validation, bounded 512 KiB reads; 100 tasks, 30 days from update, 32 status rows/task, 500-character objective and one 4,000-character text/table result per task. Tables cap at 8 columns × 32 rows, 256 characters/cell, 4,000 total cell characters. No raw events/requests/actions/keys/typed text/screenshots/diagnostics on disk. Explicit projection only. Sensitive typing or secret-pattern objectives/results permanently taint that task's result; event-bus lag discards retained results conservatively. |
+| Storage and recovery | Fixed app-data path; existing directory components and leaf reject symlinks/nonregular files; leaf O_NOFOLLOW/nonblocking opens on Unix; exclusive 0600 temporary file, 0700 directory, fsync + atomic replacement + directory sync. Existing file must validate before replacement. Startup prunes expired bytes and saves normalized recovery. Invalid/unwritable stores become read-only with a sidebar warning; corrupt data is preserved. Pending/running/waiting records recover cancelled without live events, execution or approval. |
+| Rendering / authority | Typed, associated text/table summaries only, labelled as agent results. React text nodes and table cells, no HTML/Markdown interpretation, no path/URL/file-read command, no new executor/protocol authority. Previous tasks/results remain navigable after restart; locale changes preserve mounted task/draft data. |
+| Verification | Core history tests: actual round-trip/reopen, recovery with no bus events, strict schema/association, exact count/age/read-byte limits and serialized-byte retention, corrupt/oversize/symlink/disk/private-mode failures, objective/input/output taint. AppState tests: isolated injection, physical startup retention, disk read-only warning, lost-event output suppression. Artifact/App tests: inert hostile text/table cells, empty/load/error states, task navigation, previous tasks and visible warning. IPC shape/ACL and existing HTML-sink tests remain required. |
+| Residual | Local objectives and allowed summaries are private, unencrypted user data; secret-pattern detection is conservative but incomplete. Same-user host mutation races remain outside scope. Corruption is preserved instead of automatically repaired; storage failures can delay physical expiry. Retention runs on startup/commands, not while the app is closed. Windows ACL/reparse-point and installed-app/hardware restart behavior remain unverified. |

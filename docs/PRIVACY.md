@@ -59,7 +59,37 @@ model, or placed in the model's context.
 Under `~/Library/Application Support/Pegoles` (owner-only permissions):
 the computer image and the current computer's disk, the local models,
 `settings.json` (planner choice; never secrets) and the computer's serial
-log. Task history is kept in memory only and is gone when you quit.
+log. Appearance and language preferences live in `preferences/profile.json`.
+
+`history/tasks.json` keeps up to **100 tasks**, for **30 days since the last
+update**, within **512 KiB serialized JSON total**. Oldest updated tasks are
+removed first when count or byte limits apply; startup and subsequent changes
+apply retention on disk. With a storage failure, expired bytes may remain until
+the store can be repaired; the app shows a read-only warning. Data is private
+on disk, not encrypted: visible user objectives (up to 500 Unicode characters),
+task IDs/status/timestamps, at most 32 content-free status transitions per task,
+and at most one final agent summary result per task. A result is text (up to
+4,000 Unicode characters), or a simple table (at most 8 columns × 32 data rows,
+256 characters per cell and 4,000 characters across cells). These are the
+agent's summaries, not files extracted from its computer.
+
+Raw events, typed keyboard text (sensitive or ordinary), keys, screenshots,
+progress notes and arbitrary diagnostics are never written to the history
+file. Explicitly sensitive typing, secret-shaped typed text/objectives/results
+and missing event-bus messages conservatively suppress result persistence.
+Secret-shaped objectives become `Private task`. The secret-pattern tripwire
+is a heuristic: ordinary objectives and allowed summaries can still contain
+private information. All on-disk task content should be treated as private.
+The live event list remains session-only and bounded to 200 events.
+
+Open tasks (including pending and waiting for approval) recover as cancelled;
+restart never resumes work or grants permission. Invalid, oversized, symlinked
+or unreadable history is preserved and not overwritten; disk failures show
+`History is read-only` in the sidebar. New tasks can still run in memory, but
+new history changes are not saved until local repair and restart. Quit before
+moving/removing the damaged `history` directory to repair it; preserve a copy
+if its contents matter. There is no model/webview-selected file path or file
+export API.
 Uninstalling: quit Pegoles, delete the app, and delete that folder; if you
 stored an Anthropic key, remove the `dev.pegoles.agent` item from
 Keychain Access.

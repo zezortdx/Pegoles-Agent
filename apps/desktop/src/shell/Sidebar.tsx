@@ -28,6 +28,7 @@ export interface SidebarProps {
   readonly computer: ComputerModel;
   readonly computerOpen: boolean;
   readonly connected: boolean;
+  readonly historyReadOnly?: boolean;
   readonly mode: SidebarMode;
   readonly modifier: string;
   readonly onOpenTask: (task: AgentTask) => void;
@@ -151,6 +152,7 @@ export function Sidebar(props: SidebarProps) {
       </nav>
 
       <div className="sidebar__foot">
+        {props.historyReadOnly && <p className="sidebar__offline" role="alert">{t("History is read-only. New changes are not saved. Existing data has been preserved.")}</p>}
         {!props.connected && (
           <p className="sidebar__offline" role="status"><span className="task-dot task-dot--error" aria-hidden="true" />{t("Pegoles Core isn’t connected")}</p>
         )}

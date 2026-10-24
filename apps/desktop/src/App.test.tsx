@@ -45,6 +45,8 @@ beforeEach(() => {
   vi.spyOn(api, "getStatus").mockResolvedValue(status);
   vi.spyOn(api, "listEvents").mockResolvedValue([]);
   vi.spyOn(api, "listTasks").mockResolvedValue([]);
+  vi.spyOn(api, "getHistoryStatus").mockResolvedValue({read_only:false,previous_task_ids:[]});
+  vi.spyOn(api, "getTaskHistory").mockResolvedValue(null);
   vi.spyOn(api, "getModelSettings").mockResolvedValue(noModel);
   vi.spyOn(api, "getIntelligence").mockResolvedValue(intelligenceOf());
   vi.spyOn(api, "runTask").mockResolvedValue(null);
@@ -68,6 +70,18 @@ const ready = async () => waitFor(() => expect(composer().disabled).toBe(false))
 const machineRow = (state: RegExp) => within(sidebar()).findByRole("button", { name: state });
 
 describe("desktop shell", () => {
+  it("opens previous task results after restart and warns visibly when history is read-only", async () => {
+    const previous={...task,status:"cancelled" as const};
+    vi.spyOn(api,"getHistoryStatus").mockResolvedValue({read_only:true,previous_task_ids:[task.id]});
+    vi.spyOn(api,"getTaskHistory").mockResolvedValue({task:previous,audit:[],artifact:{task_id:task.id,data:{kind:"text",text:"Previous saved result <markup>"}},recovered:true});
+    vi.mocked(api.listTasks).mockResolvedValue([previous]); render(<App />); await ready();
+    expect(await within(sidebar()).findByText("Previous tasks")).toBeTruthy();
+    expect(within(sidebar()).getByRole("alert").textContent).toContain("History is read-only. New changes are not saved. Existing data has been preserved.");
+    fireEvent.click(within(sidebar()).getByRole("button",{name:/Organize my notes/}));
+    expect(await screen.findByText("Previous saved result <markup>")).toBeTruthy();
+    expect(api.runTask).not.toHaveBeenCalled();
+  });
+
   it("changes product language without changing the selected task, original narration, or composer draft", async () => {
     const working = { ...task, status: "running" as const, title: "Original <task> text" };
     const request = { action_id: "i18n-action", task_id: task.id, computer_id: "vm", action: { type: "click", x: 0.2, y: 0.4 }, requested_at: task.created_at };

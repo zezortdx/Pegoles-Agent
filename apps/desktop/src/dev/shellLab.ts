@@ -373,6 +373,8 @@ export function installShellLab(hash: string): void {
     set_preferences: (args) => { preferences = structuredClone(args.preferences as Preferences); return structuredClone(preferences); },
     list_events: () => state.events,
     list_tasks: () => state.tasks,
+    get_history_status: () => ({read_only:false,previous_task_ids:[]}),
+    get_task_history: () => null,
     get_model_settings: () => model,
     // Core asks for the key in a macOS window; the lab stands in for a
     // person who pastes a valid one.

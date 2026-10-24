@@ -138,7 +138,7 @@ function AppContent() {
 
   const liveWork = tasks.some((task) => task.status === "running");
   const now = useNow(true, liveWork ? 15_000 : 60_000);
-  const sections = taskSections(tasks, now);
+  const sections = taskSections(tasks, now, core.historyStatus?.previous_task_ids);
   const glances = (() => {
     const entries: Record<string, TaskGlance | null> = {};
     for (const task of tasks) {
@@ -359,6 +359,8 @@ function AppContent() {
         key={selected.id}
         task={selected}
         items={transcript}
+        historyEnabled={core.native && connected}
+        historyRevision={`${selected.updated_at}:${events.length}`}
         activity={activity}
         state={pill}
         elapsed={elapsed}
@@ -446,6 +448,7 @@ function AppContent() {
             computer={computer}
             computerOpen={level !== null}
             connected={connected}
+            historyReadOnly={core.historyStatus?.read_only}
             mode={sidebarMode}
             modifier={modifier}
             onOpenTask={openTask}

@@ -31,6 +31,8 @@ ipc_commands! {
         return_control,
         create_task,
         list_tasks,
+        get_history_status,
+        get_task_history,
         run_task,
         cancel_task,
         get_model_settings,

@@ -218,6 +218,15 @@ export interface AgentTask {
   updated_at: string;
 }
 
+export type ArtifactData = { kind: "text"; text: string } | { kind: "table"; columns: string[]; rows: string[][] };
+export interface TaskHistory {
+  task: AgentTask;
+  audit: { status: TaskStatusWire; at: string }[];
+  artifact: { task_id: string; data: ArtifactData } | null;
+  recovered: boolean;
+}
+export interface HistoryStatus { read_only: boolean; previous_task_ids: string[] }
+
 export interface DisplayGeometry {
   rect: { x: number; y: number; width: number; height: number };
   visible: boolean;
@@ -303,6 +312,8 @@ export const api = {
   setPreferences: (preferences: Preferences) => invoke<Preferences>("set_preferences", { preferences }),
   createTask: (title: string) => invoke<AgentTask>("create_task", { title }),
   listTasks: () => invoke<AgentTask[]>("list_tasks"),
+  getTaskHistory: (taskId: string) => invoke<TaskHistory | null>("get_task_history", { taskId }),
+  getHistoryStatus: () => invoke<HistoryStatus>("get_history_status"),
   /** Start the agent on a pending task (it prepares its computer itself). */
   runTask: (taskId: string) => invoke<null>("run_task", { taskId }),
   /** Stop a running task, or cancel one that never started. */
