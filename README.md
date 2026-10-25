@@ -11,7 +11,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero-task.webp" width="880" alt="Pegoles running a task: the agent's narration on the left, the isolated VM on the right">
+  <img src="docs/images/v2/home.jpg" width="880" alt="Pegoles 2.0 preview: the animated agent avatar and new-task screen">
+</p>
+
+<p align="center">
+  <b>2.0 interface preview</b> · Development capture with simulated app state.<br>
+  The source installation below still targets the <b>0.1.0 release</b>.
+  <a href="docs/2.0-preview.md">See what's coming and how these screenshots were captured.</a>
 </p>
 
 ## Quick start
@@ -70,6 +76,25 @@ Gatekeeper is not involved and nothing is turned off. To uninstall, delete
   only the model files, whose digests are compiled into it.
 
 ## Screenshots
+
+### 2.0 preview
+
+Captured from the actual React interface in the development shell lab,
+with simulated state and sample tasks. These images preview the pending
+2.0 series; they are not evidence of a live VM run or a released 2.0 build.
+
+| | |
+|---|---|
+| <img src="docs/images/v2/home.jpg" width="420" alt="2.0 preview: home with the animated agent avatar"> | <img src="docs/images/v2/customization.jpg" width="420" alt="2.0 preview: agent name, shape, color and expression controls"> |
+| **Meet your agent.** The avatar reflects its activity. | **Make your agent.** Customize its name, shape, color and expression. |
+| <img src="docs/images/v2/home-pt-br.jpg" width="420" alt="2.0 preview: home translated into Brazilian Portuguese"> | <img src="docs/images/v2/team.jpg" width="420" alt="2.0 preview: experimental team roles and sample progress notes"> |
+| **English or português (Brasil).** Choose the interface language in agent preferences. | **Experimental team mode.** Captain, researcher, executor and critic, shown here with simulated progress and a simulated guest screen. Optional Anthropic mode; native confirmation is required. |
+
+More about the [2.0 preview, limitations and capture steps](docs/2.0-preview.md).
+
+### 0.1.0 release
+
+The following images document the source release installed by Quick start.
 
 | | |
 |---|---|
