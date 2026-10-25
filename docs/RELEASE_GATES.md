@@ -156,3 +156,44 @@ between slices, app restart resetting the visibly session-only toggle, en/pt-BR
 copy, keyboard focus, VoiceOver and actual VM behavior. Native dialogs/VM/cloud
 inference were not exercised during implementation; offline tests are not that
 evidence. Approval changes do not certify hardware, packaging or release signing.
+
+### Agent 2.0 snapshot human takeover — hardware acceptance UNRUN
+
+Offline requirements: native localized refusal/post-prompt race; wrong owner,
+computer/frame/session and stale/unchanged captures; finite letterbox mapping;
+input/rate/queue bounds; release on blur/error/stop; same-task cancellable wait;
+channel-controlled take-and-return during blocked planning (Calls/Done/Failed);
+matching tool outcomes and prefix progress; typed ControlChanged versus
+Denied/Expired; active-task artifact suppression; strict IPC/ACL/no model control.
+Run `RUST_TEST_THREADS=1 bash scripts/check.sh` after frozen script-free install.
+Ignored `target/review/agent-2.0/pr5-*.log` records exact evidence.
+
+Apple silicon manual acceptance (UNRUN by the implementation agent):
+
+```sh
+export PATH="$PWD/target/avatar-tools/bin:$HOME/Tools/node/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+export RUSTUP_TOOLCHAIN=1.97.1
+pnpm install --frozen-lockfile --ignore-scripts
+RUST_TEST_THREADS=1 bash scripts/check.sh
+bash scripts/codesign-dev.sh
+pnpm --filter @pegoles/desktop tauri dev
+```
+
+Use an already installed sealed image; keep the VM offline. In English and pt-BR:
+(1) start a local task and open its guest snapshot; cancel then confirm Take
+control in native UI, checking title/body/buttons and Return-to-cancel;
+(2) verify the same task waits, snapshots refresh even on an unchanged desktop,
+and click/drag/scroll/keys/chords/manual paste ≤256 characters reach only VM;
+(3) resize through side/focus/full layouts and click image corners/letterboxes;
+(4) blur/hide the app while dragging, then confirm no stuck guest button or
+modifier; Ctrl+Alt+Esc/Give back must remain available;
+(5) take/return during inference and long typing, verify fresh replanning and
+no replayed prefix; pending exact approvals must disappear, a new proposed input
+must request a fresh approval; Deny/expiry must still terminate;
+(6) Stop while User owns control and while native prompt is open, verify stale
+responses cannot grant input; repeat after guest failure and computer replacement;
+(7) enter an opaque manual secret with individual keys, finish/restart and verify
+no task result artifact persisted; check VoiceOver focus/status and refusal text.
+Record actual device/build, observed native behavior and remaining failures.
+No native embed, hardware, cloud or installed-app acceptance is implied by unit
+checks. The native VZ embed remains a contract stub.

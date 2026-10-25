@@ -123,9 +123,9 @@ without a native macOS confirmation.
 - The agent's computer has no network: no web browsing, downloads or
   package installs inside the VM.
 - No access to your Mac's files, screen or apps, by design.
-- No human-controllable live view of the VM yet: you see its screen and
-  the agent's narration, but cannot take over with your own mouse and
-  keyboard.
+- Human takeover uses periodically captured guest frames and bounded app
+  mouse/keyboard input after native confirmation. The native embedded live
+  view remains a stub; snapshot takeover hardware acceptance is pending.
 - Pegoles Local is a 2-billion-parameter model: it completes short,
   concrete tasks and gets some wrong; budgets and a loop brake stop
   runaway runs.
