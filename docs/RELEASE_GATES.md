@@ -98,3 +98,22 @@ One Mac: Apple M4 Pro, 24 GB, macOS 26.5.2 (build 25F84), Command Line
 Tools only (no Xcode). Nothing was run on 8 GB or 16 GB machines, on other
 chips, or on older macOS; the app declares macOS 14.0 as its minimum
 without having been tested there.
+
+## Agent 2.0 appearance and localization — offline branch evidence
+
+This section records PR 2 checks independently of the historical 0.1 release
+claims above. It does not certify an installed app, a real VM, cloud inference,
+or Windows support.
+
+| Gate | Evidence / acceptance required |
+|---|---|
+| Validated local preferences | `cargo test --locked -p pegoles-desktop preferences::tests`: default/missing behavior, reopen round-trip, trimmed Unicode name, closed enums/version/locale, unknown fields, corrupt/oversized files, disk failures, no-follow symlinks and Unix 0700/0600 modes. |
+| IPC least privilege | Existing Rust `ipc_acl` tests include both commands; `src/security/ipcSurface.test.ts` checks exact get/set payloads with no path/style fields and continued debug-command exclusion. |
+| Accessible, honest customization | `MakeAgentDialog.test.tsx`: keyboard radios, tab containment, focus return, saving controls disabled, save/load errors and retry; preview stays static with reduced motion. Existing avatar guards continue to cover hidden/offscreen/minimal/error/work states. |
+| Language and content integrity | Catalog placeholder parity and static-map tests; App integration switches to pt-BR with a selected running task, preserves original objective/narration/draft and blocks global navigation shortcuts from dialog radios. Existing hostile-text and HTML-sink tests remain required. |
+| Repository gates | `bash scripts/check.sh`: frontend lint/typecheck/tests/build, production lab/developer-copy exclusion, Rust fmt/clippy/tests and Swift helper build. Run on the exact final PR head; local logs under ignored `target/review/agent-2.0/`. |
+| Manual acceptance still pending | Installed-app restart retaining the profile/locale, screen-reader and keyboard review in macOS, visual review of all shapes/expressions/palettes at compact and hero sizes, and native display obscuring behind the modal. Windows ACL/reparse-point behavior requires its own platform run. No hardware/live-app result is claimed here. |
+
+Visual QA without a real Core may use the existing DEV-only shell bridge at
+`#/dev/shell/home`; preference changes there affect only the in-memory mock.
+It is excluded from the production bundle and is not persistence evidence.

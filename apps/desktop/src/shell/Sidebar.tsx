@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
 import type { ReactNode } from "react";
 import { m } from "motion/react";
 import { PresenceMark, type PresenceMode } from "../presence";
@@ -40,12 +42,14 @@ const SELECTION_ID = "sidebar-selection";
 
 /** The quiet lens behind whichever row is current; it glides between rows. */
 function Selection() {
+  useLocale();
   return <m.span className="nav-row__lens" layoutId={SELECTION_ID} transition={spring.micro} aria-hidden="true" />;
 }
 
 function NavRow({ icon, label, selected = false, trailing, onClick, className }: {
   icon: ReactNode; label: string; selected?: boolean; trailing?: ReactNode; onClick: () => void; className?: string;
 }) {
+  useLocale();
   return (
     <button type="button" className={className ? `nav-row ${className}` : "nav-row"} aria-current={selected ? "page" : undefined} onClick={onClick}>
       {selected && <Selection />}
@@ -58,6 +62,7 @@ function NavRow({ icon, label, selected = false, trailing, onClick, className }:
 
 /** What a task row says about its state before you read it. */
 function Indicator({ task }: { task: AgentTask }) {
+  useLocale();
   switch (task.status) {
     case "running": return <span className="task-dot task-dot--live pg-work-anim" aria-hidden="true" />;
     case "waiting_for_approval": return <span className="task-dot task-dot--attention" aria-hidden="true" />;
@@ -67,12 +72,14 @@ function Indicator({ task }: { task: AgentTask }) {
   }
 }
 
-const STATE_WORD: Partial<Record<AgentTask["status"], string>> = {
+const STATE_WORD: Partial<Record<AgentTask["status"], CopyKey>> = {
   running: "working", waiting_for_approval: "needs you", failed: "couldn’t finish", pending: "not started", cancelled: "cancelled",
 };
 
 function TaskRow({ task, glance, selected, onOpen }: { task: AgentTask; glance: TaskGlance | null; selected: boolean; onOpen: () => void }) {
-  const word = STATE_WORD[task.status];
+  useLocale();
+  const key = STATE_WORD[task.status];
+  const word = key ? t(key) : undefined;
   return (
     <li>
       <button type="button" className="task-row" data-status={task.status} data-glance={glance ? true : undefined}
@@ -95,6 +102,7 @@ function TaskRow({ task, glance, selected, onOpen }: { task: AgentTask; glance: 
  * what needs you, and its computer at the foot, like a device you own.
  */
 export function Sidebar(props: SidebarProps) {
+  useLocale();
   const { sections, computer } = props;
   const hidden = props.mode === "hidden";
   const chip = computer.chip;
@@ -102,12 +110,12 @@ export function Sidebar(props: SidebarProps) {
     <aside
       className="sidebar"
       data-mode={props.mode}
-      aria-label="Sidebar"
+      aria-label={t("Sidebar")}
       aria-hidden={hidden || undefined}
       {...(hidden ? { inert: "" } : {})}
     >
       <div className="sidebar__chrome" data-tauri-drag-region>
-        <button type="button" className="icon-btn" aria-label="Hide sidebar" title={`Hide sidebar (${props.modifier}\\)`} onClick={props.onToggle}>
+        <button type="button" className="icon-btn" aria-label={t("Hide sidebar")} title={t("Hide sidebar ({0}\\)", { "0": props.modifier })} onClick={props.onToggle}>
           <SidebarIcon size={16} />
         </button>
       </div>
@@ -115,20 +123,20 @@ export function Sidebar(props: SidebarProps) {
       <div className="sidebar__brand" data-tauri-drag-region>
         <span className="sidebar__mark" data-thought-anchor="presence"><PresenceMark mode={props.presence} size={20} decorative={false} /></span>
         <span className="sidebar__name" data-tauri-drag-region>Pegoles</span>
-        <button type="button" className="icon-btn sidebar__search" aria-label="Search" title={`Search (${props.modifier}K)`} onClick={props.onSearch}>
+        <button type="button" className="icon-btn sidebar__search" aria-label={t("Search")} title={t("Search ({0}K)", { "0": props.modifier })} onClick={props.onSearch}>
           <SearchIcon size={15} />
         </button>
       </div>
 
-      <nav className="sidebar__nav" aria-label="Primary">
-        <NavRow icon={<ComposeIcon size={16} />} label="New task" onClick={props.onNewTask} className="nav-row--new"
+      <nav className="sidebar__nav" aria-label={t("Primary")}>
+        <NavRow icon={<ComposeIcon size={16} />} label={t("New task")} onClick={props.onNewTask} className="nav-row--new"
           trailing={<kbd className="nav-row__kbd">{props.modifier}N</kbd>} />
-        <NavRow icon={<ActivityIcon size={16} />} label="Activity" selected={props.place === "activity"} onClick={() => props.onPlace("activity")} />
+        <NavRow icon={<ActivityIcon size={16} />} label={t("Activity")} selected={props.place === "activity"} onClick={() => props.onPlace("activity")} />
       </nav>
 
-      <nav className="sidebar__tasks" aria-label="Tasks">
+      <nav className="sidebar__tasks" aria-label={t("Tasks")}>
         {sections.length === 0 ? (
-          <p className="sidebar__empty">Tasks you hand to Pegoles appear here.</p>
+          <p className="sidebar__empty">{t("Tasks you hand to Pegoles appear here.")}</p>
         ) : sections.map((section) => (
           <section key={section.key} className="sidebar__section" data-section={section.key} aria-labelledby={`side-${section.key}`}>
             <h2 id={`side-${section.key}`} className="sidebar__heading">{section.label}</h2>
@@ -144,16 +152,16 @@ export function Sidebar(props: SidebarProps) {
 
       <div className="sidebar__foot">
         {!props.connected && (
-          <p className="sidebar__offline" role="status"><span className="task-dot task-dot--error" aria-hidden="true" />Pegoles Core isn’t connected</p>
+          <p className="sidebar__offline" role="status"><span className="task-dot task-dot--error" aria-hidden="true" />{t("Pegoles Core isn’t connected")}</p>
         )}
         <button type="button" className="nav-row machine-row" data-phase={computer.phase} aria-pressed={props.computerOpen}
-          aria-label={`Pegoles Computer: ${chip}. ${props.computerOpen ? "Hide" : "Show"} its computer`} onClick={props.onComputer}
+          aria-label={t("Pegoles Computer: {0}. {1} its computer", { "0": chip, "1": props.computerOpen ? t("Hide") : t("Show") })} onClick={props.onComputer}
           data-thought-target="computer">
           <span className="nav-row__icon machine-row__glyph" aria-hidden="true"><MachineScreen model={computer} size="chip" /></span>
-          <span className="nav-row__label">Computer</span>
+          <span className="nav-row__label">{t("Computer")}</span>
           <span className="machine-row__state" data-phase={computer.phase}>{chip}</span>
         </button>
-        <NavRow icon={<SettingsIcon size={16} />} label="Settings" selected={props.place === "settings"} onClick={() => props.onPlace("settings")} />
+        <NavRow icon={<SettingsIcon size={16} />} label={t("Settings")} selected={props.place === "settings"} onClick={() => props.onPlace("settings")} />
       </div>
     </aside>
   );

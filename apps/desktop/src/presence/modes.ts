@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+import type { CopyKey } from "../i18n/catalog";
 /**
  * Every state the Pegoles Presence can express. The shell maps real Core
  * signals onto these (see docs/FRONTEND_EXPERIENCE.md §3); the presence
@@ -51,8 +53,29 @@ export const PRESENCE_LABEL: Record<PresenceMode, string> = {
   error: "Pegoles ran into a problem",
 };
 
+const PRESENCE_COPY: Record<PresenceMode, CopyKey> = {
+  offline: "{name} is offline",
+  idle: "{name} is idle",
+  attentive: "{name} is listening",
+  acknowledging: "{name} got it",
+  thinking: "{name} is thinking",
+  planning: "{name} is planning",
+  working: "{name} is working",
+  "using-computer": "{name} is using its computer",
+  waiting: "{name} is waiting",
+  "needs-user": "{name} needs you",
+  blocked: "{name} can’t continue",
+  done: "{name} is done",
+  error: "{name} ran into a problem",
+};
+
 /** Modes that represent real work in progress (never paused just for losing focus). */
 export const WORK_MODES: ReadonlySet<PresenceMode> = new Set(["thinking", "planning", "working", "using-computer"]);
 
 /** One-shot modes: a single gesture on entry, then the pose holds still. */
 export const GESTURE_MODES: ReadonlySet<PresenceMode> = new Set(["acknowledging", "done", "error"]);
+
+/** Saved names and localized static status copy; Core modes still own the state. */
+export function presenceLabel(mode: PresenceMode, name: string): string {
+  return t(PRESENCE_COPY[mode], { name });
+}

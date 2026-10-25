@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { useEffect, useRef, type Ref } from "react";
 import { m } from "motion/react";
 import type { AgentTask } from "../lib/tauri";
@@ -61,35 +62,37 @@ const PREPARING_BODY = "Pegoles is getting its local model ready on this Mac. St
 
 /** The set-up button's words on a task: the product's name first, since the task doesn't say where it is. */
 function setupLabel(view: LocalView): string {
-  if (view.stage === "not-set-up") return "Set up Pegoles Local";
-  if (view.stage === "paused") return "Resume setup";
+  if (view.stage === "not-set-up") return t("Set up Pegoles Local");
+  if (view.stage === "paused") return t("Resume setup");
   return setupAction(view);
 }
 
 /** What stands between this task and Pegoles Local, in one line under the notice. */
 function LocalLine({ setup }: { setup: LocalSetup }) {
+  useLocale();
   const { view } = setup;
   switch (view.stage) {
     case "preparing": return <div className="notice__progress"><LocalProgress view={view} /></div>;
-    case "failed": return <p className="notice__problem" role="alert">{sentence(view.error ?? "The setup didn’t finish.")}</p>;
-    case "paused": return <p className="notice__meta">Paused at {progressText(view.doneBytes ?? 0, view.totalBytes ?? 0)}. It picks up where it stopped.</p>;
-    case "damaged": return <p className="notice__meta">Its files didn’t pass the check. Setting it up again replaces them.</p>;
+    case "failed": return <p className="notice__problem" role="alert">{sentence(view.error ?? t("The setup didn’t finish."))}</p>;
+    case "paused": return <p className="notice__meta">{t("Paused at ")}{progressText(view.doneBytes ?? 0, view.totalBytes ?? 0)}{t(". It picks up where it stopped.")}</p>;
+    case "damaged": return <p className="notice__meta">{t("Its files didn’t pass the check. Setting it up again replaces them.")}</p>;
     case "unsupported":
-    case "downloaded": return <p className="notice__meta">{view.problem ?? "Pegoles Local needs a Mac with Apple silicon."}</p>;
+    case "downloaded": return <p className="notice__meta">{view.problem ?? t("Pegoles Local needs a Mac with Apple silicon.")}</p>;
     default: return view.problem ? <p className="notice__meta">{view.problem}</p> : null;
   }
 }
 
 /** The task hasn't started: said once, where the work would be, with the real ways forward. */
 function NotStarted({ activity, onOpenComputer, onModelSettings, onStart, starting = false, startError, local }: NotStartedProps) {
+  useLocale();
   const start = activity.start ?? "ready";
   const needsModel = start === "needs-model";
   const setup = needsModel && activity.waitingFor !== "cloud-key" ? local : undefined;
   const preparing = setup?.view.stage === "preparing";
-  const body = start === "needs-model" ? (preparing ? PREPARING_BODY : activity.detail) : NOT_STARTED_BODY[start];
+  const body = start === "needs-model" ? (preparing ? t(PREPARING_BODY) : activity.detail) : t(NOT_STARTED_BODY[start]);
   return (
     <div className="notice" data-tone="quiet">
-      <p className="notice__title">{preparing ? "Setting up Pegoles Local" : NOT_STARTED_TITLE[start]}</p>
+      <p className="notice__title">{preparing ? t("Setting up Pegoles Local") : t(NOT_STARTED_TITLE[start])}</p>
       <p className="notice__body">{body}</p>
       {setup && <LocalLine setup={setup} />}
       {setup?.problem && <p className="notice__problem" role="alert">{setup.problem}</p>}
@@ -103,16 +106,16 @@ function NotStarted({ activity, onOpenComputer, onModelSettings, onStart, starti
               <button type="button" className="btn btn--primary btn--small" disabled={setup.busy} onClick={setup.onSetUp}>{setupLabel(setup.view)}</button>
             )}
             {setup && preparing && (
-              <button type="button" className="btn btn--quiet btn--small" disabled={setup.busy} onClick={setup.onCancel}>Cancel setup</button>
+              <button type="button" className="btn btn--quiet btn--small" disabled={setup.busy} onClick={setup.onCancel}>{t("Cancel setup")}</button>
             )}
-            <button type="button" className="btn btn--line btn--small" onClick={onModelSettings}>Open Settings</button>
+            <button type="button" className="btn btn--line btn--small" onClick={onModelSettings}>{t("Open Settings")}</button>
           </>
         ) : (
           <button type="button" className="btn btn--primary btn--small" disabled={start === "busy" || starting} onClick={onStart}>
-            {starting ? <><span className="spinner" aria-hidden="true" />Starting…</> : "Start"}
+            {starting ? <><span className="spinner" aria-hidden="true" />{t("Starting…")}</> : t("Start")}
           </button>
         )}
-        <button type="button" className="btn btn--quiet btn--small" onClick={onOpenComputer}>Open its computer</button>
+        <button type="button" className="btn btn--quiet btn--small" onClick={onOpenComputer}>{t("Open its computer")}</button>
       </div>
     </div>
   );
@@ -124,6 +127,7 @@ function NotStarted({ activity, onOpenComputer, onModelSettings, onStart, starti
  * Pegoles is doing right now lives in the status bar below.
  */
 export function TaskView(props: TaskViewProps) {
+  useLocale();
   const { task, items, activity, state } = props;
   const headRef = useRef<HTMLElement>(null);
   const { onHeadingVisible } = props;
@@ -139,7 +143,7 @@ export function TaskView(props: TaskViewProps) {
   const notStarted = task.status === "pending" && !!activity.start;
   const waitingFirst = activity.live && !notStarted && activity.mode !== "needs-user" && items.length <= 1;
   const facts = [
-    `${task.status === "pending" ? "Created" : "Started"} ${timeOf(task.created_at)}`,
+    `${task.status === "pending" ? t("Created") : t("Started")} ${timeOf(task.created_at)}`,
     props.elapsed && activity.live ? props.elapsed : null,
     actions ? plural(actions, "action") : null,
   ].filter(Boolean) as string[];
@@ -167,7 +171,7 @@ export function TaskView(props: TaskViewProps) {
               onStart={props.onStart} starting={props.starting} startError={props.startError} local={props.local} />
           )}
           <Narrative items={items} animated={props.animated} live={activity.live} failedAt={task.status === "failed" ? activity.detail : undefined} />
-          {waitingFirst && <p className="narrative__waiting"><span className="narrative__pulse pg-work-anim" aria-hidden="true" />Waiting for the first action</p>}
+          {waitingFirst && <p className="narrative__waiting"><span className="narrative__pulse pg-work-anim" aria-hidden="true" />{t("Waiting for the first action")}</p>}
         </div>
       </div>
     </article>

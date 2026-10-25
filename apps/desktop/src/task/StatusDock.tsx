@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { AnimatePresence, m } from "motion/react";
 import { PresenceMark } from "../presence";
 import type { TaskActivity } from "../state/agentState";
@@ -35,11 +36,11 @@ function detailOf(activity: TaskActivity, settingUp: boolean): string | undefine
   if (activity.mode === "needs-user") return activity.approvalReason;
   if (!activity.live && activity.at) {
     if (activity.reason) return activity.reason;
-    return activity.mode === "error" && activity.detail ? `Stopped at: ${activity.detail}` : `Finished ${timeOf(activity.at)}`;
+    return activity.mode === "error" && activity.detail ? t("Stopped at: {0}", { "0": activity.detail }) : t("Finished {0}", { "0": timeOf(activity.at) });
   }
   if (activity.start === "needs-model") {
-    if (activity.waitingFor === "cloud-key") return "No Anthropic key is connected";
-    return settingUp ? "Setting up Pegoles Local…" : "Pegoles Local isn’t set up yet";
+    if (activity.waitingFor === "cloud-key") return t("No Anthropic key is connected");
+    return settingUp ? t("Setting up Pegoles Local…") : t("Pegoles Local isn’t set up yet");
   }
   const detail = activity.detail;
   if (!detail) return undefined;
@@ -47,7 +48,7 @@ function detailOf(activity: TaskActivity, settingUp: boolean): string | undefine
 }
 
 function headlineOf(activity: TaskActivity, state: ActivityPill): string {
-  if (activity.start) return "Not started";
+  if (activity.start) return t("Not started");
   if (!activity.live) return state.label;
   return activity.headline;
 }
@@ -58,6 +59,7 @@ function headlineOf(activity: TaskActivity, state: ActivityPill): string {
  * can really do about it. The mark is the same Pegoles that took the job.
  */
 export function StatusDock(props: StatusDockProps) {
+  useLocale();
   const { activity, state } = props;
   const headline = headlineOf(activity, state);
   const detail = detailOf(activity, !!props.settingUp);
@@ -69,7 +71,7 @@ export function StatusDock(props: StatusDockProps) {
   const settled = shown.settled;
   const watch = activity.mode === "using-computer" && !props.computerOpen;
   return (
-    <div className="dock" role="region" aria-label="Now" data-mode={activity.mode} data-tone={state.tone}>
+    <div className="dock" role="region" aria-label={t("Now")} data-mode={activity.mode} data-tone={state.tone}>
       <m.span className="dock__mark" layoutId={props.arriving ? PRESENCE_LAYOUT_ID : undefined}>
         <PresenceMark mode={activity.mode} size={22} decorative={false} />
       </m.span>
@@ -89,23 +91,20 @@ export function StatusDock(props: StatusDockProps) {
         </AnimatePresence>
         {shown.detail && <span className="dock__detail" title={shown.detail}>{shown.detail}</span>}
       </div>
-      {props.elapsed && <span className="dock__elapsed" title="Time spent">{props.elapsed}</span>}
+      {props.elapsed && <span className="dock__elapsed" title={t("Time spent")}>{props.elapsed}</span>}
       <div className="dock__actions">
         {props.interruptible && (
           <button type="button" className="btn btn--quiet" disabled={props.interrupting} onClick={props.onInterrupt}
-            title={`Stop this task (${props.modifier}.)`}>
-            <StopIcon size={12} />Stop
-          </button>
+            title={t("Stop this task ({0}.)", { "0": props.modifier })}>
+            <StopIcon size={12} />{t("Stop")}</button>
         )}
         {watch && (
           <button type="button" className="btn btn--quiet" onClick={props.onWatch}>
-            <PanelRightIcon size={14} />Watch
-          </button>
+            <PanelRightIcon size={14} />{t("Watch")}</button>
         )}
         {settled && (
-          <button type="button" className="btn btn--quiet" onClick={props.onNewTask} title={`New task (${props.modifier}N)`}>
-            <ComposeIcon size={14} />New task
-          </button>
+          <button type="button" className="btn btn--quiet" onClick={props.onNewTask} title={t("New task ({0}N)", { "0": props.modifier })}>
+            <ComposeIcon size={14} />{t("New task")}</button>
         )}
       </div>
     </div>

@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t } from "../i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -30,7 +32,7 @@ export interface IntelligenceState {
   readonly repair: (model: string) => Promise<boolean>;
 }
 
-const FAILED: Record<IntelligenceOp, string> = {
+const FAILED: Record<IntelligenceOp, CopyKey> = {
   load: "Couldn’t read the Intelligence settings.",
   provider: "Couldn’t change the model.",
   install: "Couldn’t set up Pegoles Local.",
@@ -41,7 +43,7 @@ const FAILED: Record<IntelligenceOp, string> = {
 /** A failed operation as one sentence: ours, then Core's own words. */
 export function intelligenceProblem(error: IntelligenceError | null, ops?: readonly IntelligenceOp[]): string | null {
   if (!error || (ops && !ops.includes(error.op))) return null;
-  return `${FAILED[error.op]} ${sentence(error.text)}`;
+  return `${t(FAILED[error.op])} ${sentence(error.text)}`;
 }
 
 const PHASES = new Set<InstallPhase>(["idle", "downloading", "verifying", "finalizing", "ready", "failed", "cancelled"]);
@@ -109,7 +111,7 @@ export function useIntelligence(enabled: boolean, onChanged?: () => void): Intel
       apply(await api.getIntelligence(), issued);
       if (settled) changed.current?.();
     } catch (raw) {
-      if (alive.current) setError({ op: "load", text: errorText(raw).trim() || "No details were reported." });
+      if (alive.current) setError({ op: "load", text: errorText(raw).trim() || t("No details were reported.") });
     }
   }, [apply]);
 
@@ -124,7 +126,7 @@ export function useIntelligence(enabled: boolean, onChanged?: () => void): Intel
       if (op !== "load") changed.current?.();
       return true;
     } catch (raw) {
-      if (alive.current) setError({ op, text: errorText(raw).trim() || "No details were reported." });
+      if (alive.current) setError({ op, text: errorText(raw).trim() || t("No details were reported.") });
       return false;
     } finally {
       busy.current = false;

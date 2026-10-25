@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { AnimatePresence, m } from "motion/react";
 import type { ComputerModel } from "../state/computerModel";
 import type { StateTone } from "../lib/taskState";
@@ -41,16 +42,17 @@ function lightOf(model: ComputerModel): string | undefined {
  * the work column needs — where you are, and the door to its computer.
  */
 export function Toolbar(props: ToolbarProps) {
+  useLocale();
   const { context, computer } = props;
   const light = lightOf(computer);
   return (
     <header className="toolbar" data-sidebar-hidden={props.sidebarHidden || undefined} data-tauri-drag-region>
       {props.sidebarHidden && (
         <div className="toolbar__lead">
-          <button type="button" className="icon-btn" aria-label="Show sidebar" title={`Show sidebar (${props.modifier}\\)`} onClick={props.onToggleSidebar}>
+          <button type="button" className="icon-btn" aria-label={t("Show sidebar")} title={t("Show sidebar ({0}\\)", { "0": props.modifier })} onClick={props.onToggleSidebar}>
             <SidebarIcon size={16} />
           </button>
-          <button type="button" className="icon-btn" aria-label="New task" title={`New task (${props.modifier}N)`} onClick={props.onNewTask}>
+          <button type="button" className="icon-btn" aria-label={t("New task")} title={t("New task ({0}N)", { "0": props.modifier })} onClick={props.onNewTask}>
             <ComposeIcon size={16} />
           </button>
         </div>
@@ -78,8 +80,8 @@ export function Toolbar(props: ToolbarProps) {
             type="button"
             className="icon-btn toolbar__computer"
             aria-pressed={props.computerOpen}
-            aria-label={`${props.computerOpen ? "Hide" : "Show"} its computer (${computer.chip})`}
-            title={`${props.computerOpen ? "Hide" : "Show"} its computer (${props.modifier}J)`}
+            aria-label={t("{0} its computer ({1})", { "0": props.computerOpen ? t("Hide") : t("Show"), "1": computer.chip })}
+            title={t("{0} its computer ({1}J)", { "0": props.computerOpen ? t("Hide") : t("Show"), "1": props.modifier })}
             onClick={props.onToggleComputer}
           >
             <PanelRightIcon size={16} />

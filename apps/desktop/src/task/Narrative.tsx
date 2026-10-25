@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
 import { useEffect, useId, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
 import type { TranscriptItem, TranscriptStep } from "../state/transcript";
@@ -10,7 +12,7 @@ import { AlertIcon, CheckIcon, ChevronRightIcon, CloseIcon, FileIcon } from "../
 
 type Item = Exclude<TranscriptItem, { kind: "request" }>;
 
-const OUTCOME_WORD: Partial<Record<TranscriptStep["outcome"], string>> = {
+const OUTCOME_WORD: Partial<Record<TranscriptStep["outcome"], CopyKey>> = {
   blocked: "Blocked by a safety rule",
   failed: "Didn’t work",
   interrupted: "Interrupted",
@@ -24,7 +26,9 @@ function shortDetail(detail: string): string {
 }
 
 export function StepRow({ step }: { step: TranscriptStep }) {
-  const word = OUTCOME_WORD[step.outcome];
+  useLocale();
+  const key = OUTCOME_WORD[step.outcome];
+  const word = key ? t(key) : undefined;
   return (
     <div className="step" data-outcome={step.outcome} data-consequential={step.consequential || undefined}>
       <span className="step__icon" aria-hidden="true"><CapabilityGlyph capability={step.capability} size={14} /></span>
@@ -40,6 +44,7 @@ export function StepRow({ step }: { step: TranscriptStep }) {
 
 /** A run of finished actions: short runs read open, long ones fold into one line that still shows what changed. */
 function Run({ steps, at, current }: { steps: readonly TranscriptStep[]; at: string; current: boolean }) {
+  useLocale();
   // The run Pegoles is in the middle of reads open; finished runs fold to one line.
   const [open, setOpen] = useState(current);
   useEffect(() => { if (!current) setOpen(false); }, [current]);
@@ -75,15 +80,16 @@ function Run({ steps, at, current }: { steps: readonly TranscriptStep[]; at: str
 }
 
 function FileItem({ path, at }: { path: string; at: string }) {
+  useLocale();
   const name = basename(path);
   return (
-    <article className="made" aria-label={`File created: ${name}`} title={path}>
+    <article className="made" aria-label={t("File created: {0}", { "0": name })} title={path}>
       <span className="made__tile" aria-hidden="true"><FileIcon size={16} /></span>
       <span className="made__body">
         <span className="made__name">{name}</span>
         <span className="made__path">{parentOf(path)}</span>
       </span>
-      <span className="made__meta">Created <time dateTime={at}>{timeOf(at)}</time></span>
+      <span className="made__meta">{t("Created ")}<time dateTime={at}>{timeOf(at)}</time></span>
     </article>
   );
 }
@@ -91,12 +97,13 @@ function FileItem({ path, at }: { path: string; at: string }) {
 export const APPROVAL_NOTE = "Nothing has been allowed. This build can’t answer approvals yet, so the task stays paused here.";
 
 function Approval({ reason, open, at }: { reason?: string; open: boolean; at: string }) {
+  useLocale();
   const titleId = useId();
   if (!open) {
     return (
       <div className="step" data-outcome="approval">
         <span className="step__icon" aria-hidden="true"><AlertIcon size={14} /></span>
-        <span className="step__text"><span className="step__label">Asked for approval{reason ? `: ${reason}` : ""}</span></span>
+        <span className="step__text"><span className="step__label">{t("Asked for approval")}{reason ? `: ${reason}` : ""}</span></span>
         <time className="step__meta" dateTime={at}>{timeOf(at)}</time>
       </div>
     );
@@ -105,16 +112,16 @@ function Approval({ reason, open, at }: { reason?: string; open: boolean; at: st
     <article className="ask" aria-labelledby={titleId}>
       <header className="ask__head">
         <span className="ask__dot" aria-hidden="true" />
-        <h3 id={titleId} className="ask__title">Stopped to ask you</h3>
+        <h3 id={titleId} className="ask__title">{t("Stopped to ask you")}</h3>
         <time className="ask__time" dateTime={at}>{timeOf(at)}</time>
       </header>
-      <p className="ask__reason">{reason ?? "An action needs your approval before Pegoles continues."}</p>
-      <p className="ask__note">{APPROVAL_NOTE}</p>
+      <p className="ask__reason">{reason ?? t("An action needs your approval before Pegoles continues.")}</p>
+      <p className="ask__note">{t(APPROVAL_NOTE)}</p>
     </article>
   );
 }
 
-const NOTE_LABEL: Record<AgentMessageKind, string> = {
+const NOTE_LABEL: Record<AgentMessageKind, CopyKey> = {
   progress: "Note from Pegoles",
   summary: "Pegoles’ summary",
   error: "Why Pegoles stopped",
@@ -125,17 +132,18 @@ const NOTE_LABEL: Record<AgentMessageKind, string> = {
  * (never markup), and long notes fold to a few lines until asked.
  */
 function Note({ item }: { item: Extract<Item, { kind: "message" }> }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const textId = useId();
   const long = noteIsLong(item.text);
   return (
-    <article className="note" data-variant={item.variant} aria-label={NOTE_LABEL[item.variant]}>
+    <article className="note" data-variant={item.variant} aria-label={t(NOTE_LABEL[item.variant])}>
       {item.variant === "error" && <span className="note__icon" aria-hidden="true"><AlertIcon size={14} /></span>}
       <div className="note__body">
         <p id={textId} className="note__text" data-folded={(long && !open) || undefined}>{item.text}</p>
         {long && (
           <button type="button" className="note__more" aria-expanded={open} aria-controls={textId} onClick={() => setOpen((value) => !value)}>
-            {open ? "Show less" : "Show more"}
+            {open ? t("Show less") : t("Show more")}
           </button>
         )}
       </div>
@@ -146,21 +154,23 @@ function Note({ item }: { item: Extract<Item, { kind: "message" }> }) {
 const OUTCOME_TITLE = { completed: "Done", failed: "Couldn’t finish", cancelled: "Cancelled" } as const;
 
 function Outcome({ item, detail }: { item: Extract<Item, { kind: "outcome" }>; detail?: string }) {
-  const facts = [plural(item.actions, "action"), item.files ? plural(item.files, "file") : null, `finished ${timeOf(item.at)}`].filter(Boolean).join(" · ");
+  useLocale();
+  const facts = [plural(item.actions, "action"), item.files ? plural(item.files, "file") : null, t("finished {0}", { "0": timeOf(item.at) })].filter(Boolean).join(" · ");
   const Glyph = item.status === "completed" ? CheckIcon : item.status === "failed" ? CloseIcon : AlertIcon;
   return (
-    <section className="outcome" data-status={item.status} aria-label="Finished">
+    <section className="outcome" data-status={item.status} aria-label={t("Finished")}>
       <span className="outcome__tile" aria-hidden="true"><Glyph size={16} /></span>
       <div className="outcome__text">
-        <h3 className="outcome__title">{OUTCOME_TITLE[item.status]}</h3>
+        <h3 className="outcome__title">{t(OUTCOME_TITLE[item.status])}</h3>
         <p className="outcome__facts">{facts}</p>
-        {item.status === "failed" && detail && <p className="outcome__detail">Stopped at: {detail}</p>}
+        {item.status === "failed" && detail && <p className="outcome__detail">{t("Stopped at: ")}{detail}</p>}
       </div>
     </section>
   );
 }
 
 function ItemView({ item, failedAt, current }: { item: Item; failedAt?: string; current: boolean }) {
+  useLocale();
   switch (item.kind) {
     case "actions": return <Run steps={item.steps} at={item.at} current={current} />;
     case "file": return <FileItem path={item.path} at={item.at} />;
@@ -186,11 +196,12 @@ export interface NarrativeProps {
  * reflows under the reader.
  */
 export function Narrative({ items, animated, failedAt, live }: NarrativeProps) {
+  useLocale();
   const body = items.filter((item): item is Item => item.kind !== "request");
   if (!body.length) return null;
   const last = body[body.length - 1];
   return (
-    <ol className="narrative" aria-label="Task timeline">
+    <ol className="narrative" aria-label={t("Task timeline")}>
       <AnimatePresence initial={false}>
         {body.map((item) => (
           <m.li key={item.id} className="narrative__item" data-kind={item.kind}

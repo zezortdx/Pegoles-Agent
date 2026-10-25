@@ -1,0 +1,16 @@
+.agent-dialog-layer { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgb(0 0 0 / 55%); }
+.agent-dialog { width: min(640px, 100%); max-height: calc(100dvh - 48px); overflow-y: auto; border: 1px solid var(--hairline-strong); border-radius: 22px; background: var(--window, #18191b); box-shadow: 0 24px 80px rgb(0 0 0 / 30%); color: var(--text-1); padding: 28px; }
+.agent-dialog h2 { margin: 0 0 10px; font-size: 22px; }
+.agent-dialog p, .agent-dialog small { color: var(--text-2); line-height: 1.5; }
+.agent-dialog label, .agent-choices legend { display: block; font-weight: 600; margin: 16px 0 8px; }
+.agent-dialog input, .agent-dialog select { background: var(--surface, #25262a); color: inherit; border: 1px solid var(--hairline-strong); border-radius: 8px; padding: 10px; width: 100%; }
+.agent-dialog small { display: block; margin-top: 6px; }
+.agent-dialog__preview { display: flex; align-items: center; justify-content: center; gap: 16px; min-height: 160px; overflow-wrap: anywhere; }
+.agent-choices { border: 0; padding: 0; margin: 0; min-width: 0; }
+.agent-choices > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-dialog button { border: 1px solid var(--hairline-strong); border-radius: 8px; background: var(--surface, #25262a); color: inherit; padding: 8px 12px; cursor: pointer; }
+.agent-dialog button[aria-checked="true"] { background: #b8bbc1; color: #141518; border-color: #e4e5e7; }
+.agent-dialog button:disabled { opacity: .55; cursor: default; }
+.agent-dialog :focus-visible { outline: 2px solid #d5d8de; outline-offset: 3px; }
+.agent-dialog footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.agent-dialog [role="alert"] { color: var(--danger-text, #edb6b6); }

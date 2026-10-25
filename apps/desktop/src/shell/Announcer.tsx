@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import type { ComputerPhase } from "../state/computerModel";
 import type { AgentTask } from "../lib/tauri";
@@ -7,7 +9,7 @@ interface AnnouncerProps {
   readonly computerPhase: ComputerPhase;
 }
 
-const CONTROL_COPY: Partial<Record<ComputerPhase, string>> = {
+const CONTROL_COPY: Partial<Record<ComputerPhase, CopyKey>> = {
   user: "You have control of Pegoles’ computer.",
   agent: "Pegoles has control of its computer.",
   error: "Pegoles’ computer couldn’t start.",
@@ -19,6 +21,7 @@ const CONTROL_COPY: Partial<Record<ComputerPhase, string>> = {
  * Nothing here is conveyed only by motion or color.
  */
 export function Announcer({ tasks, computerPhase }: AnnouncerProps) {
+  useLocale();
   const [polite, setPolite] = useState("");
   const [urgent, setUrgent] = useState("");
   const previous = useRef<Map<string, AgentTask["status"]> | null>(null);
@@ -31,11 +34,11 @@ export function Announcer({ tasks, computerPhase }: AnnouncerProps) {
     for (const task of tasks) {
       const was = before.get(task.id);
       if (!was || was === task.status) continue;
-      if (task.status === "waiting_for_approval") setUrgent(`Pegoles needs your approval for “${task.title}”.`);
-      else if (task.status === "completed") setPolite(`Pegoles finished “${task.title}”.`);
-      else if (task.status === "failed") setUrgent(`Pegoles couldn’t finish “${task.title}”.`);
-      else if (task.status === "running") setPolite(`Pegoles started “${task.title}”.`);
-      else if (task.status === "cancelled" && was === "running") setPolite(`Pegoles stopped “${task.title}”.`);
+      if (task.status === "waiting_for_approval") setUrgent(t("Pegoles needs your approval for “{0}”.", { "0": task.title }));
+      else if (task.status === "completed") setPolite(t("Pegoles finished “{0}”.", { "0": task.title }));
+      else if (task.status === "failed") setUrgent(t("Pegoles couldn’t finish “{0}”.", { "0": task.title }));
+      else if (task.status === "running") setPolite(t("Pegoles started “{0}”.", { "0": task.title }));
+      else if (task.status === "cancelled" && was === "running") setPolite(t("Pegoles stopped “{0}”.", { "0": task.title }));
     }
   }, [tasks]);
 
@@ -44,8 +47,8 @@ export function Announcer({ tasks, computerPhase }: AnnouncerProps) {
     phase.current = computerPhase;
     if (was === null || was === computerPhase) return;
     const copy = CONTROL_COPY[computerPhase];
-    if (copy) setUrgent(copy);
-    else if (computerPhase === "ready" && was === "starting") setPolite("Pegoles’ computer is ready.");
+    if (copy) setUrgent(t(copy));
+    else if (computerPhase === "ready" && was === "starting") setPolite(t("Pegoles’ computer is ready."));
   }, [computerPhase]);
 
   return (

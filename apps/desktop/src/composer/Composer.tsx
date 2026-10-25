@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { useCallback, useLayoutEffect, useState, type ReactNode, type Ref } from "react";
 import { ArrowUpIcon } from "../ui/icons";
 
@@ -12,12 +13,12 @@ export function normalizeTitle(value: string): string {
 
 export function titleProblem(normalized: string): string | null {
   const chars = [...normalized];
-  if (chars.length > TITLE_LIMIT) return `Keep it under ${TITLE_LIMIT} characters.`;
+  if (chars.length > TITLE_LIMIT) return t("Keep it under {0} characters.", { "0": TITLE_LIMIT });
   const control = chars.some((char) => {
     const code = char.codePointAt(0) ?? 0;
     return code < 32 || (code >= 127 && code <= 159);
   });
-  return control ? "Remove the control characters." : null;
+  return control ? t("Remove the control characters.") : null;
 }
 
 export interface ComposerProps {
@@ -49,6 +50,7 @@ export function Composer({
   value, onChange, onSubmit, onFocusChange, onKeystroke, inputRef, placeholder,
   disabled = false, busy = false, problem, strip, controls,
 }: ComposerProps) {
+  useLocale();
   const [field, setField] = useState<HTMLTextAreaElement | null>(null);
   const [focused, setFocused] = useState(false);
   const normalized = normalizeTitle(value);
@@ -75,7 +77,7 @@ export function Composer({
       {strip && <div className="composer__strip">{strip}</div>}
       <form
         className="composer"
-        aria-label="New task"
+        aria-label={t("New task")}
         data-filled={length > 0 || undefined}
         data-focused={focused || undefined}
         data-busy={busy || undefined}
@@ -89,7 +91,7 @@ export function Composer({
         <textarea
           ref={setRefs}
           className="composer__input"
-          aria-label="New task"
+          aria-label={t("New task")}
           aria-invalid={invalid ? true : undefined}
           aria-describedby={message ? "composer-message" : undefined}
           rows={1}
@@ -116,8 +118,8 @@ export function Composer({
           {length >= COUNT_FROM && (
             <span className="composer__count mono" data-over={length > TITLE_LIMIT || undefined}>{length} / {TITLE_LIMIT}</span>
           )}
-          <span className="composer__hint" aria-hidden="true">Return to hand over</span>
-          <button type="submit" className="composer__send" data-ready={canSend || undefined} aria-label={busy ? "Handing over" : "Hand to Pegoles"} disabled={!canSend}>
+          <span className="composer__hint" aria-hidden="true">{t("Return to hand over")}</span>
+          <button type="submit" className="composer__send" data-ready={canSend || undefined} aria-label={busy ? t("Handing over") : t("Hand to Pegoles")} disabled={!canSend}>
             {busy ? <span className="spinner" aria-hidden="true" /> : <ArrowUpIcon size={16} />}
           </button>
         </div>

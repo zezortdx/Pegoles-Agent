@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t } from "../i18n";
 import type { Capability } from "../lib/execution";
 import type { TranscriptStep } from "./transcript";
 
@@ -5,7 +7,7 @@ import type { TranscriptStep } from "./transcript";
  * How a run of finished actions reads when folded: one line that says
  * what kind of work it was, how much, and how long Core measured it took.
  */
-const RUN_LABEL: Record<Capability, string> = {
+const RUN_LABEL: Record<Capability, CopyKey> = {
   Computer: "Used its computer",
   Files: "Worked with files",
   Shell: "Ran commands",
@@ -25,9 +27,9 @@ export interface RunSummary {
 export function runSentence(steps: readonly TranscriptStep[], limit = 3): string {
   const said = [...new Set(steps.map((step) => step.label))];
   const shown = said.slice(0, limit).map((label, index) => (index === 0 ? label : label.charAt(0).toLowerCase() + label.slice(1)));
-  if (said.length > limit) return `${shown.join(", ")} and more`;
+  if (said.length > limit) return t("{0} and more", { "0": shown.join(", ") });
   if (shown.length < 2) return shown[0] ?? "";
-  return `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+  return t("{0} and {1}", { "0": shown.slice(0, -1).join(", "), "1": shown[shown.length - 1] });
 }
 
 export function runSummary(steps: readonly TranscriptStep[]): RunSummary {
@@ -35,7 +37,7 @@ export function runSummary(steps: readonly TranscriptStep[]): RunSummary {
   const only = kinds.size === 1 ? [...kinds][0] : undefined;
   const measured = steps.every((step) => typeof step.durationMs === "number");
   return {
-    label: runSentence(steps) || (only ? RUN_LABEL[only] : "Worked on it"),
+    label: runSentence(steps) || (only ? t(RUN_LABEL[only]) : t("Worked on it")),
     count: steps.length,
     durationMs: measured && steps.length ? steps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0) : undefined,
     capability: only,

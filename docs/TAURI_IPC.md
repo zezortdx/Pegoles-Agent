@@ -258,3 +258,50 @@ unchanged. Starting/Unavailable graphical reports only move
 `src-tauri/src/state.rs` (`Mutex<AppState>`) owns `ComputerRegistry`
 (computer + display adapter + control owner) `+ TaskManager + event_log`.
 React holds only rendered copies.
+
+## Local appearance preferences (Agent 2.0)
+
+`get_preferences()` returns `Preferences`; `set_preferences({ preferences })`
+returns the validated, normalized record only after durable replacement. Both
+are release commands granted only to the local main window. They run on the
+blocking pool under a store-specific mutex, independently of the VM/Core lock.
+There is no path, URL, CSS, SVG, provider, authority, or planner argument.
+
+```ts
+type Preferences = {
+  schema_version: 1;
+  avatar: {
+    shape: "circle" | "pebble" | "squircle" | "capsule" | "triangle" | "hexagon" | "cloud" | "droplet";
+    color: "silver" | "graphite" | "pearl";
+    expression: "neutral" | "attentive" | "surprised" | "excited" | "happy" | "laughing" | "angry" | "sad" | "afraid" | "suspicious" | "confused" | "curious" | "proud" | "shy" | "bored" | "sleepy";
+    name: string;
+  };
+  locale: "en" | "pt-BR";
+};
+```
+
+Core rejects unknown fields at both object levels and validates every enum and
+version. Names are trimmed, 1–32 Unicode scalar values, without control
+characters or bidi controls (including at the edges before trimming). Defaults:
+Pegoles, circle, silver, attentive, en. Only a missing file means defaults;
+corrupt, oversized, unsupported and unreadable files reject the command.
+
+The sole destination is `<pegoles_data_dir>/preferences/profile.json`. Reads
+are capped at 4096 bytes, regular files only. Directory components and file
+symlinks are refused; Unix leaf opens additionally use `O_NOFOLLOW` and
+`O_NONBLOCK`. The directory is private (0700), temporary files are created
+exclusively (0600), synced, and atomically renamed; the directory is synced on
+Unix. Failed writes reject, clean the temporary file and never invent success.
+Same-user host filesystem races are outside the existing threat model; Windows
+ACL/reparse-point behavior still needs platform verification. The webview has
+no filesystem permission. Nothing is added to `ComputerAction` or model context.
+
+The React `PreferencesProvider` owns only a rendered copy. It loads once, offers
+retry on failure and applies saved appearance/locale after Core confirms.
+`usePreferences()` exposes the record and `save()` for subsequent product work;
+`useLocale()`, `currentLocale()` and `t()` expose the typed static copy catalog.
+Language changes preserve task IDs and drafts. User, guest and model text is
+interpolated/rendered as original text, never used as a translation key or HTML.
+The named preview is a UI simulation; it never changes Core state. Saved
+expression decorates resting poses; work, blocked, offline and error states
+retain their real-state precedence and existing motion guards.

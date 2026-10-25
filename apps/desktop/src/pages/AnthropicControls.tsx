@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
 import { useId } from "react";
 import type { ModelSettings } from "../lib/tauri";
 import type { ModelOp, ModelSettingsState } from "../state/useModelSettings";
@@ -9,7 +11,7 @@ import { Row } from "./settingsParts";
 export const PRIVACY_NOTE =
   "With Anthropic chosen, when a task runs, its text and screenshots of Pegoles’ computer (its own virtual machine, never your Mac’s screen) are sent to Anthropic’s API. The key stays in your Mac’s Keychain and never reaches Pegoles’ computer.";
 
-const FAILED: Record<ModelOp, string> = {
+const FAILED: Record<ModelOp, CopyKey> = {
   load: "Couldn’t read the Anthropic settings.",
   key: "Couldn’t save the key.",
   clear: "Couldn’t remove the key.",
@@ -19,20 +21,21 @@ const FAILED: Record<ModelOp, string> = {
 /** The cloud settings' failure as one sentence, in Core's words after ours. */
 export function anthropicProblem(model: ModelSettingsState): string | null {
   const { error } = model;
-  return error ? `${FAILED[error.op]} ${error.text.charAt(0).toUpperCase()}${error.text.slice(1)}` : null;
+  return error ? `${t(FAILED[error.op])} ${error.text.charAt(0).toUpperCase()}${error.text.slice(1)}` : null;
 }
 
 /** Where the key lives, in a few words. */
 export function keyStatus(settings: ModelSettings | null): string {
-  if (!settings) return "Checking…";
-  if (settings.key_source === "keychain") return "Connected (Keychain)";
-  if (settings.key_source === "environment") return "From ANTHROPIC_API_KEY";
-  return "Not connected";
+  if (!settings) return t("Checking…");
+  if (settings.key_source === "keychain") return t("Connected (Keychain)");
+  if (settings.key_source === "environment") return t("From ANTHROPIC_API_KEY");
+  return t("Not connected");
 }
 
 function Select({ id, label, value, options, disabled, onChange }: {
   id: string; label: string; value: string; options: readonly { value: string; label: string }[]; disabled: boolean; onChange: (value: string) => void;
 }) {
+  useLocale();
   return (
     <span className="select">
       <select id={id} aria-label={label} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
@@ -56,6 +59,7 @@ export interface AnthropicControlsProps {
  * shown again. Core is the authority; every value here is what it reports.
  */
 export function AnthropicControls({ model, onSaved }: AnthropicControlsProps) {
+  useLocale();
   const { settings, pending } = model;
   const fieldId = useId();
   const busy = pending !== null;
@@ -69,33 +73,33 @@ export function AnthropicControls({ model, onSaved }: AnthropicControlsProps) {
 
   return (
     <>
-      <Row label="Anthropic API key" hint={configured ? undefined : "Needed for tasks while Anthropic is chosen."}>
+      <Row label={t("Anthropic API key")} hint={configured ? undefined : t("Needed for tasks while Anthropic is chosen.")}>
         <span className="setting__status">
           <span className="dot" data-tone={configured ? "done" : undefined} aria-hidden="true" />
           <span className={configured ? undefined : "setting__muted"}>{keyStatus(settings)}</span>
           {settings?.key_source === "keychain" && (
             <button type="button" className="btn btn--quiet btn--small" disabled={busy} onClick={() => { onSaved(false); void model.clearKey(); }}>
-              {pending === "clear" ? "Removing…" : "Remove key"}
+              {pending === "clear" ? t("Removing…") : t("Remove key")}
             </button>
           )}
         </span>
       </Row>
-      <Row label={configured ? "Replace the key" : "Add a key"}
-        hint="You paste it in a macOS window Pegoles opens, never on this screen. It’s kept in your Mac’s Keychain and isn’t shown again.">
+      <Row label={configured ? t("Replace the key") : t("Add a key")}
+        hint={t("You paste it in a macOS window Pegoles opens, never on this screen. It’s kept in your Mac’s Keychain and isn’t shown again.")}>
         <button type="button" className="btn btn--line btn--small" disabled={busy} onClick={() => void enter()}>
-          {pending === "key" ? "Waiting for the key…" : configured ? "Replace key…" : "Add key…"}
+          {pending === "key" ? t("Waiting for the key…") : configured ? t("Replace key…") : t("Add key…")}
         </button>
       </Row>
       {settings && (
-        <Row label="Model">
-          <Select id={`${fieldId}-model`} label="Model" value={settings.model} disabled={busy}
+        <Row label={t("Model")}>
+          <Select id={`${fieldId}-model`} label={t("Model")} value={settings.model} disabled={busy}
             options={settings.models.map((value) => ({ value, label: modelLabel(value) }))}
             onChange={(value) => { onSaved(false); void model.choose(value, settings.effort); }} />
         </Row>
       )}
       {settings && (
-        <Row label="Effort" hint="Higher effort thinks longer before each step: slower, and it costs more.">
-          <Select id={`${fieldId}-effort`} label="Effort" value={settings.effort} disabled={busy}
+        <Row label={t("Effort")} hint={t("Higher effort thinks longer before each step: slower, and it costs more.")}>
+          <Select id={`${fieldId}-effort`} label={t("Effort")} value={settings.effort} disabled={busy}
             options={settings.efforts.map((value) => ({ value, label: effortLabel(value) }))}
             onChange={(value) => { onSaved(false); void model.choose(settings.model, value); }} />
         </Row>

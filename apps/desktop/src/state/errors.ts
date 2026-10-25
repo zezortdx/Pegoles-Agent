@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t } from "../i18n";
 /**
  * The product talks to people; diagnostics talk to engineers. Every raw
  * Core/IPC error becomes one calm sentence, an optional hint and the
@@ -18,8 +20,8 @@ export interface HumanError {
 interface Rule {
   readonly test: RegExp;
   readonly scope?: ErrorScope;
-  readonly title: string;
-  readonly hint?: string;
+  readonly title: CopyKey;
+  readonly hint?: CopyKey;
   readonly retryable?: boolean;
   /** Also names why a run stopped (the planner's words in the task's failure note). */
   readonly stop?: boolean;
@@ -74,7 +76,7 @@ const RULES: readonly Rule[] = [
     hint: "Pegoles will keep checking every few seconds." },
 ];
 
-const SCOPE_DEFAULT: Record<ErrorScope, { title: string; hint?: string }> = {
+const SCOPE_DEFAULT: Record<ErrorScope, { title: CopyKey; hint?: CopyKey }> = {
   task: { title: "Couldn’t hand this to Pegoles.", hint: "Your text is still here." },
   run: { title: "Pegoles couldn’t start this task.", hint: "The task is kept. Try starting it again." },
   computer: { title: "Pegoles’ computer needs attention." },
@@ -97,21 +99,22 @@ function applies(rule: Rule, scope: ErrorScope): boolean {
 }
 
 export function humanizeError(raw: unknown, scope: ErrorScope): HumanError {
-  const detail = errorText(raw).trim() || "No details were reported.";
+  const detail = errorText(raw).trim() || t("No details were reported.");
+  // Errors can outlive a locale change; accessors keep only static copy reactive.
   const rule = RULES.find((candidate) => candidate.test.test(detail) && applies(candidate, scope));
   if (rule) {
     const kept = scope === "run" ? scope : rule.scope ?? scope;
-    return { scope: kept, title: rule.title, hint: rule.hint, detail, retryable: rule.retryable ?? true };
+    return { scope: kept, get title() { return t(rule.title); }, get hint() { return rule.hint ? t(rule.hint) : undefined; }, detail, retryable: rule.retryable ?? true };
   }
   const fallback = SCOPE_DEFAULT[scope];
-  return { scope, title: fallback.title, hint: fallback.hint, detail, retryable: true };
+  return { scope, get title() { return t(fallback.title); }, get hint() { return fallback.hint ? t(fallback.hint) : undefined; }, detail, retryable: true };
 }
 
 /**
- * Why a run stopped, calmly: the planner's known failures ("The model
- * could not continue: model unavailable: …") become one sentence; any
- * other note (such as "Stopped by the user.") stays in Pegoles' words.
+ * Summarize known app/Core diagnostic failures. Never pass agent_message
+ * text here: model error notes must retain their original content.
  */
 export function stopReason(note: string): string {
-  return INTELLIGENCE_RULES.find((rule) => rule.stop && rule.test.test(note))?.title ?? note;
+  const key = INTELLIGENCE_RULES.find((rule) => rule.stop && rule.test.test(note))?.title;
+  return key ? t(key) : note;
 }

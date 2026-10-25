@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { percentOf, progressText, STEP_LABEL, type LocalView } from "../state/localModel";
 import { ProgressMeter } from "../ui/ProgressMeter";
 
@@ -8,6 +9,7 @@ import { ProgressMeter } from "../ui/ProgressMeter";
  * change four times a second and are there to glance at.
  */
 export function LocalProgress({ view }: { view: LocalView }) {
+  useLocale();
   const step = view.step ?? "downloading";
   const total = view.totalBytes ?? view.model?.size_bytes ?? 0;
   const done = Math.min(view.doneBytes ?? 0, total);
@@ -16,14 +18,14 @@ export function LocalProgress({ view }: { view: LocalView }) {
   return (
     <div className="local-progress" data-step={step}>
       <div className="local-progress__line">
-        <span className="local-progress__step" aria-live="polite">{STEP_LABEL[step]}</span>
+        <span className="local-progress__step" aria-live="polite">{t(STEP_LABEL[step])}</span>
         {measured && <span className="local-progress__bytes">{progressText(done, total)}</span>}
         {measured && percent !== null && <span className="local-progress__percent">{percent}%</span>}
       </div>
       <ProgressMeter
-        label="Setting up Pegoles Local"
+        label={t("Setting up Pegoles Local")}
         percent={total > 0 ? percent : null}
-        valueText={measured ? progressText(done, total) : STEP_LABEL[step]}
+        valueText={measured ? progressText(done, total) : t(STEP_LABEL[step])}
         working={step !== "downloading"}
       />
     </div>

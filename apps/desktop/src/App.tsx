@@ -1,3 +1,6 @@
+import { t, useLocale } from "./i18n";
+import { MakeAgentDialog } from "./preferences/MakeAgentDialog";
+import { PreferencesProvider, usePreferences } from "./preferences/PreferencesProvider";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { AnimatePresence, LayoutGroup, m } from "motion/react";
 import { FluxGlassRoot, type EffectsTier } from "@pegoles/ui";
@@ -70,6 +73,12 @@ function elapsedOf(task: AgentTask, activity: TaskActivity, now: number): string
 const wait = (delay: number) => new Promise<void>((resolve) => { window.setTimeout(resolve, delay); });
 
 export default function App() {
+  return <PreferencesProvider><AppContent /></PreferencesProvider>;
+}
+
+function AppContent() {
+  useLocale();
+  const { customizerOpen, setCustomizerOpen } = usePreferences();
   const core = useCore();
   const { connected, status, tasks, events, run, report } = core;
   const systemReducedMotion = useSystemReducedMotion();
@@ -106,19 +115,20 @@ export default function App() {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const openWidth = useRef(0);
 
+  // Localized presentation is cheap and recomputed on locale updates; data-only slices stay memoized.
   // ── Derived state ────────────────────────────────────────────────
   const modelReady = modelConnected(status);
   const provider = status?.provider ?? intelligence.intelligence?.provider ?? "local";
-  const local = useMemo(() => localView(intelligence.intelligence), [intelligence.intelligence]);
+  const local = localView(intelligence.intelligence);
   const selected = view.kind === "task"
     ? tasks.find((task) => task.id === view.id) ?? (created?.id === view.id ? created : undefined)
     : undefined;
   const selectedEvents = useMemo(() => (selected ? eventsForTask(events, selected.id) : []), [events, selected]);
   const starting = !!selected && core.busy.run && startedFor === selected.id;
-  const activity = useMemo(() => selected && taskActivity({
+  const activity = selected && taskActivity({
     task: selected, events: selectedEvents, status, connected, acknowledging: ackTask === selected.id, starting,
-  }), [selected, selectedEvents, status, connected, ackTask, starting]);
-  const transcript = useMemo(() => (selected ? buildTranscript({ task: selected, events: selectedEvents }) : []), [selected, selectedEvents]);
+  });
+  const transcript = selected ? buildTranscript({ task: selected, events: selectedEvents }) : [];
 
   const computer = withCommandError(computerModel({ connected, native: core.native, status, events }), !!core.errors.computer);
   const presence = globalPresence({
@@ -128,18 +138,18 @@ export default function App() {
 
   const liveWork = tasks.some((task) => task.status === "running");
   const now = useNow(true, liveWork ? 15_000 : 60_000);
-  const sections = useMemo(() => taskSections(tasks, now), [tasks, now]);
-  const glances = useMemo(() => {
+  const sections = taskSections(tasks, now);
+  const glances = (() => {
     const entries: Record<string, TaskGlance | null> = {};
     for (const task of tasks) {
       if (task.status === "running") {
         const live = taskActivity({ task, events: eventsForTask(events, task.id), status, connected });
         entries[task.id] = { text: live.headline, tone: live.mode === "waiting" ? "attention" : "live" };
-      } else if (task.status === "waiting_for_approval") entries[task.id] = { text: "Needs your approval", tone: "attention" };
+      } else if (task.status === "waiting_for_approval") entries[task.id] = { text: t("Needs your approval"), tone: "attention" };
       else entries[task.id] = null;
     }
     return entries;
-  }, [tasks, events, status, connected]);
+  })();
   const waiting = tasks.find((task) => task.status === "waiting_for_approval");
 
   const pill = selected && activity ? activityPill(activity.mode, selected.status) : null;
@@ -165,10 +175,7 @@ export default function App() {
     trigger: events.length,
     capture: api.captureScreen,
   });
-  const panelSteps = useMemo(
-    () => [...(activity ? activity.recent : actionSteps(events).slice(-5))].reverse().slice(0, 5),
-    [activity, events],
-  );
+  const panelSteps = [...(activity ? activity.recent : actionSteps(events).slice(-5))].reverse().slice(0, 5);
 
   // ── Navigation ──────────────────────────────────────────────────
   const focusHeading = useCallback(() => {
@@ -313,6 +320,7 @@ export default function App() {
   // ── Keyboard ───────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (customizerOpen || event.defaultPrevented) return;
       const mod = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
       if (mod && key === "k") { event.preventDefault(); setPaletteOpen((open) => !open); return; }
@@ -331,7 +339,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [newTask, toggleSidebar, toggleComputer, interrupt, status?.agent_busy, status?.active_task, narrow, drawerOpen, paletteOpen, level, locked, closeComputer, setLevel]);
+  }, [customizerOpen, newTask, toggleSidebar, toggleComputer, interrupt, status?.agent_busy, status?.active_task, narrow, drawerOpen, paletteOpen, level, locked, closeComputer, setLevel]);
 
   const chooseQuality = (value: QualityChoice) => {
     setQuality(value);
@@ -341,7 +349,7 @@ export default function App() {
   const modifier = shortcutModifier();
   // The composer names what will think: Pegoles Local, or the cloud model when that was chosen.
   const modelName = provider === "anthropic" ? (modelSettings.settings ? modelLabel(modelSettings.settings.model) : undefined) : "Pegoles Local";
-  const setupLabel = provider === "anthropic" ? undefined : local.stage === "preparing" ? "Setting up Pegoles Local…" : "Set up Pegoles Local";
+  const setupLabel = provider === "anthropic" ? undefined : local.stage === "preparing" ? t("Setting up Pegoles Local…") : t("Set up Pegoles Local");
 
   // ── The work column's views ─────────────────────────────────────
   let content: ReactNode;
@@ -404,7 +412,7 @@ export default function App() {
       onFocusChange={setFocused}
       onKeystroke={() => setNudge((value) => value + 1)}
       inputRef={composerRef}
-      placeholder={connected ? "Describe a job for Pegoles…" : "Waiting for Pegoles Core…"}
+      placeholder={connected ? t("Describe a job for Pegoles…") : t("Waiting for Pegoles Core…")}
       disabled={!connected}
       busy={core.busy.task || handing}
       problem={core.errors.task ? `${core.errors.task.title} ${core.errors.task.hint ?? ""}`.trim() : null}
@@ -428,7 +436,7 @@ export default function App() {
           data-view={view.kind}
           data-resizing={resizing || undefined}
         >
-          <a className="skip-link" href="#main-content">Skip to content</a>
+          <a className="skip-link" href="#main-content">{t("Skip to content")}</a>
           <Sidebar
             sections={sections}
             glances={glances}
@@ -447,7 +455,7 @@ export default function App() {
             onComputer={toggleComputer}
             onToggle={toggleSidebar}
           />
-          {sidebarMode === "drawer" && <button type="button" className="scrim" aria-label="Close sidebar" onClick={() => setDrawerOpen(false)} />}
+          {sidebarMode === "drawer" && <button type="button" className="scrim" aria-label={t("Close sidebar")} onClick={() => setDrawerOpen(false)} />}
 
           <main id="main-content" className="work" tabIndex={-1} aria-hidden={level === "full" || undefined}
             {...(sidebarMode === "drawer" || level === "full" ? { inert: "" } : {})}>
@@ -484,10 +492,10 @@ export default function App() {
                     exit={{ opacity: 0, transition: { duration: duration.micro, ease: ease.exit } }}>
                     <span className="banner__dot" aria-hidden="true" />
                     <span className="banner__text">
-                      <span className="banner__title">Pegoles needs your approval</span>
+                      <span className="banner__title">{t("Pegoles needs your approval")}</span>
                       <span className="banner__body">{waiting.title}</span>
                     </span>
-                    <button type="button" className="btn btn--line btn--small" onClick={() => openTask(waiting)}>Open task</button>
+                    <button type="button" className="btn btn--line btn--small" onClick={() => openTask(waiting)}>{t("Open task")}</button>
                   </m.div>
                 )}
                 {bar === "composer" && (
@@ -544,7 +552,7 @@ export default function App() {
               managing={core.busy.general}
               error={core.errors.computer}
               moving={motion !== null}
-              obscured={sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
+              obscured={customizerOpen || sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
               focusOnOpen={panelFocus}
               onCommand={runComputer}
               onManage={manageComputer}
@@ -574,6 +582,7 @@ export default function App() {
               />
             )}
           </AnimatePresence>
+          {customizerOpen && <MakeAgentDialog onClose={() => setCustomizerOpen(false)} />}
           <Toast error={core.errors.general} onDismiss={() => core.dismiss("general")} />
           <Announcer tasks={tasks} computerPhase={computer.phase} />
         </div>

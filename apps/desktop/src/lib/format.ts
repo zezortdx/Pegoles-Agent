@@ -1,3 +1,5 @@
+import type { CopyKey } from "../i18n/catalog";
+import { t } from "../i18n";
 /** Host platform label for people, not identifiers ("macos" → "macOS"). */
 const PLATFORM_LABEL: Record<string, string> = { macos: "macOS", windows: "Windows", linux: "Linux" };
 const ARCH_LABEL: Record<string, string> = { arm64: "Apple silicon", aarch64: "ARM64", x86_64: "x64", amd64: "x64" };
@@ -64,9 +66,10 @@ export function quantizationLabel(wire: string): string {
   return bits ? `${bits[1]}-bit` : wire;
 }
 
-const EFFORT_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+const EFFORT_LABEL: Record<string, CopyKey> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
 /** Reasoning effort for people ("xhigh" → "Extra high"). */
 export function effortLabel(effort: string): string {
-  return EFFORT_LABEL[effort] ?? sentenceCase(effort);
+  const key = EFFORT_LABEL[effort];
+  return key ? t(key) : sentenceCase(effort);
 }

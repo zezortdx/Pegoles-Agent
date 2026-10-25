@@ -1,4 +1,6 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { m } from "motion/react";
 import { duration, ease, spring } from "../lib/motion";
 import type { AgentTask } from "../lib/tauri";
@@ -36,9 +38,14 @@ interface Entry {
   readonly run: () => void;
 }
 
-const STATUS_WORD: Partial<Record<AgentTask["status"], string>> = {
+const STATUS_WORD: Partial<Record<AgentTask["status"], CopyKey>> = {
   running: "Working", waiting_for_approval: "Needs you", failed: "Couldn’t finish", pending: "Not started",
 };
+
+function taskStatusWord(task: AgentTask): string {
+  const key = STATUS_WORD[task.status];
+  return key ? t(key) : relativeTime(task.updated_at);
+}
 
 function matches(label: string, needle: string): boolean {
   if (!needle) return true;
@@ -51,6 +58,7 @@ function matches(label: string, needle: string): boolean {
  * Actions first, then tasks, filtered as you type.
  */
 export function CommandPalette(props: CommandPaletteProps) {
+  useLocale();
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -64,24 +72,24 @@ export function CommandPalette(props: CommandPaletteProps) {
   }, []);
 
   const { tasks, modifier, computerOpen, computerWord, onClose, onNewTask, onComputer, onActivity, onSettings, onToggleSidebar, onOpenTask } = props;
-  const entries = useMemo<Entry[]>(() => {
+  const entries = (() => {
     const close = (run: () => void) => () => { onClose(); run(); };
     const actions: Entry[] = [
-      { id: "new", group: "Actions", label: "New task", icon: <ComposeIcon />, meta: `${modifier}N`, run: close(onNewTask) },
-      { id: "computer", group: "Actions", label: computerOpen ? "Hide its computer" : "Show its computer", icon: <ComputerIcon />, meta: `${computerWord} · ${modifier}J`, run: close(onComputer) },
-      { id: "activity", group: "Actions", label: "Activity", icon: <ActivityIcon />, run: close(onActivity) },
-      { id: "settings", group: "Actions", label: "Settings", icon: <SettingsIcon />, run: close(onSettings) },
-      { id: "sidebar", group: "Actions", label: "Toggle sidebar", icon: <SidebarIcon />, meta: `${modifier}\\`, run: close(onToggleSidebar) },
+      { id: "new", group: "Actions", label: t("New task"), icon: <ComposeIcon />, meta: `${modifier}N`, run: close(onNewTask) },
+      { id: "computer", group: "Actions", label: computerOpen ? t("Hide its computer") : t("Show its computer"), icon: <ComputerIcon />, meta: `${computerWord} · ${modifier}J`, run: close(onComputer) },
+      { id: "activity", group: "Actions", label: t("Activity"), icon: <ActivityIcon />, run: close(onActivity) },
+      { id: "settings", group: "Actions", label: t("Settings"), icon: <SettingsIcon />, run: close(onSettings) },
+      { id: "sidebar", group: "Actions", label: t("Toggle sidebar"), icon: <SidebarIcon />, meta: `${modifier}\\`, run: close(onToggleSidebar) },
     ];
     const taskEntries: Entry[] = [...tasks]
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
       .map((task) => ({
         id: `task-${task.id}`, group: "Tasks", label: task.title, icon: <span className="palette__task-dot" data-status={task.status} />,
-        meta: STATUS_WORD[task.status] ?? relativeTime(task.updated_at), run: close(() => onOpenTask(task)),
+        meta: taskStatusWord(task), run: close(() => onOpenTask(task)),
       }));
     const needle = query.trim().toLowerCase();
     return [...actions, ...taskEntries].filter((entry) => matches(entry.label, needle));
-  }, [tasks, modifier, computerOpen, computerWord, onClose, onNewTask, onComputer, onActivity, onSettings, onToggleSidebar, onOpenTask, query]);
+  })();
 
   const active = Math.min(index, Math.max(entries.length - 1, 0));
   useEffect(() => {
@@ -110,7 +118,7 @@ export function CommandPalette(props: CommandPaletteProps) {
         className="palette"
         role="dialog"
         aria-modal="true"
-        aria-label="Command palette"
+        aria-label={t("Command palette")}
         initial={{ opacity: 0, scale: 0.98, y: -6 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.985, transition: { duration: duration.micro, ease: ease.exit } }}
@@ -125,8 +133,8 @@ export function CommandPalette(props: CommandPaletteProps) {
             aria-expanded="true"
             aria-controls={listId}
             aria-activedescendant={entries.length ? `${listId}-${active}` : undefined}
-            aria-label="Search tasks and actions"
-            placeholder="Search tasks and actions…"
+            aria-label={t("Search tasks and actions")}
+            placeholder={t("Search tasks and actions…")}
             value={query}
             onChange={(event) => { setQuery(event.target.value); setIndex(0); }}
             onKeyDown={onKey}
@@ -134,13 +142,13 @@ export function CommandPalette(props: CommandPaletteProps) {
           />
           <kbd className="palette__esc">esc</kbd>
         </div>
-        <ul ref={list} id={listId} className="palette__list" role="listbox" aria-label="Results">
-          {entries.length === 0 && <li className="palette__empty" role="presentation">Nothing matches “{query.trim()}”.</li>}
+        <ul ref={list} id={listId} className="palette__list" role="listbox" aria-label={t("Results")}>
+          {entries.length === 0 && <li className="palette__empty" role="presentation">{t("Nothing matches “")}{query.trim()}”.</li>}
           {entries.map((entry, position) => {
             const heading = entry.group !== lastGroup ? entry.group : null;
             lastGroup = entry.group;
             return [
-              heading && <li key={`h-${heading}`} className="palette__group" role="presentation">{heading}</li>,
+              heading && <li key={`h-${heading}`} className="palette__group" role="presentation">{t(heading)}</li>,
               <li
                 key={entry.id}
                 id={`${listId}-${position}`}

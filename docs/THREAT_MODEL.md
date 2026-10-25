@@ -177,3 +177,17 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 15. The 2B local model is imperfect: it can fail or stop tasks (budgets and brakes bound what it can do).
 16. One guest kernel panic was observed in the first installed-app run, with the host under severe memory pressure (swap nearly full, about 2 GB of disk free): code pages of the guest's ext4 module read as zeros in guest memory. The image and both copies of the module were verified intact, the memory balloon negotiates no free-page reporting and gets no target, and about 19 minutes of targeted stress (file-heavy work, captures, concurrent model inference) did not reproduce it. Root cause unknown. The app now reports a guest that stops responding (after 60 s) instead of showing "Starting", and Stop or Reset recovers the computer.
 17. A source install runs the project's and its dependencies' build steps (for example Rust `build.rs`) on the user's Mac, like any build from source; the inputs are the checkout plus digest- or lockfile-pinned downloads.
+
+### Local appearance preferences (Agent 2.0, offline verification)
+
+| | |
+|---|---|
+| Surface | The untrusted webview's `get_preferences`/`set_preferences` IPC payloads and local preference bytes. A compromised page can change appearance and language through its existing main-window authority. |
+| Mitigation | `src-tauri/src/preferences.rs` validates schema version, closed enum sets and bounded Unicode names; serde refuses extra fields. Fixed app-data filename, 4096-byte read cap, regular-file checks, symlink refusal, exclusive private temporary file and synced atomic replacement. Dedicated blocking store mutex; no file/plugin permissions or path/style/markup parameters. A failed read/save remains an error in the UI. |
+| Verification | Preference store tests cover round-trip/reopen, normalization, invalid enum/version/name/locale, unknown fields, corruption, oversize, disk errors, symlink targets and Unix file/directory permissions. Existing real Tauri ACL tests include the new commands and deny remote origins/other windows; the frontend checks exact invoke shapes. Dialog tests cover save rejection, load retry, disabled pending controls, focus containment/restoration, static reduced-motion preview and locale persistence. |
+| Residual | Same-user host mutation races remain outside scope. The stored name and locale are local metadata, excluded from planner context; the chosen name can contain markup-shaped text and is always rendered inert. macOS hardware visual/accessibility acceptance and Windows file ACL/reparse-point verification were not run for this change. |
+
+Localization uses explicit static catalog keys and plain interpolation, without
+HTML sinks or DOM text rewriting. Protocol IDs, task IDs, objectives, model
+narration and guest text retain their original values. Core state precedence,
+network containment, sandbox, policy and planner authority are unchanged.

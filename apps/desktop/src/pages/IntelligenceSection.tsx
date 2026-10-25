@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import type { Provider } from "../lib/tauri";
 import type { ModelSettingsState } from "../state/useModelSettings";
@@ -28,6 +29,7 @@ interface ProviderRowProps {
  * and the cloud sit in different groups on screen.
  */
 function ProviderRow({ name, value, checked, disabled, title, tag, hint, status, onChoose }: ProviderRowProps) {
+  useLocale();
   const id = useId();
   return (
     <label className="setting provider" role="listitem" data-checked={checked || undefined}>
@@ -59,6 +61,7 @@ export interface IntelligenceSectionProps {
  * Every state and number here is what Core reports.
  */
 export function IntelligenceSection({ id, native, intelligence, model }: IntelligenceSectionProps) {
+  useLocale();
   const [keySaved, setKeySaved] = useState(false);
   const name = useId();
   const { refresh } = intelligence;
@@ -67,8 +70,8 @@ export function IntelligenceSection({ id, native, intelligence, model }: Intelli
 
   const head = (
     <div className="settings__head">
-      <h2 id={id} className="settings__title" tabIndex={-1}>Intelligence</h2>
-      <p className="settings__lead">What Pegoles thinks with</p>
+      <h2 id={id} className="settings__title" tabIndex={-1}>{t("Intelligence")}</h2>
+      <p className="settings__lead">{t("What Pegoles thinks with")}</p>
     </div>
   );
 
@@ -77,11 +80,11 @@ export function IntelligenceSection({ id, native, intelligence, model }: Intelli
       <section className="settings__section" aria-labelledby={id} data-section={id}>
         {head}
         <div className="settings__group" role="list">
-          <Row label="Pegoles Local" hint={LOCAL_HINT}><span className="setting__muted">Desktop app required</span></Row>
+          <Row label="Pegoles Local" hint={t(LOCAL_HINT)}><span className="setting__muted">{t("Desktop app required")}</span></Row>
         </div>
-        <h3 className="settings__subhead">Cloud (optional)</h3>
+        <h3 className="settings__subhead">{t("Cloud (optional)")}</h3>
         <div className="settings__group" role="list">
-          <Row label="Anthropic" hint={ANTHROPIC_HINT}><span className="setting__muted">Desktop app required</span></Row>
+          <Row label="Anthropic" hint={t(ANTHROPIC_HINT)}><span className="setting__muted">{t("Desktop app required")}</span></Row>
         </div>
       </section>
     );
@@ -110,14 +113,14 @@ export function IntelligenceSection({ id, native, intelligence, model }: Intelli
       {head}
       <div className="settings__group" role="list">
         <ProviderRow name={name} value="local" checked={provider === "local"} disabled={locked} onChoose={choose}
-          title="Pegoles Local" tag="Recommended" hint={LOCAL_HINT} status={(statusId) => <LocalStatus id={statusId} view={view} />} />
+          title="Pegoles Local" tag={t("Recommended")} hint={t(LOCAL_HINT)} status={(statusId) => <LocalStatus id={statusId} view={view} />} />
         <LocalStateRow view={view} pending={intelligence.pending} onSetUp={setUp} onCancel={() => void intelligence.cancelInstall()} />
       </div>
       {problem && (
         <p className="settings__problem" role="alert">
           {problem}
           {intelligence.error?.op === "load" && (
-            <> <button type="button" className="link-btn" onClick={refresh}>Try again</button></>
+            <> <button type="button" className="link-btn" onClick={refresh}>{t("Try again")}</button></>
           )}
         </p>
       )}
@@ -126,17 +129,17 @@ export function IntelligenceSection({ id, native, intelligence, model }: Intelli
           onChooseModel={(next) => void intelligence.setProvider(current.provider, next)} onRemove={intelligence.remove} />
       )}
 
-      <h3 className="settings__subhead">Cloud (optional)</h3>
+      <h3 className="settings__subhead">{t("Cloud (optional)")}</h3>
       <div className="settings__group" role="list">
         <ProviderRow name={name} value="anthropic" checked={provider === "anthropic"} disabled={locked} onChoose={choose}
-          title="Anthropic" hint={ANTHROPIC_HINT}
-          status={(statusId) => <span id={statusId} className="setting__muted">{cloud?.configured ? "Key connected" : "No key"}</span>} />
+          title="Anthropic" hint={t(ANTHROPIC_HINT)}
+          status={(statusId) => <span id={statusId} className="setting__muted">{cloud?.configured ? t("Key connected") : t("No key")}</span>} />
         {provider === "anthropic" && <AnthropicControls model={model} onSaved={setKeySaved} />}
       </div>
       {cloudProblem
         ? <p className="settings__problem" role="alert">{cloudProblem}</p>
-        : keySaved && provider === "anthropic" && <p className="settings__ok" role="status">Key saved to your Keychain.</p>}
-      <p className="settings__note">{PRIVACY_NOTE}</p>
+        : keySaved && provider === "anthropic" && <p className="settings__ok" role="status">{t("Key saved to your Keychain.")}</p>}
+      <p className="settings__note">{t(PRIVACY_NOTE)}</p>
     </section>
   );
 }

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { m } from "motion/react";
 import type { ComputerModel } from "../state/computerModel";
 import { duration, ease, spring } from "../lib/motion";
@@ -20,6 +21,7 @@ export interface ComputerPeekProps {
  * from the task; one click gives it a column.
  */
 export function ComputerPeek({ model, snapshot, caption, onOpen, onDismiss }: ComputerPeekProps) {
+  useLocale();
   return (
     <m.div
       className="peek"
@@ -27,7 +29,7 @@ export function ComputerPeek({ model, snapshot, caption, onOpen, onDismiss }: Co
       animate={{ opacity: 1, y: 0, scale: 1, transition: spring.surface }}
       exit={{ opacity: 0, y: 8, scale: 0.97, transition: { duration: duration.micro, ease: ease.exit } }}
     >
-      <button type="button" className="peek__screen" onClick={onOpen} aria-label={`Watch its computer: ${caption}`}>
+      <button type="button" className="peek__screen" onClick={onOpen} aria-label={t("Watch its computer: {0}", { "0": caption })}>
         {snapshot?.src
           ? <img className="peek__image" src={snapshot.src} alt="" draggable={false} />
           : <span className="peek__empty"><MachineScreen model={model} size="card" /></span>}
@@ -36,7 +38,7 @@ export function ComputerPeek({ model, snapshot, caption, onOpen, onDismiss }: Co
       <div className="peek__caption">
         <span className="state-dot" data-tone="live" data-live aria-hidden="true" />
         <span className="peek__text">{caption}</span>
-        <button type="button" className="icon-btn peek__close" aria-label="Hide preview" onClick={onDismiss}>
+        <button type="button" className="icon-btn peek__close" aria-label={t("Hide preview")} onClick={onDismiss}>
           <CloseIcon size={12} />
         </button>
       </div>

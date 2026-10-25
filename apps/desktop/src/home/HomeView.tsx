@@ -1,3 +1,6 @@
+import { usePreferences } from "../preferences/PreferencesProvider";
+import type { CopyKey } from "../i18n/catalog";
+import { t, useLocale } from "../i18n";
 import type { ReactNode, Ref } from "react";
 import { m } from "motion/react";
 import { PegolesPresence, type PresenceMode } from "../presence";
@@ -8,8 +11,8 @@ import { ComputerIcon, FolderIcon, TerminalIcon } from "../ui/icons";
 export const PRESENCE_LAYOUT_ID = "pegoles-presence";
 
 export interface Starter {
-  readonly label: string;
-  readonly prompt: string;
+  readonly label: CopyKey;
+  readonly prompt: CopyKey;
   readonly icon: ReactNode;
 }
 
@@ -41,6 +44,8 @@ export interface HomeViewProps {
  * primary action; everything else stays quiet.
  */
 export function HomeView({ presence, headingRef, attentive, nudge, firstRun, onStarter, onPressPresence, animated }: HomeViewProps) {
+  useLocale();
+  const { preferences } = usePreferences();
   const enter = (delay: number) => animated
     ? { initial: { opacity: 0, y: 6 }, animate: { opacity: 1, y: 0, transition: { duration: duration.surface, ease: ease.out, delay } } }
     : {};
@@ -51,15 +56,15 @@ export function HomeView({ presence, headingRef, attentive, nudge, firstRun, onS
           <PegolesPresence mode={presence} size={52} look={attentive ? { x: 0, y: 1 } : null} nudge={nudge}
             interactive pressable onPress={onPressPresence} field={false} />
         </m.div>
-        <m.h1 id="home-title" ref={headingRef} tabIndex={-1} className="home__title" {...enter(0.04)}>What should Pegoles do?</m.h1>
-        <m.p className="home__lead" {...enter(0.08)}>It works on its own computer, never yours. Watch it work and stop it whenever you like.</m.p>
+        <m.h1 id="home-title" ref={headingRef} tabIndex={-1} className="home__title" {...enter(0.04)}>{t("What should {name} do?", { name: preferences.avatar.name })}</m.h1>
+        <m.p className="home__lead" {...enter(0.08)}>{t("It works on its own computer, never yours. Watch it work and stop it whenever you like.")}</m.p>
         {firstRun && (
-          <m.ul className="starters" aria-label="A few places to start" {...enter(0.12)}>
+          <m.ul className="starters" aria-label={t("A few places to start")} {...enter(0.12)}>
             {STARTERS.map((starter) => (
-              <li key={starter.label}>
-                <button type="button" className="starter" onClick={() => onStarter(starter.prompt)}>
+              <li key={t(starter.label)}>
+                <button type="button" className="starter" onClick={() => onStarter(t(starter.prompt))}>
                   <span className="starter__icon" aria-hidden="true">{starter.icon}</span>
-                  <span className="starter__label">{starter.label}</span>
+                  <span className="starter__label">{t(starter.label)}</span>
                 </button>
               </li>
             ))}
