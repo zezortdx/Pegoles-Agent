@@ -1177,21 +1177,48 @@ mod tests {
         cfg
     }
 
-    // `/bin/sh -I` is not valid; the fake uses a wrapper that ignores it.
+    // Use the installed interpreter: exec of a freshly written wrapper can
+    // fail with ETXTBSY on Linux when another test briefly inherits a writer.
+    // Python accepts the supervisor's -I; it only reads the fixture before
+    // replacing itself with the shell, so the PID and process group stay put.
     fn sh_cfg(tmp: &Path, body: &str) -> MlxWorkerConfig {
-        let wrapper = tmp.join("python");
-        std::fs::write(&wrapper, "#!/bin/sh\nshift\nexec /bin/sh \"$@\"\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        let wrapper = tmp.join("worker.py");
+        std::fs::write(
+            &wrapper,
+            "import os\nfrom pathlib import Path\nos.execv('/bin/sh', ['/bin/sh', str(Path(__file__).with_name('worker.sh'))])\n",
+        )
+        .unwrap();
         let mut cfg = fake_worker(tmp, body);
-        cfg.python = wrapper;
+        cfg.python = PathBuf::from("/usr/bin/python3");
+        cfg.script = wrapper;
         cfg
     }
 
     const HELLO: &str = r#"read line; echo '{"v":1,"id":1,"ok":true,"protocol":1,"worker_version":"t","mlx":"x","mlx_vlm":"y","metal":true}'"#;
+
+    #[test]
+    #[cfg(unix)]
+    fn writable_fixtures_do_not_prevent_starting_the_fake_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = sh_cfg(tmp.path(), &format!("{HELLO}\nread line\n"));
+        // Linux refuses exec of a file with any open writer (including a
+        // descriptor briefly inherited by a concurrent fork). Keep every
+        // fixture open for writing, without changing its contents.
+        let writers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(entry.unwrap().path())
+                    .unwrap()
+            })
+            .collect();
+        let mut worker = MlxWorkerBackend::new(cfg);
+        worker.spawn().unwrap();
+        assert!(worker.hello_info().is_some());
+        drop(worker);
+        drop(writers);
+    }
 
     #[test]
     #[cfg(unix)]
