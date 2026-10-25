@@ -100,6 +100,7 @@ function AppContent() {
   const [sidebarHidden, setSidebarHidden] = useState(readSidebarHidden);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [nativeApprovalOpen, setNativeApprovalOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
   const [ackTask, setAckTask] = useState<string | null>(null);
@@ -300,14 +301,20 @@ function AppContent() {
       pause: api.pauseComputer,
       resume: api.resumeComputer,
       stop: api.stopComputer,
-      take: api.takeControl,
+      take: async () => {
+        const meta = snapshot.meta;
+        if (!meta || typeof status?.control_generation !== "number" || !status.snapshot_control_available) throw new Error(t("Taking control needs a recent guest screen and available input."));
+        setNativeApprovalOpen(true);
+        try { return await api.takeControl({ computer_id: meta.computer_id, frame_id: meta.frame_id, width: meta.width_px, height: meta.height_px, generation: status.control_generation }); }
+        finally { setNativeApprovalOpen(false); }
+      },
       return: api.returnControl,
       install: api.installComputerImage,
       "cancel-install": api.cancelComputerImageInstall,
     };
     if (command === "reset" || command === "remove") { manageComputer(command); return; }
     void run("computer", actions[command]);
-  }, [run, status?.computer_created, manageComputer]);
+  }, [run, status?.computer_created, status?.control_generation, status?.snapshot_control_available, snapshot.meta, manageComputer]);
   const interrupt = useCallback(() => { stopTask(status?.active_task ?? null); }, [stopTask, status?.active_task]);
 
   // ── Pegoles Local ──────────────────────────────────────────────
@@ -354,7 +361,9 @@ function AppContent() {
   const setupLabel = provider === "anthropic" ? undefined : local.stage === "preparing" ? t("Setting up Pegoles Local…") : t("Set up Pegoles Local");
 
   const resolveApproval = async (id: string, decision: "approve_once" | "deny") => {
+    setNativeApprovalOpen(true);
     try { await api.resolveApproval(id, decision); } finally {
+      setNativeApprovalOpen(false);
       await core.refresh();
       window.requestAnimationFrame(() => document.querySelector<HTMLElement>(".approval-inbox > summary")?.focus());
     }
@@ -569,7 +578,7 @@ function AppContent() {
               managing={core.busy.general}
               error={core.errors.computer}
               moving={motion !== null}
-              obscured={customizerOpen || sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
+              obscured={nativeApprovalOpen || customizerOpen || sidebarMode === "drawer" || paletteOpen || level === null || (mounted !== "side" && !!core.errors.general)}
               focusOnOpen={panelFocus}
               onCommand={runComputer}
               onManage={manageComputer}

@@ -13,7 +13,18 @@ export type GuestRuntimeState =
   | "incompatible"
   | "error";
 
+export interface HumanAuthority { computer_id: string; frame_id: string; width: number; height: number; generation: number }
+export type HumanInput =
+  | { type: "move"; x: number; y: number }
+  | { type: "down" | "up"; x: number; y: number; button: "primary" | "secondary" | "middle" }
+  | { type: "scroll"; x: number; y: number; dx: number; dy: number }
+  | { type: "key"; key: string }
+  | { type: "chord"; keys: string[] }
+  | { type: "text"; text: string };
+
 export interface StatusPayload {
+  snapshot_control_available?: boolean;
+  control_generation?: number;
   viewport_state: ViewportState;
   viewport_issue: string | null;
   display_available: boolean;
@@ -346,7 +357,8 @@ export const api = {
   suggestedEffects: () => invoke<{ tier: EffectsTier }>("suggested_effects"),
   setDisplayGeometry: (geometry: DisplayGeometry) => invoke("display_set_geometry", { geometry }),
   detachDisplay: () => invoke("display_detach"),
-  takeControl: () => invoke("take_control"),
+  takeControl: (authority: HumanAuthority) => invoke("take_control", { authority }),
+  humanInput: (authority: HumanAuthority, input: HumanInput): Promise<void> => invoke("human_input", { authority, input }),
   returnControl: () => invoke("return_control"),
   getStatus: () => invoke<StatusPayload>("get_status"),
   createComputer: () => invoke<ComputerPayload>("create_computer"),

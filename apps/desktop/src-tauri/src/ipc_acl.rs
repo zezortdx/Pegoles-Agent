@@ -242,6 +242,8 @@ fn the_acl_allows_the_product_commands_and_denies_the_rest() {
         "set_provider",
         "enter_api_key",
         "capture_screen",
+        "human_input",
+        "take_control",
         "get_preferences",
         "set_preferences",
         "get_history_status",

@@ -31,6 +31,7 @@
     "allow-display-set-geometry",
     "allow-display-detach",
     "allow-take-control",
+    "allow-human-input",
     "allow-return-control",
     "allow-create-task",
     "allow-list-tasks",

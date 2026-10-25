@@ -874,19 +874,52 @@ pub async fn display_detach(state: tauri::State<'_, SharedState>) -> Result<Comp
 }
 
 /// Take Control: route the HUMAN's keyboard/pointer into the isolated
-/// computer. Fails unless the display is ready (viewport `ready`).
+/// computer after native confirmation of an exact fresh snapshot authority.
 #[tauri::command]
 pub async fn take_control(
     state: tauri::State<'_, SharedState>,
-    script: tauri::State<'_, ScriptCancel>,
-    agent: tauri::State<'_, AgentSupervisor>,
+    consent: tauri::State<'_, ConsentGate>,
+    authority: pegoles_core::human::HumanAuthority,
 ) -> Result<ComputerView, String> {
-    script.trip();
-    // The agent stops first, before this command waits for the state.
-    agent.cancel(None);
-    with_state(state.inner().clone(), |s| {
-        s.registry.take_control().map_err(err)?;
-        Ok(s.registry.computer_view(s.preparing_image))
+    let shared = state.inner().clone();
+    let consent = consent.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::approval_commands::take_control(&shared, consent.0.as_ref(), &authority)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+// At most one human event may wait for/hold Core. Floods do not create a
+// retained input queue. The guard covers the blocking worker's whole lifetime.
+static HUMAN_INPUT_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct HumanInputPermit;
+impl Drop for HumanInputPermit {
+    fn drop(&mut self) {
+        HUMAN_INPUT_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+#[tauri::command]
+pub async fn human_input(
+    state: tauri::State<'_, SharedState>,
+    authority: pegoles_core::human::HumanAuthority,
+    input: pegoles_core::human::HumanInput,
+) -> Result<(), String> {
+    if HUMAN_INPUT_BUSY
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("Human input is busy".into());
+    }
+    let permit = HumanInputPermit;
+    with_state(state.inner().clone(), move |s| {
+        let _permit = permit;
+        s.registry.human_input(&authority, input)
     })
     .await
 }

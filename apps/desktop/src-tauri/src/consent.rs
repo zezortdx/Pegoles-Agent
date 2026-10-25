@@ -21,6 +21,9 @@ pub const KEY_CANCELLED: &str = "the macOS key window was cancelled, so nothing 
 /// The questions Pegoles asks outside the webview. A trait so tests can
 /// answer them; `Err` means the question could not be asked at all.
 pub trait Consent: Send + Sync {
+    fn confirm_takeover(&self) -> Result<bool, String> {
+        Ok(false)
+    }
     fn confirm_agent_input(&self, _summary: &str) -> Result<bool, String> {
         Ok(false)
     }
@@ -238,6 +241,9 @@ mod native {
     }
 
     impl Consent for NativeConsent {
+        fn confirm_takeover(&self) -> Result<bool, String> {
+            self.confirm_saved_input(crate::input_consent::InputQuestion::Takeover)
+        }
         fn confirm_agent_input(&self, summary: &str) -> Result<bool, String> {
             self.confirm_saved_input(crate::input_consent::InputQuestion::Action(summary))
         }

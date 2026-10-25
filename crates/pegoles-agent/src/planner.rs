@@ -93,6 +93,18 @@ pub enum PlannerError {
 /// Decides the next actions. Implementations may block (network); they
 /// must honor `cancel` promptly and never run actions themselves.
 pub trait Planner: Send {
+    /// Settle outstanding tool IDs and refresh observation after human intervention.
+    /// Providers without this contract fail closed rather than reusing a stale screen.
+    fn refresh(
+        &mut self,
+        _outcomes: Vec<CallOutcome>,
+        _screen: &Screenshot,
+    ) -> Result<(), PlannerError> {
+        Err(PlannerError::Protocol(
+            "planner cannot refresh after intervention".into(),
+        ))
+    }
+
     /// Human-readable planner name for logs ("claude-opus-5", "script").
     fn name(&self) -> String;
 

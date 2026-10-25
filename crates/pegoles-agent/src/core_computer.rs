@@ -35,6 +35,7 @@ pub struct CoreComputer<A: CoreAccess> {
     access: A,
     bus: EventBus,
     ctx: PolicyContext,
+    expected_generation: std::sync::atomic::AtomicU64,
     /// When the executor was last entered: actions, waits and
     /// observations all count against its rate brake, so all of them are
     /// paced to it instead of being rejected by it.
@@ -49,6 +50,7 @@ impl<A: CoreAccess> CoreComputer<A> {
             access,
             bus,
             ctx: PolicyContext::default(),
+            expected_generation: std::sync::atomic::AtomicU64::new(0),
             last_act: std::sync::Mutex::new(None),
             prepare_timeout: Duration::from_secs(180),
         }
@@ -87,6 +89,17 @@ impl<A: CoreAccess> CoreComputer<A> {
     ) -> ActionResult {
         self.pace();
         let result = self.access.with_core(|r, tasks| {
+            if r.control_generation()
+                != self
+                    .expected_generation
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                || r.control_owner() != ControlOwner::Agent
+            {
+                if r.agent_input_cancelled() {
+                    cancel.cancel();
+                }
+                return Self::interrupted("Not executed: human intervened; refresh and replan");
+            }
             let result = r
                 .execute_action(task, action, false, &self.ctx, cancel, false)
                 .0;
@@ -130,7 +143,7 @@ impl<A: CoreAccess> CoreComputer<A> {
                     std::thread::sleep(Duration::from_millis(50))
                 }
                 pegoles_core::approvals::ApprovalProgress::Continue => self.pace(),
-                pegoles_core::approvals::ApprovalProgress::Stopped { result, .. } => {
+                pegoles_core::approvals::ApprovalProgress::Stopped { reason, result } => {
                     // These reasons are bounded Core copy/counts, never guest or typed text.
                     self.bus.publish(AgentEvent::AgentMessage {
                         task_id: task,
@@ -138,7 +151,15 @@ impl<A: CoreAccess> CoreComputer<A> {
                         text: result.message.clone(),
                         at: chrono::Utc::now(),
                     });
-                    cancel.cancel();
+                    if reason != pegoles_core::approvals::ApprovalStopReason::ControlChanged
+                        || self.access.with_core(|r, _| r.agent_input_cancelled())
+                    {
+                        cancel.cancel();
+                    } else {
+                        self.access.with_core(|_, tasks| {
+                            let _ = tasks.start_task(&task);
+                        });
+                    }
                     return result;
                 }
                 pegoles_core::approvals::ApprovalProgress::Finished(result) => {
@@ -219,6 +240,43 @@ enum Readiness {
 }
 
 impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
+    fn control_generation(&self) -> u64 {
+        self.access.with_core(|r, _| r.control_generation())
+    }
+    fn bind_control(&self, generation: u64) {
+        self.expected_generation
+            .store(generation, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn await_control(&self, cancel: &CancellationToken) -> Result<u64, String> {
+        loop {
+            if cancel.is_cancelled() {
+                return Err("Task cancelled".into());
+            }
+            let state = self
+                .access
+                .with_core(|r, _| -> Result<Option<u64>, String> {
+                    if r.agent_input_cancelled()
+                        || r.state() != Some(ComputerState::Running)
+                        || !r.input_available()
+                    {
+                        return Err("Computer input unavailable".into());
+                    }
+                    if r.control_owner() == ControlOwner::User {
+                        return Ok(None);
+                    }
+                    if r.control_owner() == ControlOwner::None {
+                        r.begin_agent_session(&mut Vec::new())
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(Some(r.control_generation()))
+                })?;
+            if let Some(g) = state {
+                return Ok(g);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     fn prepare(&self, cancel: &CancellationToken) -> Result<(), String> {
         // Create / boot / resume as needed (one lifecycle call per lock).
         self.access.with_core(|r, _| -> Result<(), String> {
@@ -277,11 +335,11 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
             }
         }
         // The run owns agent control until it ends (a human takeover
-        // revokes it and stops the run; see `act`).
+        // revokes it and pauses the same run; see `await_control`).
         self.access.with_core(|r, _| {
             let mut out = Vec::new();
             r.begin_agent_session(&mut out)
-                .map(|_| ())
+                .map(|_| self.bind_control(r.control_generation()))
                 .map_err(|e| e.to_string())
         })
     }
@@ -289,6 +347,15 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
     fn observe(&self, task: TaskId, cancel: &CancellationToken) -> Result<Screenshot, String> {
         self.pace();
         let (meta, rgba) = self.access.with_core(|r, _| {
+            if r.control_owner() != ControlOwner::Agent
+                || r.control_generation()
+                    != self
+                        .expected_generation
+                        .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("Human intervened before observation".into());
+            }
+
             let (result, _) = r.execute_action(
                 task,
                 ComputerAction::ObserveScreen,
@@ -319,37 +386,56 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
         action: ComputerAction,
         cancel: &CancellationToken,
     ) -> ActionResult {
-        let owns_control = self
-            .access
-            .with_core(|r, _| r.control_owner() == ControlOwner::Agent);
-        if !owns_control {
-            // The human took the computer (or it paused/stopped): the run
-            // ends here. The executor re-checks ownership under the same
-            // lock as the dispatch, so this early exit is only a fast path.
-            cancel.cancel();
-            return Self::interrupted("the agent no longer controls the computer");
+        let valid = self.access.with_core(|r, _| {
+            if r.agent_input_cancelled() {
+                cancel.cancel();
+            }
+            r.control_owner() == ControlOwner::Agent
+                && r.control_generation()
+                    == self
+                        .expected_generation
+                        .load(std::sync::atomic::Ordering::SeqCst)
+        });
+        if !valid {
+            return Self::interrupted("Not executed: human intervened; refresh and replan");
         }
         if let ComputerAction::Wait { duration_ms } = action {
             self.pace();
-            let ticket = match self
-                .access
-                .with_core(|r, _| r.begin_wait(task, duration_ms, &self.ctx))
-            {
+            let ticket = match self.access.with_core(|r, _| {
+                if r.control_generation()
+                    != self
+                        .expected_generation
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    || r.control_owner() != ControlOwner::Agent
+                {
+                    return Err(Self::interrupted("Not executed: human intervened"));
+                }
+                r.begin_wait(task, duration_ms, &self.ctx)
+            }) {
                 Ok(t) => t,
                 Err(result) => return result,
             };
             let deadline = Instant::now() + Duration::from_millis(ticket.duration_ms() as u64);
             let mut interrupted = false;
             while Instant::now() < deadline {
-                if cancel.is_cancelled() {
+                if cancel.is_cancelled()
+                    || self.control_generation()
+                        != self
+                            .expected_generation
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                {
                     interrupted = true;
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50).min(deadline - Instant::now()));
             }
-            return self
-                .access
-                .with_core(|r, _| r.end_wait(ticket, interrupted));
+            return self.access.with_core(|r, _| {
+                let changed = r.control_generation()
+                    != self
+                        .expected_generation
+                        .load(std::sync::atomic::Ordering::SeqCst);
+                r.end_wait(ticket, interrupted || changed)
+            });
         }
         let result = match action {
             ComputerAction::TypeText { text, sensitive }
@@ -359,7 +445,9 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
             }
             action => self.execute(task, action, cancel),
         };
-        if result.outcome == ActionOutcome::Interrupted {
+        if result.outcome == ActionOutcome::Interrupted
+            && self.access.with_core(|r, _| r.agent_input_cancelled())
+        {
             cancel.cancel();
         }
         result
@@ -559,6 +647,66 @@ mod tests {
     }
 
     #[test]
+    fn approval_intervention_stops_only_the_exact_action_not_the_task() {
+        let (core, bus, _dir) = rig();
+        let task = core
+            .lock()
+            .unwrap()
+            .1
+            .submit_task("keep objective")
+            .unwrap()
+            .id;
+        let computer = Arc::new(computer(&core, bus));
+        let token = CancellationToken::new();
+        computer.prepare(&token).unwrap();
+        {
+            let mut g = core.lock().unwrap();
+            g.1.start_task(&task).unwrap();
+            g.0.set_ask_before_input(true);
+        }
+        let c = computer.clone();
+        let cancel = token.clone();
+        let worker = std::thread::spawn(move || {
+            c.act(
+                task,
+                ComputerAction::KeyPress { key: "Tab".into() },
+                &cancel,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let id = loop {
+            let mut g = core.lock().unwrap();
+            if let Some(p) = g.0.list_approvals().first() {
+                break p.id;
+            }
+            drop(g);
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        {
+            let mut g = core.lock().unwrap();
+            let m = g.0.capture_frame("human", &mut Vec::new()).unwrap();
+            let a = pegoles_core::human::HumanAuthority {
+                computer_id: m.computer_id,
+                frame_id: m.frame_id,
+                width: m.width_px,
+                height: m.height_px,
+                generation: g.0.control_generation(),
+            };
+            g.0.take_snapshot_control(&a).unwrap();
+        }
+        assert_eq!(worker.join().unwrap().outcome, ActionOutcome::Interrupted);
+        assert!(!token.is_cancelled());
+        assert!(core
+            .lock()
+            .unwrap()
+            .0
+            .resolve_approval(id, pegoles_core::approvals::ApprovalDecision::ApproveOnce)
+            .is_err());
+        core.lock().unwrap().0.return_control().unwrap();
+        assert!(computer.await_control(&token).is_ok());
+    }
+    #[test]
     fn denial_stops_the_run_and_publishes_a_safe_reason() {
         let (core, bus, _dir) = rig();
         let mut events = bus.subscribe();
@@ -737,6 +885,127 @@ mod tests {
     }
 
     #[test]
+    fn waiting_for_human_is_unlocked_cancellable_and_resumes_same_session() {
+        struct PauseProbe {
+            core: Arc<Mutex<(ComputerRegistry, TaskManager)>>,
+            seen: std::sync::mpsc::Sender<()>,
+        }
+        impl CoreAccess for PauseProbe {
+            fn with_core<R>(
+                &self,
+                f: impl FnOnce(&mut ComputerRegistry, &mut TaskManager) -> R,
+            ) -> R {
+                let (result, user) = {
+                    let mut g = self.core.lock().unwrap();
+                    let (r, t) = &mut *g;
+                    let result = f(r, t);
+                    (result, r.control_owner() == ControlOwner::User)
+                };
+                if user {
+                    let _ = self.seen.send(());
+                }
+                result
+            }
+        }
+        for stop in [false, true] {
+            let (core, bus, _dir) = rig();
+            let cancel = CancellationToken::new();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let computer = Arc::new(CoreComputer::new(
+                PauseProbe {
+                    core: core.clone(),
+                    seen: tx,
+                },
+                bus,
+            ));
+            computer.prepare(&cancel).unwrap();
+            {
+                let mut g = core.lock().unwrap();
+                let m = g.0.capture_frame("human", &mut Vec::new()).unwrap();
+                let a = pegoles_core::human::HumanAuthority {
+                    computer_id: m.computer_id,
+                    frame_id: m.frame_id,
+                    width: m.width_px,
+                    height: m.height_px,
+                    generation: g.0.control_generation(),
+                };
+                g.0.take_snapshot_control(&a).unwrap();
+            }
+            let c = computer.clone();
+            let token = cancel.clone();
+            let waiter = std::thread::spawn(move || c.await_control(&token));
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            {
+                let mut g = core.lock().unwrap();
+                assert_eq!(g.0.control_owner(), ControlOwner::User);
+                if stop {
+                    cancel.cancel()
+                } else {
+                    g.0.return_control().unwrap();
+                }
+            }
+            assert_eq!(waiter.join().unwrap().is_ok(), !stop);
+            assert_eq!(cancel.is_cancelled(), stop);
+        }
+    }
+
+    #[test]
+    fn snapshot_intervention_preserves_run_and_rejects_preintervention_action() {
+        let (core, bus, _dir) = rig();
+        let task = core
+            .lock()
+            .unwrap()
+            .1
+            .submit_task("same objective")
+            .unwrap()
+            .id;
+        let computer = computer(&core, bus);
+        let cancel = CancellationToken::new();
+        computer.prepare(&cancel).unwrap();
+        let before = computer.control_generation();
+        {
+            let mut g = core.lock().unwrap();
+            let m = g.0.capture_frame("human", &mut Vec::new()).unwrap();
+            let a = pegoles_core::human::HumanAuthority {
+                computer_id: m.computer_id,
+                frame_id: m.frame_id,
+                width: m.width_px,
+                height: m.height_px,
+                generation: g.0.control_generation(),
+            };
+            g.0.take_snapshot_control(&a).unwrap();
+        }
+        let result = computer.act(
+            task,
+            ComputerAction::KeyPress { key: "Tab".into() },
+            &cancel,
+        );
+        assert_eq!(result.outcome, ActionOutcome::Interrupted);
+        assert!(!cancel.is_cancelled());
+        core.lock().unwrap().0.return_control().unwrap();
+        let epoch = computer.await_control(&cancel).unwrap();
+        assert!(epoch > before);
+        let stale = computer.act(
+            task,
+            ComputerAction::KeyPress { key: "Tab".into() },
+            &cancel,
+        );
+        assert_eq!(stale.outcome, ActionOutcome::Interrupted);
+        computer.bind_control(epoch);
+        computer.observe(task, &cancel).unwrap();
+        assert_eq!(
+            computer
+                .act(
+                    task,
+                    ComputerAction::KeyPress { key: "Tab".into() },
+                    &cancel
+                )
+                .outcome,
+            ActionOutcome::Executed
+        );
+    }
+
+    #[test]
     fn human_takeover_ends_the_run() {
         let (core, bus, _dir) = rig();
         let task = core.lock().unwrap().1.submit_task("x").unwrap().id;
@@ -808,6 +1077,7 @@ mod tests {
         events: Mutex<tokio::sync::broadcast::Receiver<AgentEvent>>,
         typed_per_hold: Mutex<Vec<Vec<String>>>,
         take_over_after: Option<usize>,
+        human_intervention: bool,
     }
 
     impl CoreAccess for Probe {
@@ -822,8 +1092,22 @@ mod tests {
                     .map(Vec::len)
                     .sum();
                 if self.take_over_after.is_some_and(|n| parts >= n) {
-                    guard.0.cancel_agent_input("takeover");
-                    guard.0.end_agent_session(&mut Vec::new());
+                    if self.human_intervention {
+                        if guard.0.control_owner() == ControlOwner::Agent {
+                            let m = guard.0.capture_frame("human", &mut Vec::new()).unwrap();
+                            let a = pegoles_core::human::HumanAuthority {
+                                computer_id: m.computer_id,
+                                frame_id: m.frame_id,
+                                width: m.width_px,
+                                height: m.height_px,
+                                generation: guard.0.control_generation(),
+                            };
+                            guard.0.take_snapshot_control(&a).unwrap();
+                        }
+                    } else {
+                        guard.0.cancel_agent_input("explicit stop");
+                        guard.0.end_agent_session(&mut Vec::new());
+                    }
                 }
                 let (r, t) = &mut *guard;
                 f(r, t)
@@ -852,6 +1136,7 @@ mod tests {
             events: Mutex::new(bus.subscribe()),
             typed_per_hold: Mutex::new(Vec::new()),
             take_over_after,
+            human_intervention: false,
         };
         let mut computer = CoreComputer::new(probe, bus);
         computer.prepare_timeout = Duration::from_secs(3);
@@ -930,6 +1215,42 @@ mod tests {
         assert!(
             computer.access.typed_per_hold.lock().unwrap().is_empty(),
             "nothing reached the guest"
+        );
+    }
+
+    #[test]
+    fn human_intervention_between_typing_parts_preserves_acknowledged_prefix_and_run() {
+        let (mut computer, task, _dir) = probed(Some(1));
+        computer.access.human_intervention = true;
+        let cancel = CancellationToken::new();
+        let result = computer.act(
+            task,
+            ComputerAction::TypeText {
+                text: text_of(1000),
+                sensitive: false,
+            },
+            &cancel,
+        );
+        assert_eq!(result.outcome, ActionOutcome::Interrupted);
+        assert!(result.message.contains("first 256 of 1000"));
+        assert!(!cancel.is_cancelled());
+        assert_eq!(computer.access.typed_per_hold.lock().unwrap().len(), 1);
+        computer.access.take_over_after = None;
+        computer
+            .access
+            .core
+            .lock()
+            .unwrap()
+            .0
+            .return_control()
+            .unwrap();
+        let epoch = computer.await_control(&cancel).unwrap();
+        computer.bind_control(epoch);
+        computer.observe(task, &cancel).unwrap();
+        assert_eq!(
+            computer.access.typed_per_hold.lock().unwrap().len(),
+            1,
+            "return never replays text"
         );
     }
 

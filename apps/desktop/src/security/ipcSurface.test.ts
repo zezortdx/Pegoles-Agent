@@ -17,6 +17,14 @@ const product = import.meta.glob<string>(
 );
 
 describe("IPC surface of the product", () => {
+  it("snapshot input binds the exact confirmed authority with no generic action or host target", async () => {
+    vi.mocked(invoke).mockClear();
+    const authority = { computer_id: "vm", frame_id: "frame", width: 200, height: 100, generation: 4 };
+    await api.takeControl(authority);
+    await api.humanInput(authority, { type: "text", text: "guest only" });
+    await api.returnControl();
+    expect(vi.mocked(invoke).mock.calls).toEqual([["take_control", { authority }], ["human_input", { authority, input: {type:"text",text:"guest only"} }], ["return_control"]]);
+  });
   it("approval decisions expose only an opaque id and closed decision with a separate policy command", async () => {
     vi.mocked(invoke).mockClear();
     await api.getApprovals(); await api.setInputApproval(true); await api.resolveApproval("opaque", "approve_once"); await api.resolveApproval("opaque", "deny");

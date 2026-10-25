@@ -4,6 +4,23 @@ use crate::consent::Consent;
 use pegoles_core::approvals::ApprovalDecision;
 use pegoles_protocol::{ActionId, TaskStatus};
 
+/// Validate before prompting and again under the grant lock. The decider never owns Core.
+pub fn take_control(
+    shared: &SharedState,
+    consent: &dyn Consent,
+    authority: &pegoles_core::human::HumanAuthority,
+) -> Result<pegoles_core::ComputerView, String> {
+    lock_state(shared)
+        .registry
+        .validate_human_authority(authority)?;
+    if !consent.confirm_takeover()? {
+        return Err("Human control was not confirmed".into());
+    }
+    let mut state = lock_state(shared);
+    state.registry.take_snapshot_control(authority)?;
+    Ok(state.registry.computer_view(state.preparing_image))
+}
+
 pub fn resolve(
     shared: &SharedState,
     consent: &dyn Consent,
@@ -78,6 +95,17 @@ mod tests {
         invalidate: bool,
     }
     impl Consent for Decider {
+        fn confirm_takeover(&self) -> Result<bool, String> {
+            let mut state = self
+                .shared
+                .try_lock()
+                .expect("Core unlocked during native takeover prompt");
+            if self.invalidate {
+                state.registry.end_agent_session(&mut Vec::new());
+            }
+            Ok(self.answer)
+        }
+
         fn allow_cloud_planner(&self, _: crate::agent::Provider) -> Result<bool, String> {
             panic!("no cloud")
         }
@@ -143,6 +171,40 @@ mod tests {
             .0;
         state.tasks.wait_for_approval(&task).unwrap();
         (Arc::new(Mutex::new(state)), dir, task, result.action_id)
+    }
+    #[test]
+    fn takeover_native_refusal_and_post_prompt_epoch_race_fail_closed() {
+        for (answer, invalidate) in [(false, false), (true, true), (true, false)] {
+            let (shared, _dir, _, _) = rig();
+            let authority = {
+                let mut state = lock_state(&shared);
+                let meta = state
+                    .registry
+                    .capture_frame("takeover-test", &mut Vec::new())
+                    .unwrap();
+                pegoles_core::human::HumanAuthority {
+                    computer_id: meta.computer_id,
+                    frame_id: meta.frame_id,
+                    width: meta.width_px,
+                    height: meta.height_px,
+                    generation: state.registry.control_generation(),
+                }
+            };
+            let decider = Decider {
+                shared: shared.clone(),
+                answer,
+                invalidate,
+            };
+            assert_eq!(
+                take_control(&shared, &decider, &authority).is_ok(),
+                answer && !invalidate
+            );
+            assert_eq!(
+                lock_state(&shared).registry.control_owner()
+                    == pegoles_protocol::ControlOwner::User,
+                answer && !invalidate
+            );
+        }
     }
     #[test]
     fn native_refusal_never_grants_and_prompt_races_fail_closed() {

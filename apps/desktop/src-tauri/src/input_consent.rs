@@ -10,6 +10,7 @@ pub(crate) struct InputPrompt {
 pub(crate) enum InputQuestion<'a> {
     Action(&'a str),
     Policy(bool),
+    Takeover,
 }
 
 pub(crate) fn confirm_with_store(
@@ -20,6 +21,13 @@ pub(crate) fn confirm_with_store(
     let preferences = store.read()?;
     let portuguese = preferences.locale == "pt-BR";
     let (message, confirm) = match question {
+        InputQuestion::Takeover => {
+            if portuguese {
+                ("Permitir que esta janela envie mouse e teclado somente à máquina virtual durante esta sessão de controle? O agente aguardará. Devolver o controle encerra esta permissão; uma nova sessão exige outra confirmação.".into(), "Assumir controle")
+            } else {
+                ("Allow this window to send mouse and keyboard input only to the virtual machine during this control session? The agent will wait. Giving control back ends this permission; a new session requires another confirmation.".into(), "Take control")
+            }
+        }
         InputQuestion::Action(summary) => {
             let (en, pt) = match summary {
                 "VM input: type" => ("Type text", "Digitar texto"),
@@ -184,6 +192,24 @@ mod tests {
             ))
             .is_err()
         );
+    }
+    #[test]
+    fn takeover_prompts_are_localized_and_session_scoped() {
+        let f = Fixture::new();
+        for (locale, button, body) in [
+            ("en", "Take control", "this control session"),
+            ("pt-BR", "Assumir controle", "esta sessão de controle"),
+        ] {
+            f.locale(locale);
+            assert!(
+                !confirm_with_store(&f.store(), InputQuestion::Takeover, |prompt| {
+                    assert_eq!(prompt.confirm, button);
+                    assert!(prompt.message.contains(body));
+                    Ok(false)
+                })
+                .unwrap()
+            );
+        }
     }
     #[test]
     fn arbitrary_summary_is_rejected_before_native_decider() {

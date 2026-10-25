@@ -48,6 +48,7 @@ pub fn default_backend_kind() -> BackendKind {
 }
 
 pub struct ComputerRegistry {
+    pub(crate) human: crate::human::HumanState,
     pub(crate) approvals: crate::approvals::Approvals,
     pub(crate) backend: Option<Box<dyn ComputerBackend>>,
     /// Platform framebuffer adapter (Phase 4) + display/control state.
@@ -103,6 +104,7 @@ impl ComputerRegistry {
     pub fn with_dirs(bus: EventBus, kind: BackendKind, data_dir: PathBuf) -> Self {
         Self {
             approvals: crate::approvals::Approvals::default(),
+            human: crate::human::HumanState::default(),
             backend: None,
             display: DisplaySlot::unavailable(),
             kind,

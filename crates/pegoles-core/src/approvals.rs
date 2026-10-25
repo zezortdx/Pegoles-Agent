@@ -117,7 +117,14 @@ impl ComputerRegistry {
     pub(crate) fn invalidate_approvals(&mut self) {
         self.approvals.generation = self.approvals.generation.wrapping_add(1);
         for p in std::mem::take(&mut self.approvals.pending) {
-            self.remember_pending_stop(p, ApprovalStopReason::ControlChanged);
+            let reason = if p.decision == Some(ApprovalDecision::Deny) {
+                ApprovalStopReason::Denied
+            } else if Instant::now() >= p.deadline {
+                ApprovalStopReason::Expired
+            } else {
+                ApprovalStopReason::ControlChanged
+            };
+            self.remember_pending_stop(p, reason);
         }
     }
     fn settle_approval(&mut self, p: &Pending, result: &ActionResult) {
@@ -418,6 +425,33 @@ mod tests {
         ));
         assert!(r.audit_rows(500).iter().all(|a| a.outcome != "Executed"));
         assert!(r.list_approvals().is_empty());
+    }
+    #[test]
+    fn takeover_never_turns_explicit_denial_or_expiry_into_resumable_intervention() {
+        for expired in [false, true] {
+            let (mut r, _dir) = rig();
+            let task = TaskId::new();
+            let id = queue(&mut r, task);
+            if expired {
+                r.approvals.pending[0].deadline = Instant::now();
+            } else {
+                r.resolve_approval(id, ApprovalDecision::Deny).unwrap();
+            }
+            r.invalidate_approvals();
+            let ApprovalProgress::Stopped { reason, .. } =
+                r.poll_approval(id, task, &CancellationToken::new())
+            else {
+                panic!("not stopped")
+            };
+            assert_eq!(
+                reason,
+                if expired {
+                    ApprovalStopReason::Expired
+                } else {
+                    ApprovalStopReason::Denied
+                }
+            );
+        }
     }
     #[test]
     fn deny_cancel_wrong_task_and_replay_never_dispatch() {

@@ -26,6 +26,14 @@ use crate::planner::{
 /// The computer as the runner sees it. Implemented by the desktop app
 /// over its single-owner app state; by fakes in tests.
 pub trait AgentComputer: Send + Sync {
+    fn control_generation(&self) -> u64 {
+        0
+    }
+    fn await_control(&self, _cancel: &CancellationToken) -> Result<u64, String> {
+        Ok(self.control_generation())
+    }
+    fn bind_control(&self, _generation: u64) {}
+
     /// Make the computer usable for agent input (created, running, guest
     /// runtime ready, input advertised). Bounded; honors `cancel`.
     fn prepare(&self, cancel: &CancellationToken) -> Result<(), String>;
@@ -305,6 +313,11 @@ impl Run<'_> {
                 .cancelled()
                 .unwrap_or((RunEnd::Failed, format!("The computer is not ready: {e}")));
         }
+        let mut generation = match self.computer.await_control(self.cancel) {
+            Ok(g) => g,
+            Err(e) => return self.cancelled().unwrap_or((RunEnd::Failed, e)),
+        };
+        self.computer.bind_control(generation);
         let first = match self.computer.observe(self.task, self.cancel) {
             Ok(shot) => shot,
             Err(e) => {
@@ -331,6 +344,26 @@ impl Run<'_> {
                     format!("Stopped: the task used all {} planning turns.", self.turns),
                 );
             }
+            let current = match self.computer.await_control(self.cancel) {
+                Ok(g) => g,
+                Err(e) => return self.cancelled().unwrap_or((RunEnd::Failed, e)),
+            };
+            if current != generation {
+                self.computer.bind_control(current);
+                let screen = match self.computer.observe(self.task, self.cancel) {
+                    Ok(s) => s,
+                    Err(_) if self.computer.control_generation() != current => continue,
+                    Err(e) => return self.cancelled().unwrap_or((RunEnd::Failed, e)),
+                };
+                if self.computer.control_generation() != current {
+                    continue;
+                }
+                if let Err(e) = planner.refresh(std::mem::take(&mut outcomes), &screen) {
+                    return (RunEnd::Failed, planner_failure(&e));
+                }
+                generation = current;
+                failed_turns = 0;
+            }
             self.turns += 1;
             let turn = match planner.next(std::mem::take(&mut outcomes), self.cancel) {
                 Ok(turn) => turn,
@@ -341,6 +374,21 @@ impl Run<'_> {
                 }
                 Err(e) => return (RunEnd::Failed, planner_failure(&e)),
             };
+            if self.computer.control_generation() != generation {
+                if let PlannerTurn::Calls { calls, .. } = turn {
+                    outcomes = calls
+                        .into_iter()
+                        .map(|c| CallOutcome {
+                            call_id: c.call_id,
+                            result: Err(
+                                "Not executed: human intervened; refresh and replan.".into()
+                            ),
+                            skipped: true,
+                        })
+                        .collect();
+                }
+                continue;
+            }
             match turn {
                 PlannerTurn::Done { notes, summary } => {
                     for n in &notes {
@@ -349,10 +397,16 @@ impl Run<'_> {
                     // Evidence of the final state, recorded in the event
                     // stream (FrameObserved) before the task closes.
                     if let Err(e) = self.computer.observe(self.task, self.cancel) {
+                        if self.computer.control_generation() != generation {
+                            continue;
+                        }
                         return self.cancelled().unwrap_or((
                             RunEnd::Failed,
                             format!("Could not capture the final screen: {e}"),
                         ));
+                    }
+                    if self.computer.control_generation() != generation {
+                        continue;
                     }
                     return (RunEnd::Completed, summary);
                 }
@@ -377,6 +431,10 @@ impl Run<'_> {
                     }
                     if let Some(reason) = self.stop.take() {
                         return (RunEnd::Failed, reason);
+                    }
+                    if self.computer.control_generation() != generation {
+                        outcomes = batch;
+                        continue;
                     }
                     let any_failed = batch.iter().any(|o| o.result.is_err());
                     // A turn that only looks at the screen (e.g. the local
@@ -549,6 +607,8 @@ mod tests {
         statuses: Mutex<Vec<TaskStatus>>,
         events: Mutex<Vec<AgentEvent>>,
         observed: Mutex<u32>,
+        epoch: std::sync::atomic::AtomicU64,
+        intervene_on_observation: Option<u32>,
         prepare_error: Option<String>,
         deny_clicks: bool,
         cancel_on_act: Option<CancellationToken>,
@@ -567,11 +627,19 @@ mod tests {
     }
 
     impl AgentComputer for FakeComputer {
+        fn control_generation(&self) -> u64 {
+            self.epoch.load(Ordering::SeqCst)
+        }
         fn prepare(&self, _cancel: &CancellationToken) -> Result<(), String> {
             self.prepare_error.clone().map_or(Ok(()), Err)
         }
         fn observe(&self, _t: TaskId, _c: &CancellationToken) -> Result<Screenshot, String> {
-            *self.observed.lock().unwrap() += 1;
+            let mut observed = self.observed.lock().unwrap();
+            *observed += 1;
+            if self.intervene_on_observation == Some(*observed) {
+                self.epoch.fetch_add(2, Ordering::SeqCst);
+                return Err("human took and returned control before capture".into());
+            }
             Ok(shot())
         }
         fn act(&self, _t: TaskId, action: ComputerAction, c: &CancellationToken) -> ActionResult {
@@ -634,6 +702,151 @@ mod tests {
                 key: "Enter".into(),
             })]),
         }
+    }
+
+    #[test]
+    fn blocked_planner_take_and_return_discards_calls_and_conclusions() {
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            mpsc,
+        };
+        struct EpochComputer {
+            inner: FakeComputer,
+            epoch: std::sync::Arc<AtomicU64>,
+        }
+        impl AgentComputer for EpochComputer {
+            fn control_generation(&self) -> u64 {
+                self.epoch.load(Ordering::SeqCst)
+            }
+            fn prepare(&self, c: &CancellationToken) -> Result<(), String> {
+                self.inner.prepare(c)
+            }
+            fn observe(&self, t: TaskId, c: &CancellationToken) -> Result<Screenshot, String> {
+                self.inner.observe(t, c)
+            }
+            fn act(&self, t: TaskId, a: ComputerAction, c: &CancellationToken) -> ActionResult {
+                self.inner.act(t, a, c)
+            }
+            fn set_status(&self, t: TaskId, s: TaskStatus) -> Result<(), String> {
+                self.inner.set_status(t, s)
+            }
+            fn publish(&self, e: AgentEvent) {
+                self.inner.publish(e)
+            }
+        }
+        struct Blocked {
+            entered: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+            turn: Option<PlannerTurn>,
+            refreshed: bool,
+        }
+        impl Planner for Blocked {
+            fn name(&self) -> String {
+                "blocked".into()
+            }
+            fn start(&mut self, _: &str, _: &Screenshot) -> Result<(), PlannerError> {
+                Ok(())
+            }
+            fn refresh(
+                &mut self,
+                outcomes: Vec<CallOutcome>,
+                _: &Screenshot,
+            ) -> Result<(), PlannerError> {
+                for outcome in outcomes {
+                    assert_eq!(outcome.call_id, "old");
+                    assert!(outcome.skipped);
+                    assert!(outcome.result.unwrap_err().contains("human intervened"));
+                }
+                self.refreshed = true;
+                Ok(())
+            }
+            fn next(
+                &mut self,
+                _: Vec<CallOutcome>,
+                _: &CancellationToken,
+            ) -> Result<PlannerTurn, PlannerError> {
+                if let Some(turn) = self.turn.take() {
+                    self.entered.send(()).unwrap();
+                    self.release.recv().unwrap();
+                    Ok(turn)
+                } else {
+                    assert!(self.refreshed);
+                    Ok(PlannerTurn::Done {
+                        notes: vec![],
+                        summary: "fresh".into(),
+                    })
+                }
+            }
+        }
+        for turn in [
+            PlannerTurn::Calls {
+                notes: vec![],
+                calls: vec![click("old")],
+            },
+            PlannerTurn::Done {
+                notes: vec![],
+                summary: "stale".into(),
+            },
+            PlannerTurn::Failed {
+                notes: vec![],
+                reason: "stale".into(),
+            },
+        ] {
+            let epoch = std::sync::Arc::new(AtomicU64::new(0));
+            let c = EpochComputer {
+                inner: FakeComputer::default(),
+                epoch: epoch.clone(),
+            };
+            let (entered, rx) = mpsc::channel();
+            let (tx, release) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mut p = Blocked {
+                    entered,
+                    release,
+                    turn: Some(turn),
+                    refreshed: false,
+                };
+                let r = run_task(
+                    TaskId::new(),
+                    "original objective",
+                    &mut p,
+                    &c,
+                    &RunLimits::default(),
+                    &CancellationToken::new(),
+                );
+                (r, c)
+            });
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            epoch.store(2, Ordering::SeqCst);
+            tx.send(()).unwrap();
+            let (report, c) = worker.join().unwrap();
+            assert_eq!(report.summary, "fresh");
+            assert!(c.inner.acted.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn final_observation_intervention_refreshes_without_ending_the_same_run() {
+        let computer = FakeComputer {
+            intervene_on_observation: Some(3),
+            ..Default::default()
+        };
+        let mut planner =
+            ScriptedPlanner::new(vec![vec![click("once")]], |_| Ok("fresh result".into()));
+        let cancel = CancellationToken::new();
+        let report = run_task(
+            TaskId::new(),
+            "original objective",
+            &mut planner,
+            &computer,
+            &RunLimits::default(),
+            &cancel,
+        );
+        assert_eq!(report.end, RunEnd::Completed);
+        assert_eq!(report.summary, "fresh result");
+        assert!(!cancel.is_cancelled());
+        assert_eq!(computer.acted.lock().unwrap().len(), 1);
+        assert_eq!(*computer.observed.lock().unwrap(), 5);
     }
 
     #[test]

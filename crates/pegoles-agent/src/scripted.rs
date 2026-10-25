@@ -44,6 +44,18 @@ impl ScriptedPlanner {
 }
 
 impl Planner for ScriptedPlanner {
+    fn refresh(
+        &mut self,
+        outcomes: Vec<CallOutcome>,
+        screen: &Screenshot,
+    ) -> Result<(), PlannerError> {
+        if let Some(observer) = self.observer.as_mut() {
+            observer(&outcomes);
+        }
+        self.last_screen = Some(screen.clone());
+        Ok(())
+    }
+
     fn name(&self) -> String {
         "script".to_string()
     }

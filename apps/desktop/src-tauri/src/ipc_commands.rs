@@ -31,6 +31,7 @@ ipc_commands! {
         display_set_geometry,
         display_detach,
         take_control,
+        human_input,
         return_control,
         create_task,
         list_tasks,

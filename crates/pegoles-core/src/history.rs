@@ -103,6 +103,25 @@ impl History {
     pub fn record(&mut self, event: &AgentEvent) {
         // Explicit projections only. No request, diagnostic, key or pixel is serialized.
         match event {
+            AgentEvent::ControlOwnershipChanged {
+                to: pegoles_protocol::ControlOwner::User,
+                ..
+            } => {
+                for record in &mut self.records {
+                    if matches!(
+                        record
+                            .audit
+                            .last()
+                            .map_or(record.task.status, |entry| entry.status),
+                        pegoles_protocol::TaskStatus::Running
+                            | pegoles_protocol::TaskStatus::WaitingForApproval
+                    ) {
+                        self.session_blocked.insert(record.task.id);
+                        record.output_blocked = true;
+                        record.artifact = None;
+                    }
+                }
+            }
             AgentEvent::TaskStatusChanged {
                 task_id, to, at, ..
             } => {

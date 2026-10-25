@@ -493,3 +493,25 @@ fn recovery_directory_scan_has_an_exact_finite_limit_and_leaves_unrelated_files(
     assert_eq!(fs::read(store.path()).unwrap(), canonical);
     assert_eq!(fs::read_dir(parent).unwrap().count(), 257);
 }
+
+#[test]
+fn human_takeover_taints_active_task_even_when_latest_task_snapshot_is_terminal() {
+    let mut history = History::default();
+    let mut a = task("manual assistance");
+    a.status = TaskStatus::Completed;
+    history.update_tasks(&[a.clone()]);
+    history.record(&AgentEvent::TaskStatusChanged {
+        task_id: a.id,
+        from: TaskStatus::Pending,
+        to: TaskStatus::Running,
+        at: Utc::now(),
+    });
+    history.record(&AgentEvent::ControlOwnershipChanged {
+        computer_id: ComputerId::new(),
+        from: pegoles_protocol::ControlOwner::None,
+        to: pegoles_protocol::ControlOwner::User,
+        at: Utc::now(),
+    });
+    history.record(&summary(a.id, "opaque manual sentinel"));
+    assert!(history.detail(a.id).unwrap().artifact.is_none());
+}

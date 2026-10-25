@@ -11,6 +11,7 @@ import { CapabilityGlyph } from "../artifacts/glyphs";
 import { ArrowLeftIcon, CloseIcon, ExitFullscreenIcon, FocusIcon, FullscreenIcon, UnfocusIcon } from "../ui/icons";
 import { ComputerManage, type ManageCommand } from "./ComputerManage";
 import { ComputerStatus } from "./ComputerStatus";
+import { SnapshotControl } from "./SnapshotControl";
 import { ControlStrip } from "./ControlStrip";
 import { Details, Facts } from "./ComputerInfo";
 import { machineLight } from "./MachineScreen";
@@ -176,10 +177,12 @@ export function ComputerPanel(props: ComputerPanelProps) {
                   <>
                     <NativeSlot enabled={props.slotEnabled} obscured={props.obscured || props.moving} onError={props.onSlotError} display={display}>
                       {showSnapshot
-                        ? <img className="screen-snapshot" src={snapshot?.src ?? undefined} alt={t("Latest snapshot of Pegoles’ computer screen")} draggable={false} />
+                        ? snapshot?.meta && typeof status?.control_generation === "number"
+                          ? <SnapshotControl src={snapshot.src ?? ""} meta={snapshot.meta} generation={status.control_generation} enabled={status.control_owner === "user" && status.snapshot_control_available === true && !props.obscured && !props.moving && !busy} />
+                          : <img className="screen-snapshot" src={snapshot?.src ?? undefined} alt={t("Latest snapshot of Pegoles’ computer screen")} draggable={false} />
                         : <ScreenPlaceholder model={model} snapshot={snapshot} />}
                     </NativeSlot>
-                    <AgentCursorOverlay source={actionCursorSource} />
+                    {model.owner !== "user" && <AgentCursorOverlay source={actionCursorSource} />}
                   </>
                 ) : (
                   <ComputerStatus model={model} busy={busy} error={error} onCommand={onCommand} onDismissError={props.onDismissError} />
@@ -192,7 +195,7 @@ export function ComputerPanel(props: ComputerPanelProps) {
               </p>
             )}
             {screenUp && (
-              <ControlStrip model={model} busy={busy} onCommand={onCommand} canTake={props.slotEnabled}
+              <ControlStrip model={model} busy={busy} onCommand={onCommand} canTake={props.slotEnabled || status?.snapshot_control_available === true}
                 snapshotAge={showSnapshot ? ageOf(snapshot?.at ?? null, Math.max(now, snapshot?.at ?? 0)) : null} onRefreshSnapshot={snapshot?.refresh}
                 compact={level === "side"} />
             )}

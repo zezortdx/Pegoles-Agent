@@ -11,6 +11,7 @@ mod display_tests;
 pub mod error;
 pub mod events;
 pub mod history;
+pub mod human;
 pub mod input;
 pub mod registry;
 pub mod tasks;
