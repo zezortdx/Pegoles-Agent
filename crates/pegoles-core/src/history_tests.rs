@@ -515,3 +515,61 @@ fn human_takeover_taints_active_task_even_when_latest_task_snapshot_is_terminal(
     history.record(&summary(a.id, "opaque manual sentinel"));
     assert!(history.detail(a.id).unwrap().artifact.is_none());
 }
+
+// Explicit test boundary also keeps the source-level authority guard aware
+// that the following ownership fixtures cannot compile into production.
+#[cfg(test)]
+#[test]
+fn task_started_during_existing_human_control_is_tainted_without_persisting_authority() {
+    use pegoles_protocol::ControlOwner;
+    for released_to in [ControlOwner::None, ControlOwner::Agent] {
+        let (_dir, store) = store();
+        let mut history = History::default();
+        let computer_id = ComputerId::new();
+        history.record(&AgentEvent::ControlOwnershipChanged {
+            computer_id,
+            from: ControlOwner::None,
+            to: ControlOwner::User,
+            at: Utc::now(),
+        });
+        let mut assisted = task("task started after takeover");
+        // Latest snapshot may already be terminal when events are drained.
+        assisted.status = TaskStatus::Completed;
+        history.update_tasks(&[assisted.clone()]);
+        history.record(&AgentEvent::TaskStatusChanged {
+            task_id: assisted.id,
+            from: TaskStatus::Pending,
+            to: TaskStatus::Running,
+            at: Utc::now(),
+        });
+        history.record(&summary(assisted.id, "opaque startup sentinel"));
+        assert!(history.detail(assisted.id).unwrap().artifact.is_none());
+        store.write(&history, Utc::now()).unwrap();
+        let disk = fs::read_to_string(store.path()).unwrap();
+        assert!(!disk.contains("opaque startup sentinel"));
+        assert!(!disk.contains("human_owned"));
+        let mut recovered = store.read(Utc::now()).unwrap();
+        history.record(&AgentEvent::ControlOwnershipChanged {
+            computer_id,
+            from: ControlOwner::User,
+            to: released_to,
+            at: Utc::now(),
+        });
+        // Both an actual return and restart clear only the ephemeral owner;
+        // the assisted task's privacy marker remains permanently blocked.
+        for history in [&mut history, &mut recovered] {
+            let unassisted = task("ordinary later task");
+            history.update_tasks(std::slice::from_ref(&unassisted));
+            history.record(&AgentEvent::TaskStatusChanged {
+                task_id: unassisted.id,
+                from: TaskStatus::Pending,
+                to: TaskStatus::Running,
+                at: Utc::now(),
+            });
+            history.record(&summary(unassisted.id, "ordinary later result"));
+            assert!(history.detail(unassisted.id).unwrap().artifact.is_some());
+            history.record(&summary(assisted.id, "opaque startup sentinel"));
+            assert!(history.detail(assisted.id).unwrap().artifact.is_none());
+        }
+    }
+}
