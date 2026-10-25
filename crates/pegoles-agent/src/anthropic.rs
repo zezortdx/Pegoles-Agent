@@ -149,6 +149,48 @@ impl AnthropicPlanner {
         }
     }
 
+    fn ingest_outcomes(&mut self, outcomes: Vec<CallOutcome>) {
+        if !outcomes.is_empty() {
+            let new_images = outcomes
+                .iter()
+                .filter(|o| matches!(o.result, Ok(CallOutput::Image(_))))
+                .count();
+            if let Some(shot) = outcomes.iter().rev().find_map(|o| match &o.result {
+                Ok(CallOutput::Image(s)) => Some(s.clone()),
+                _ => None,
+            }) {
+                self.screen = (shot.width.max(1), shot.height.max(1));
+                self.last_image = Some(shot);
+            }
+            let new_bytes: usize = outcomes
+                .iter()
+                .filter_map(|o| match &o.result {
+                    Ok(CallOutput::Image(s)) => Some(s.png.len()),
+                    _ => None,
+                })
+                .sum();
+            let new_text: usize = outcomes
+                .iter()
+                .map(|o| match &o.result {
+                    Ok(CallOutput::Text(t)) | Err(t) => t.len(),
+                    Ok(CallOutput::Image(_)) => 0,
+                })
+                .sum();
+            if self.images + new_images > MAX_IMAGES_PER_CONVERSATION
+                || self.image_bytes + new_bytes > MAX_IMAGE_BYTES_PER_CONVERSATION
+                || self.text_bytes + new_text > MAX_TEXT_BYTES_PER_CONVERSATION
+            {
+                self.rollover(&summarize_outcomes(&outcomes));
+            } else {
+                self.images += new_images;
+                self.image_bytes += new_bytes;
+                self.text_bytes += new_text;
+                self.messages
+                    .push(json!({"role": "user", "content": tool_results(&outcomes)}));
+            }
+        }
+    }
+
     fn remember_notes(&mut self, notes: &[String]) {
         for n in notes {
             if self.recent_notes.len() == 6 {
@@ -217,6 +259,33 @@ fn image_block(shot: &Screenshot) -> Value {
 }
 
 impl Planner for AnthropicPlanner {
+    fn refresh(
+        &mut self,
+        outcomes: Vec<CallOutcome>,
+        screen: &Screenshot,
+    ) -> Result<(), PlannerError> {
+        let acknowledged = summarize_outcomes(&outcomes);
+        self.ingest_outcomes(outcomes);
+        self.screen = (screen.width.max(1), screen.height.max(1));
+        self.cursor = (screen.width / 2, screen.height / 2);
+        self.last_image = Some(screen.clone());
+        if self.images + 1 > MAX_IMAGES_PER_CONVERSATION
+            || self.image_bytes + screen.png.len() > MAX_IMAGE_BYTES_PER_CONVERSATION
+        {
+            self.rollover(&format!(
+                "Human intervened; replan from the latest screenshot. {acknowledged}"
+            ));
+        } else {
+            self.images += 1;
+            self.image_bytes += screen.png.len();
+            self.messages.push(json!({"role":"user","content":[
+                {"type":"text","text":"Human intervened. Old pending calls were not executed. Replan from this fresh screenshot while preserving acknowledged progress."},
+                image_block(screen),
+            ]}));
+        }
+        Ok(())
+    }
+
     fn name(&self) -> String {
         self.cfg.model.clone()
     }
@@ -245,45 +314,7 @@ impl Planner for AnthropicPlanner {
         outcomes: Vec<CallOutcome>,
         cancel: &CancellationToken,
     ) -> Result<PlannerTurn, PlannerError> {
-        if !outcomes.is_empty() {
-            let new_images = outcomes
-                .iter()
-                .filter(|o| matches!(o.result, Ok(CallOutput::Image(_))))
-                .count();
-            if let Some(shot) = outcomes.iter().rev().find_map(|o| match &o.result {
-                Ok(CallOutput::Image(s)) => Some(s.clone()),
-                _ => None,
-            }) {
-                self.screen = (shot.width.max(1), shot.height.max(1));
-                self.last_image = Some(shot);
-            }
-            let new_bytes: usize = outcomes
-                .iter()
-                .filter_map(|o| match &o.result {
-                    Ok(CallOutput::Image(s)) => Some(s.png.len()),
-                    _ => None,
-                })
-                .sum();
-            let new_text: usize = outcomes
-                .iter()
-                .map(|o| match &o.result {
-                    Ok(CallOutput::Text(t)) | Err(t) => t.len(),
-                    Ok(CallOutput::Image(_)) => 0,
-                })
-                .sum();
-            if self.images + new_images > MAX_IMAGES_PER_CONVERSATION
-                || self.image_bytes + new_bytes > MAX_IMAGE_BYTES_PER_CONVERSATION
-                || self.text_bytes + new_text > MAX_TEXT_BYTES_PER_CONVERSATION
-            {
-                self.rollover(&summarize_outcomes(&outcomes));
-            } else {
-                self.images += new_images;
-                self.image_bytes += new_bytes;
-                self.text_bytes += new_text;
-                self.messages
-                    .push(json!({"role": "user", "content": tool_results(&outcomes)}));
-            }
-        }
+        self.ingest_outcomes(outcomes);
         let mut parsed;
         let mut pauses = 0;
         loop {
@@ -1021,6 +1052,36 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("list files"));
+    }
+
+    #[test]
+    fn intervention_refresh_preserves_objective_and_tool_result_order() {
+        let (mut p, seen) = planner_with(vec![
+            json!({"stop_reason":"tool_use","content":[tool_use("old","key",json!({"text":"Tab"}))]}),
+            json!({"stop_reason":"end_turn","content":[{"type":"text","text":"fresh"}]}),
+        ]);
+        p.start("original objective", &shot(100, 100)).unwrap();
+        p.next(vec![], &CancellationToken::new()).unwrap();
+        p.refresh(
+            vec![CallOutcome {
+                call_id: "old".into(),
+                result: Err("Not executed: human intervened".into()),
+                skipped: true,
+            }],
+            &shot(200, 100),
+        )
+        .unwrap();
+        p.next(vec![], &CancellationToken::new()).unwrap();
+        let requests = seen.lock().unwrap();
+        let messages = requests[1]["messages"].as_array().unwrap();
+        assert!(messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("original objective"));
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], "old");
+        assert_eq!(messages[2]["content"][0]["is_error"], true);
+        assert_eq!(messages[3]["content"][1]["type"], "image");
+        assert_eq!(p.screen, (200, 100));
     }
 
     #[test]

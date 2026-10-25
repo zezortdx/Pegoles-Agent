@@ -146,7 +146,9 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
 
 ## Not implemented
 
-- Native VM view / human "take control" input path (embed is a stub).
+- Native embedded VM view (embed remains a stub). Snapshot human input is
+  implemented through real guest capture and native-confirmed Core sessions;
+  Apple silicon installed-app acceptance remains unrun.
 - Raw event replay across restarts. Bounded task metadata, content-free status
   transitions and safe text/table summary results now persist locally; open
   tasks recover as cancelled, without automatic execution or approval.
@@ -197,7 +199,7 @@ bash scripts/release/verify-artifact.sh target/release-artifacts/Pegoles_<v>_arm
    targets; also occasional invalid replies on a fresh screen.
 8. Separate guest users for GUI apps and the runtime (today: same user;
    mitigated by reserved-port auth + non-dumpable runtime).
-9. Native VM view + human input (take control).
+9. Native VM view (snapshot human takeover is implemented; hardware acceptance pending).
 10. Windows: compile and run on real hardware before claiming anything.
 
 ### Agent 2.0 approvals (offline verified)
@@ -211,4 +213,23 @@ Existing policy denials remain unconditional. Full-payload validation precedes
 sliced typing; cancellation reports the completed prefix. The full offline gate
 covers Core/native deciders/UI/IPC and existing history/privacy behavior.
 Installed-app native, VoiceOver and actual-VM acceptance are still pending;
-this does not implement PR5 human takeover/resume behavior.
+PR5 adds snapshot human takeover and same-task resume, described below.
+
+### Agent 2.0 snapshot human takeover
+
+Core exposes snapshot input capability and a monotonic ownership generation.
+A native en/pt-BR confirmation binds one current computer/frame/generation;
+a stale prompt fails closed. The UI accepts bounded mouse, scroll, atomic key/
+chord and manual text events only under confirmed User ownership. Captured
+frames are periodically refreshed, not a native live view. IME is explicitly
+unsupported; paste is limited to 256 characters, without host clipboard APIs.
+A running or newly started task waits outside Core while User owns control,
+within its cancellation and preparation/run deadlines. Initial observations
+retry if ownership changes before the planner starts. Returning releases
+input, refreshes the guest observation and replans; stale calls and conclusions
+are discarded, exact tool IDs and completed prefixes preserved. Approvals
+invalidated by intervention never automatically execute. Denial/expiry remain
+terminal. Active-task result artifacts are suppressed after takeover, including
+secrets entered through individual keys. VM network isolation is unchanged.
+No real VM, native prompt, cloud inference or installed-app visual acceptance
+was run for this change. See RELEASE_GATES for required hardware acceptance.

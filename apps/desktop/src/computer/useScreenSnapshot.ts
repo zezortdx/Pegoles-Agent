@@ -1,3 +1,4 @@
+import type { FrameMetaWire } from "../lib/tauri";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
@@ -10,6 +11,7 @@ export const MIN_INTERVAL_MS = 1500;
 export const IDLE_REFRESH_MS = 8000;
 
 export interface Snapshot {
+  readonly meta?: FrameMetaWire;
   readonly src: string | null;
   /** When the picture was taken (ms since epoch). */
   readonly at: number | null;
@@ -22,11 +24,11 @@ export interface SnapshotOptions {
   readonly enabled: boolean;
   /** Changes whenever Pegoles did something that may have changed the screen. */
   readonly trigger: number;
-  readonly capture: () => Promise<{ png_base64: string }>;
+  readonly capture: () => Promise<{ png_base64: string; meta?: FrameMetaWire }>;
 }
 
 export function useScreenSnapshot({ enabled, trigger, capture }: SnapshotOptions): Snapshot {
-  const [state, setState] = useState<{ src: string | null; at: number | null; error: string | null; loading: boolean }>(
+  const [state, setState] = useState<{ meta?: FrameMetaWire; src: string | null; at: number | null; error: string | null; loading: boolean }>(
     { src: null, at: null, error: null, loading: false },
   );
   const inFlight = useRef(false);
@@ -45,7 +47,7 @@ export function useScreenSnapshot({ enabled, trigger, capture }: SnapshotOptions
     captureRef.current()
       .then((frame) => {
         if (!live.current) return;
-        setState({ src: `data:image/png;base64,${frame.png_base64}`, at: Date.now(), error: null, loading: false });
+        setState({ meta: frame.meta, src: `data:image/png;base64,${frame.png_base64}`, at: Date.now(), error: null, loading: false });
       })
       .catch((reason: unknown) => {
         setState((previous) => ({ ...previous, error: String(reason), loading: false }));

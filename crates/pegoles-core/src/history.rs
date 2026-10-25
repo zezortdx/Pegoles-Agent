@@ -55,6 +55,9 @@ pub struct History {
     // in memory so a later summary cannot regain persistence in this session.
     #[serde(skip)]
     session_blocked: std::collections::HashSet<TaskId>,
+    // Privacy projection only, never a control grant or persisted authority.
+    #[serde(skip)]
+    human_owned: bool,
 }
 impl Default for History {
     fn default() -> Self {
@@ -62,6 +65,7 @@ impl Default for History {
             schema_version: 1,
             records: Vec::new(),
             session_blocked: std::collections::HashSet::new(),
+            human_owned: false,
         }
     }
 }
@@ -103,10 +107,39 @@ impl History {
     pub fn record(&mut self, event: &AgentEvent) {
         // Explicit projections only. No request, diagnostic, key or pixel is serialized.
         match event {
+            AgentEvent::ControlOwnershipChanged { to, .. } => {
+                self.human_owned = *to == pegoles_protocol::ControlOwner::User;
+                if !self.human_owned {
+                    return;
+                }
+                for record in &mut self.records {
+                    if matches!(
+                        record
+                            .audit
+                            .last()
+                            .map_or(record.task.status, |entry| entry.status),
+                        pegoles_protocol::TaskStatus::Running
+                            | pegoles_protocol::TaskStatus::WaitingForApproval
+                    ) {
+                        self.session_blocked.insert(record.task.id);
+                        record.output_blocked = true;
+                        record.artifact = None;
+                    }
+                }
+            }
             AgentEvent::TaskStatusChanged {
                 task_id, to, at, ..
             } => {
+                let human_assisted = self.human_owned
+                    && matches!(to, TaskStatus::Running | TaskStatus::WaitingForApproval);
+                if human_assisted {
+                    self.session_blocked.insert(*task_id);
+                }
                 if let Some(record) = self.records.iter_mut().find(|r| r.task.id == *task_id) {
+                    if human_assisted {
+                        record.output_blocked = true;
+                        record.artifact = None;
+                    }
                     record.audit.push(HistoryEntry {
                         status: *to,
                         at: *at,

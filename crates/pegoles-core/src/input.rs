@@ -268,6 +268,7 @@ impl ComputerRegistry {
         self.invalidate_approvals();
         self.agent_cancel.cancel();
         self.release_pressed_state(reason);
+        let _ = self.release_human_control(&mut Vec::new());
     }
 
     /// Best-effort release of everything the host believes is held.
@@ -302,6 +303,7 @@ impl ComputerRegistry {
     pub fn end_agent_session(&mut self, out: &mut Vec<AgentEvent>) {
         self.invalidate_approvals();
         self.release_pressed_state("session end");
+        let _ = self.release_human_control(out);
         if self.display.control == ControlOwner::Agent {
             if let Some(id) = self.current_id() {
                 self.set_control(id, ControlOwner::None, out);
@@ -322,7 +324,7 @@ impl ComputerRegistry {
 
     /// Current guest pixel size: guest report wins, else configured
     /// display, else honest failure (never invented).
-    fn guest_pixel_size(&self) -> Result<(u32, u32)> {
+    pub(crate) fn guest_pixel_size(&self) -> Result<(u32, u32)> {
         let session = self.graphical_session();
         if let (Some(w), Some(h)) = (session.width_px, session.height_px) {
             if w > 0 && h > 0 {
@@ -1061,6 +1063,7 @@ impl ComputerRegistry {
             .get(&id)
             .map(|f| f.meta.clone())
             .ok_or_else(|| "frame cache lost".to_string())?;
+        self.human.observed = Some((meta.clone(), std::time::Instant::now()));
         self.emit(
             AgentEvent::FrameObserved {
                 computer_id,

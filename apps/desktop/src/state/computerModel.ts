@@ -181,10 +181,10 @@ export function computerModel({ connected, native, status, events }: ComputerInp
   }
   if (owner === "agent" || status.viewport_state === "agent_active") {
     return { ...running, owner: "agent", phase: "agent", chip: t("Active"), headline: t("Pegoles has control"),
-      primary: status.display_attached ? { command: "take", label: t("Take control") } : undefined };
+      primary: (status.display_attached || status.snapshot_control_available === true) ? { command: "take", label: t("Take control") } : undefined };
   }
   return { ...running, phase: "ready", chip: t("Ready"), headline: t("Ready"),
-    primary: status.display_attached ? { command: "take", label: t("Take control") } : undefined };
+    primary: (status.display_attached || status.snapshot_control_available === true) ? { command: "take", label: t("Take control") } : undefined };
 }
 
 /**

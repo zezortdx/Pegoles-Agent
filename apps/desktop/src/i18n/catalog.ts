@@ -1,5 +1,10 @@
 /** Static product copy only. User, model and guest strings are never catalog keys. */
 export const ptBR = {
+  "Guest screen controls": "Controles da tela da máquina virtual",
+  "Focus the guest screen to use it. Ctrl+Alt+Esc gives control back. Paste up to 256 characters; IME composition is unavailable.": "Foque a tela da máquina virtual para usá-la. Ctrl+Alt+Esc devolve o controle. Cole até 256 caracteres; composição IME indisponível.",
+  "Input was not accepted. Refresh the screen and take control again.": "A entrada não foi aceita. Atualize a tela e assuma o controle novamente.",
+  "Taking control needs a recent guest screen and available input.": "Assumir o controle exige uma tela recente e entrada disponível na máquina virtual.",
+
   "Type text in the VM": "Digitar texto na VM",
   "Move the pointer in the VM": "Mover o ponteiro na VM",
   "Click in the VM": "Clicar na VM",

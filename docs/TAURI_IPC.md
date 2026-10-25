@@ -35,7 +35,8 @@ Argument names: Tauri maps top-level JS keys from camelCase
 | `guest_info` / `guest_ping` | — | diagnostics (not used by the product UI) |
 | `get_host_capabilities`, `suggested_config`, `suggested_effects`, `accessibility_display` | … | host facts |
 | `display_set_geometry` / `display_detach` | … | native view (stub on macOS today) |
-| `take_control` / `return_control` | — | `ComputerView`; take_control cancels any agent run first |
+| `take_control` / `return_control` | take: exact `HumanAuthority`; return: none | `ComputerView`; native-confirmed takeover pauses the same task |
+| `human_input` | `HumanAuthority`, closed `HumanInput` enum | Guest-only bounded input under confirmed User ownership |
 | `create_task` | `title` | `AgentTask` (pending) |
 | `list_tasks` | — | `AgentTask[]` including retained previous tasks; recovered open tasks are cancelled |
 | `get_history_status` | — | `{ read_only: boolean, previous_task_ids: TaskId[] }`; true means disk history could not load/save and new changes are not saved |
@@ -172,20 +173,20 @@ type GeometryOutcome = "attached" | "updated" | "unchanged" | "deferred";
 
 ### Control
 
-- `take_control`: when `viewport_state == "ready"` and
-  `display_available` (error string starts with `control unavailable:`),
-  OR as takeover from `agent` (cancels the agent sequence and releases
-  pressed state first — never simultaneous control).
-  Routes the HUMAN's keyboard/pointer into the isolated computer.
-- `return_control`: always allowed, idempotent.
-- Automatic return to `none` (with a `control_ownership_changed` event)
-  on pause, stop, reset, destroy, VM error, display detach/failure, and
-  whenever the display stops being ready (e.g. compositor failure, guest
-  runtime disconnect). Resume never re-grants control.
-- The native "Return to Pegoles" pill / escape shortcut arrive as a
-  display fact; Core honors them on the next `pump`.
-- `agent` is reserved (future policy-checked structured actions). No
-  Phase 4 API can set it (guard-tested).
+- `take_control({ authority })` validates snapshot capability, running guest,
+  computer identity, frame dimensions, successful capture freshness (<12 seconds)
+  and ownership generation before and after native confirmation outside locks.
+  Confirmation uses validated saved en/pt-BR native copy, existing Return-cancel,
+  one-dialog guard and decline backoff. The returned view confirms User ownership
+  and the new generation; no optimistic frontend grant.
+- `return_control()` is immediate-authority revocation, idempotent and unprompted.
+  It releases held input and returns None. The runner acquires Agent normally,
+  refreshes the observation and replans before any new action.
+- Snapshot ownership survives absent native embed attachment. Real VM/guest
+  failure, explicit release, stop, reset, destroy and input failure revoke it.
+  Native display sessions retain their attachment/readiness arbitration.
+- `agent` is acquired only by the existing executor/session path, never by a
+  human-input payload or model self-control action.
 
 ### Effects
 
@@ -376,3 +377,30 @@ Pending requests/grants are in memory only. Cleared payloads leave at most eight
 content-free terminal rows (IDs, reason, successful typed-prefix counts), consumed
 by the waiting runner. History keeps its existing status-only audit and privacy
 taint behavior. Raw input and approval grants never enter its persisted schema.
+
+## Snapshot human-input payload and bounds
+
+`HumanAuthority = { computer_id: UUID, frame_id: UUID, width: u32,
+height: u32, generation: u64 }`. `get_status`/`ComputerView` now include
+`snapshot_control_available: boolean` and `control_generation: u64`.
+`capture_screen` keeps its real PNG + metadata contract. Frame content IDs may
+be deduplicated; Core records a new monotonic observation instant after every
+successful capture, so unchanged pixels do not become stale falsely.
+
+`human_input({ authority, input })` accepts only these tagged objects:
+`move {x,y}`, `down/up {x,y,button}`, `scroll {x,y,dx,dy}`, `key {key}`,
+`chord {keys}`, `text {text}`. Pointer coordinates are finite [0,1], mapped to
+current guest pixels; button is primary/secondary/middle. Keys must be canonical;
+chords have at most four keys, text at most 256 Unicode scalars. Existing policy
+tripwires and bounds apply before lowering to guest primitives. Unknown fields,
+including a caller-supplied sensitive flag, are rejected. Text is internally
+sensitive; no raw human payload reaches events, audit or persistence.
+
+Core checks User owner, snapshot session, exact computer/generation/frame,
+dimensions and capture freshness under the same lock as dispatch. It retains
+no queue and at most 60 timestamps per rolling second. Desktop allows one
+human event in flight; UI queues at most 16 bounded events and drops them on
+release/error/blur/hide. Chords/keys are atomic guest operations (no held host
+modifier hooks); pointer state is released on focus loss, error and lifecycle
+exit. The app reads only explicit paste-event text, never host clipboard APIs.
+IME composition is refused. The model/guest protocols gain no control verbs.

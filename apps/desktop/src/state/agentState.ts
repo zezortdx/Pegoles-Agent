@@ -182,6 +182,9 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
   }
   if (task.status === "cancelled") return { ...base, mode: "idle", headline: t("Cancelled"), reason: latestNote(events, "error"), live: false, at: task.updated_at };
 
+  if (status?.control_owner === "user" && (task.status === "running" || task.status === "waiting_for_approval" || last?.outcome === "running")) {
+    return { ...base, mode: "waiting", headline: t("Waiting while you use its computer"), live: true };
+  }
   const needsApproval = task.status === "waiting_for_approval" || last?.outcome === "approval" ||
     (events.length > 0 && events[events.length - 1].type === "approval_requested");
   if (needsApproval) {
@@ -192,9 +195,6 @@ export function taskActivity({ task, events, status, connected, acknowledging = 
   }
   if (last?.outcome === "failed") {
     return { ...base, mode: "error", headline: t("An action didn’t work"), detail: last.label, live: true };
-  }
-  if (status?.control_owner === "user" && (task.status === "running" || last?.outcome === "running")) {
-    return { ...base, mode: "waiting", headline: t("Waiting while you use its computer"), live: true };
   }
   // "Started" is only believed while Core corroborates that input is busy.
   if (last?.outcome === "running" && status?.agent_busy) {

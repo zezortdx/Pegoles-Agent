@@ -355,3 +355,9 @@
   .machine__scan, .machine__trace, .machine-state__scan { animation: none; }
 }
 :root[data-reduced-motion="true"] :is(.machine__scan, .machine__trace, .machine-state__scan) { animation: none; }
+
+.snapshot-control { position: relative; width: 100%; height: 100%; touch-action: none; outline-offset: -3px; }
+.snapshot-control:focus-visible { outline: 2px solid var(--accent, #8b9eff); }
+.snapshot-control-wrap { position: relative; width: 100%; height: 100%; }
+.snapshot-control__hint { position: absolute; bottom: 0; left: 0; right: 0; margin: 0; padding: 4px 8px; font-size: 11px; background: var(--surface-2); pointer-events: none; }
+.snapshot-control-wrap > [role="alert"] { position: absolute; top: 0; margin: 0; background: var(--surface-2); }

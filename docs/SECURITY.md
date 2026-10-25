@@ -73,9 +73,11 @@ document states what is enforced today, where, and what is not.
 6. **Control ownership is checked atomically.** Agent input reaches the
    guest only while the agent owns control, checked under the same lock
    as the dispatch; any path that takes control from the agent (pause,
-   stop, failure, human takeover) cancels its run. Typed text is sent in
-   64-character slices so Stop interrupts a long paste within ~1 s, and
-   Stop/Pause/Take Control cancel the run before waiting for the state.
+   stop or failure) cancels its input. Native-confirmed human takeover pauses
+   the same task; a monotonic generation invalidates old plans and dispatches,
+   including a take-and-return entirely inside model inference. Return releases
+   held input, then the runner captures a fresh guest observation before replanning.
+   Typed text is sent in bounded primitives; actual Stop still cancels the run.
 7. **Reset is a real reset**: fresh disk clone and a fresh EFI variable
    store (a guest root cannot persist boot entries through NVRAM).
 8. **No orphan VMs.** The helper exits on stdin EOF and on parent death

@@ -228,8 +228,7 @@ is approved as one complete payload and sliced under short locks; full-payload
 policy and ownership are checked again for every slice. Failed/cancelled slices
 report the previously completed prefix. Clearing raw pending payloads preserves
 at most eight content-free stop records for that accounting. Typed stop reasons
-separate control intervention from explicit denial/expiry for future takeover
-integration. No grant or pending payload is persisted or recovered.
+separate resumable control intervention from terminal explicit denial/expiry. No grant or pending payload is persisted or recovered.
 
 Residuals: a compromised webview can deny work, request native prompts within
 the existing backoff, and misrepresent its own display. It cannot answer the
@@ -240,3 +239,34 @@ be inaccurate after clock changes. Existing VM/guest round-trip cancellation
 latency remains. Native visual/VoiceOver and actual hardware execution were not
 run; injected deciders prove authority/lock/race behavior offline. This is a
 session guard, not durable security policy or a new host capability.
+
+### Native-confirmed snapshot human control
+
+The webview remains untrusted: it can request a native prompt, but cannot grant
+itself User ownership. The trusted native confirmation binds one exact current
+computer/frame/generation; post-dialog checks reject changes or expired captures.
+Once the person grants that session, compromised page code can issue the same
+bounded guest inputs as the person until return/stop/failure revokes it. This
+session authority is intentional and visible; it never grants host input, host
+capture, file access, networking or arbitrary protocol dispatch.
+
+Core owns snapshot capability and a monotonic successful-capture instant separate
+from deduplicated pixel identity. Every input checks exact owner, epoch, computer,
+frame and dimensions under the dispatch lock. Unknown fields, nonfinite/outside
+coordinates, noncanonical keys, text >256 scalars and >60 events/s fail closed.
+One desktop IPC is in flight; no Core input queue. UI drops its ≤16 event queue
+on blur/hide/error/return; no held modifiers exist because key/chord operations
+release atomically. Pointer buttons release on all exits. IME is unsupported.
+
+Human intervention pauses the original task without resetting cancellation or
+replaying typed prefixes. A task submitted while the person already controls the
+guest waits outside the Core lock (bounded by Stop and its preparation/run
+deadlines), re-observes if ownership changes before planning starts, and is
+privacy-tainted from its first running status. Generation checks invalidate even a planner that
+returns after the person took and returned control. Outstanding tool IDs receive
+explicit intervention results before fresh observation/replanning. Deny/expiry
+stay terminal. Human takeover conservatively taints active-task artifacts even
+without TypeText; history chronological status audit handles delayed event drains.
+Tests use injected native deciders, fake planners/channels and the real executor
+with Mock. Native embed, actual keyboard/VoiceOver and Apple silicon VM behavior
+remain hardware acceptance; periodic snapshots are not a native live display.

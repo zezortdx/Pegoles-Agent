@@ -131,6 +131,8 @@ impl DisplaySlot {
 /// snapshot (flattened into `get_status`).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ComputerView {
+    pub snapshot_control_available: bool,
+    pub control_generation: u64,
     pub viewport_state: ViewportState,
     pub viewport_issue: Option<ViewportIssue>,
     /// A framebuffer exists for this computer AND this process can show
@@ -295,6 +297,8 @@ impl ComputerRegistry {
         let facts = self.viewport_facts_for(computer, image_preparing);
         let view = derive_viewport(&facts);
         ComputerView {
+            snapshot_control_available: self.snapshot_control_available(),
+            control_generation: self.control_generation(),
             viewport_state: view.state,
             viewport_issue: view.issue,
             display_available: facts.display_available(),
@@ -380,7 +384,7 @@ impl ComputerRegistry {
 
     /// Hand keyboard/pointer to the HUMAN (Take Control). From Ready
     /// (nothing owns it) or from Agent (takeover: the running agent
-    /// sequence is cancelled and its pressed state released BEFORE the
+    /// sequence is paused and its pressed state released BEFORE the
     /// human gets the computer — never simultaneous conflicting control).
     /// Never sets Agent.
     pub fn take_control(&mut self) -> Result<ControlOwner> {
@@ -398,9 +402,9 @@ impl ComputerRegistry {
             };
             return Err(CoreError::ControlUnavailable(why));
         }
-        // Takeover from a running agent sequence: stop it cleanly first.
+        // Takeover serializes after current bounded input; release held input first.
         if self.display.control == ControlOwner::Agent {
-            self.cancel_agent_input("human takeover");
+            self.release_pressed_state("human takeover");
         }
         if let Err(e) = self.display.backend.set_interactive(true) {
             self.display.last_error = Some(e.to_string());
@@ -516,7 +520,9 @@ impl ComputerRegistry {
         // it back when the view goes. Agent input never uses the host
         // view (it travels the guest channel), so an agent session is
         // unaffected by view readiness.
-        if self.display.control == ControlOwner::User && !display_ready {
+        if self.display.control == ControlOwner::User
+            && !(display_ready || (self.human.session && self.snapshot_control_available()))
+        {
             let _ = self.release_control(out);
         }
         if display_ready && self.display.ready_ms.is_none() {
@@ -741,6 +747,8 @@ impl ComputerRegistry {
             // after the fact.
             self.agent_cancel.cancel();
         }
+        self.release_pressed_state("control returned");
+        self.human.session = false;
         let native = if self.display.link != DisplayLink::Detached {
             self.display.backend.set_interactive(false)
         } else {
@@ -775,6 +783,7 @@ impl ComputerRegistry {
             return;
         }
         self.invalidate_approvals();
+        self.human.generation = self.human.generation.wrapping_add(1);
         self.display.control = to;
         self.emit(
             AgentEvent::ControlOwnershipChanged {

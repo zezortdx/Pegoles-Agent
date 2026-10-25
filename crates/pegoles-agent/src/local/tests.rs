@@ -491,3 +491,54 @@ fn model_input_sizes_follow_the_patch_grid() {
     assert_eq!(model_input_size(800, 1280, 640), (416, 640));
     assert_eq!(model_input_size(1, 1, 1000), (32, 32));
 }
+
+#[test]
+fn intervention_refresh_preserves_local_objective_and_successful_prefix() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let model = ScriptedModel {
+        replies: vec![Ok(CLICK.into()), Ok(TERMINATE.into())].into(),
+        requests: requests.clone(),
+        loads: Arc::new(Mutex::new(0)),
+        cancel_on_generate: None,
+    };
+    let mut planner = LocalPlanner::new(
+        LocalConfig::for_model(model_spec(ModelFamily::Qwen3Vl)),
+        Arc::new(Mutex::new(Box::new(model))),
+    );
+    let shot = Screenshot {
+        png: vec![1; 8],
+        width: 100,
+        height: 100,
+    };
+    planner.start("original objective", &shot).unwrap();
+    let PlannerTurn::Calls { calls, .. } = planner.next(vec![], &CancellationToken::new()).unwrap()
+    else {
+        panic!("expected call")
+    };
+    let fresh = Screenshot {
+        png: vec![2; 8],
+        width: 200,
+        height: 100,
+    };
+    planner
+        .refresh(
+            vec![CallOutcome {
+                call_id: calls[0].call_id.clone(),
+                result: Err("Interrupted: first 256 of 1000 characters were typed".into()),
+                skipped: false,
+            }],
+            &fresh,
+        )
+        .unwrap();
+    assert_eq!(planner.objective, "original objective");
+    assert_eq!(planner.screen.as_ref(), Some(&fresh));
+    assert!(planner
+        .history
+        .back()
+        .unwrap()
+        .0
+        .result
+        .contains("256 of 1000"));
+    assert!(planner.pending.is_none());
+    assert!(!planner.need_observe);
+}

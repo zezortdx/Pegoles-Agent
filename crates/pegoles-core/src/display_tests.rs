@@ -1189,3 +1189,13 @@ fn run_cancel_cuts_a_withheld_observe_short() {
         started.elapsed()
     );
 }
+
+#[test]
+fn human_takeover_preserves_the_agent_run_for_resume() {
+    let mut rig = Rig::graphical();
+    rig.boot_display_ready();
+    rig.registry.begin_agent_session(&mut Vec::new()).unwrap();
+    let run = rig.registry.agent_cancel.clone();
+    rig.registry.take_control().unwrap();
+    assert!(!run.is_cancelled(), "takeover must pause the same run");
+}

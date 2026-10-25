@@ -94,7 +94,15 @@ describe("ComputerPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(onCommand).toHaveBeenCalledWith("pause");
     expect(controls.textContent).toContain("Stop computer");
-    expect(screen.getByText(/Taking over needs its live screen/)).toBeTruthy();
+    expect(screen.getByText(/Taking control needs a recent guest screen/)).toBeTruthy();
+  });
+
+  it("offers snapshot takeover from explicit Core capability without a native view", () => {
+    const onCommand = vi.fn();
+    render(<ComputerPanel {...props({ display_attached: false, snapshot_control_available: true, control_generation: 2 }, { onCommand, snapshot: picture() })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    expect(onCommand).toHaveBeenCalledWith("take");
+    expect(screen.queryByText(/Taking control needs/)).toBeNull();
   });
 
   it("draws the off computer inside the same frame the screen will use", () => {

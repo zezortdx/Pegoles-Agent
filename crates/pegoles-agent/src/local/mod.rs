@@ -343,6 +343,21 @@ impl LocalPlanner {
 }
 
 impl Planner for LocalPlanner {
+    fn refresh(
+        &mut self,
+        outcomes: Vec<CallOutcome>,
+        screen: &Screenshot,
+    ) -> Result<(), PlannerError> {
+        if !outcomes.is_empty() || self.pending.is_some() {
+            self.ingest(outcomes);
+        }
+        self.set_screen(screen.clone());
+        self.cursor = None;
+        self.need_observe = false;
+        self.observe_failed = false;
+        Ok(())
+    }
+
     fn name(&self) -> String {
         format!("pegoles-local:{}", self.cfg.model.spec.id)
     }

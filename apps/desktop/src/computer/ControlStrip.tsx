@@ -36,7 +36,7 @@ export function ControlStrip({ model, busy, onCommand, canTake, snapshotAge, onR
   const pause = model.secondary.find((action) => action.command === "pause");
   const stop = model.secondary.find((action) => action.command === "stop");
   const why = !handoff && model.owner !== "user" && model.phase !== "paused" && !canTake
-    ? t("Taking over needs its live screen, which this build can’t show yet.") : null;
+    ? t("Taking control needs a recent guest screen and available input.") : null;
   const mode = model.owner === "agent" ? "using-computer" : model.owner === "user" ? "waiting" : "idle";
   return (
     <div className="strip" data-owner={model.owner} data-phase={model.phase} data-compact={compact || undefined}>
@@ -61,7 +61,7 @@ export function ControlStrip({ model, busy, onCommand, canTake, snapshotAge, onR
           {pause && <button type="button" className="btn btn--small btn--quiet" disabled={busy} onClick={() => onCommand(pause.command)}><PauseIcon size={12} />{pause.label}</button>}
           {stop && <button type="button" className="btn btn--small btn--quiet" disabled={busy} onClick={() => onCommand(stop.command)}>{stop.label}</button>}
           {handoff && (
-            <button type="button" className={handoff.command === "take" ? "btn btn--small btn--line" : "btn btn--small btn--accent"} disabled={busy} onClick={() => onCommand(handoff.command)}>
+            <button type="button" className={handoff.command === "take" ? "btn btn--small btn--line" : "btn btn--small btn--accent"} disabled={busy && handoff.command !== "return"} onClick={() => onCommand(handoff.command)}>
               {handoff.command === "take" && <HandIcon size={13} />}{handoff.label}
             </button>
           )}
