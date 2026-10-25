@@ -48,12 +48,13 @@ export function MakeAgentDialog({ onClose }: { readonly onClose: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const name = useRef<HTMLInputElement>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
-  const loadedDraft = useRef(ready);
+  const [loadedDraft, setLoadedDraft] = useState(ready);
+  const draftReady = ready && loadedDraft;
   const id = useId();
   // Opening before the initial read completes must never edit a stale default.
   useEffect(() => {
-    if (ready && !loadedDraft.current) { setProfile(preferences.avatar); setLocale(preferences.locale); loadedDraft.current = true; }
-  }, [ready, preferences]);
+    if (ready && !loadedDraft) { setProfile(preferences.avatar); setLocale(preferences.locale); setLoadedDraft(true); }
+  }, [ready, preferences, loadedDraft]);
   useEffect(() => {
     setCustomizerOpen(true);
     const layer = root.current?.parentElement;
@@ -76,6 +77,7 @@ export function MakeAgentDialog({ onClose }: { readonly onClose: () => void }) {
       if (opener?.isConnected) opener.focus({ preventScroll: true });
     };
   }, [setCustomizerOpen]);
+  useEffect(() => { if (draftReady) name.current?.focus(); }, [draftReady]);
   useEffect(() => { if (error === "save" && !saving) saveButton.current?.focus(); }, [error, saving]);
   const change = <K extends keyof AvatarProfile>(key: K, value: AvatarProfile[K]) => { setProfile((previous) => ({ ...previous, [key]: value })); setError(null); };
   const valid = profile.name.trim().length > 0 && Array.from(profile.name.trim()).length <= 32 && !Array.from(profile.name).some((character) => { const point = character.codePointAt(0) ?? 0; return point < 32 || (point >= 127 && point <= 159) || /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(character); });
@@ -97,30 +99,30 @@ export function MakeAgentDialog({ onClose }: { readonly onClose: () => void }) {
   };
   return createPortal(<div className="agent-dialog-layer">
     <div ref={root} className="agent-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-intro`} tabIndex={-1} onKeyDown={key} aria-busy={saving || loading}>
-      <form onSubmit={(event) => { event.preventDefault(); if (ready && !saving) void submit(); }}>
+      <form onSubmit={(event) => { event.preventDefault(); if (draftReady && !saving) void submit(); }}>
         <h2 id={`${id}-title`}>{t("Make your agent")}</h2>
         <p id={`${id}-intro`}>{t("Choose a look and a name. Your agent still follows the same safety rules.")}</p>
         <label htmlFor={`${id}-name`}>{t("Agent name")}</label>
-        <input id={`${id}-name`} ref={name} value={profile.name} disabled={saving} autoComplete="off" maxLength={128}
+        <input id={`${id}-name`} ref={name} value={profile.name} disabled={saving || !draftReady} autoComplete="off" maxLength={128}
           aria-invalid={error === "name" || undefined} aria-describedby={`${id}-name-hint${error ? ` ${id}-error` : ""}`} onChange={(event) => change("name", event.target.value)} />
         <small id={`${id}-name-hint`}>{t("Use 1 to 32 characters, without control or direction marks.")}</small>
         <div className="agent-dialog__preview">
           <PresenceAvatar mode={preview} size={144} profile={profile} interactive label={t("Preview of {name}", { name: profile.name.trim() || preferences.avatar.name })} />
           <span>{profile.name.trim()}</span>
         </div>
-        <Choices label={t("Preview state")} options={PREVIEW.map((entry) => ({ value: entry.mode, label: t(entry.label) }))} value={preview} onChange={setPreview} disabled={saving} />
-        <Choices label={t("Shape")} options={SHAPES.map(({ id }) => ({ value: id, label: t(SHAPE_LABEL[id]) }))} value={profile.shape} onChange={(value) => change("shape", value)} disabled={saving} />
-        <Choices label={t("Color")} options={AVATAR_COLORS.map((value) => ({ value, label: t(COLOR_LABEL[value]) }))} value={profile.color} onChange={(value) => change("color", value)} disabled={saving} />
-        <Choices label={t("Expression")} options={EXPRESSIONS.map(({ id }) => ({ value: id, label: t(EXPRESSION_LABEL[id]) }))} value={profile.expression} onChange={(value) => change("expression", value)} disabled={saving} />
+        <Choices label={t("Preview state")} options={PREVIEW.map((entry) => ({ value: entry.mode, label: t(entry.label) }))} value={preview} onChange={setPreview} disabled={saving || !draftReady} />
+        <Choices label={t("Shape")} options={SHAPES.map(({ id }) => ({ value: id, label: t(SHAPE_LABEL[id]) }))} value={profile.shape} onChange={(value) => change("shape", value)} disabled={saving || !draftReady} />
+        <Choices label={t("Color")} options={AVATAR_COLORS.map((value) => ({ value, label: t(COLOR_LABEL[value]) }))} value={profile.color} onChange={(value) => change("color", value)} disabled={saving || !draftReady} />
+        <Choices label={t("Expression")} options={EXPRESSIONS.map(({ id }) => ({ value: id, label: t(EXPRESSION_LABEL[id]) }))} value={profile.expression} onChange={(value) => change("expression", value)} disabled={saving || !draftReady} />
         <label htmlFor={`${id}-language`}>{t("Language")}</label>
-        <select id={`${id}-language`} value={locale} disabled={saving} onChange={(event) => setLocale(event.target.value as Locale)}>
+        <select id={`${id}-language`} value={locale} disabled={saving || !draftReady} onChange={(event) => setLocale(event.target.value as Locale)}>
           <option value="en">English</option><option value="pt-BR">Português (Brasil)</option>
         </select>
         {loading && <p role="status">{t("Loading…")}</p>}
         {(error || loadError) && <p id={`${id}-error`} role="alert">{t(loadError ? "Could not load preferences. Try again." : error === "name" ? "Use 1 to 32 characters, without control or direction marks." : "Could not save your agent. Try again.")}</p>}
         {loadError && <button type="button" disabled={loading} onClick={() => { void reload(); }}>{t("Try again")}</button>}
         <footer><button type="button" disabled={saving} onClick={onClose}>{t("Cancel")}</button>
-          <button ref={saveButton} type="submit" disabled={saving || !ready}>{t(saving ? "Saving…" : "Save")}</button></footer>
+          <button ref={saveButton} type="submit" disabled={saving || !draftReady}>{t(saving ? "Saving…" : "Save")}</button></footer>
       </form>
     </div>
   </div>, document.body);
