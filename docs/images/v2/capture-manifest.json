@@ -1,0 +1,44 @@
+{
+  "captured_on": "2026-10-25",
+  "kind": "development-preview",
+  "simulated_bridge": true,
+  "base_commit": "eb0422f75a7930bd06961d53055fc72ecd4dd5f6",
+  "additional_source_note": "Includes the PR #20 preference-loading correction and audited dependency updates.",
+  "frontend_source_fingerprint": {
+    "algorithm": "sha256",
+    "root": "apps/desktop/src",
+    "file_count": 177,
+    "serialization": "Sorted relative POSIX path + NUL + file bytes + NUL for each regular file.",
+    "sha256": "b65fe4e60d523038ee4afc8fe8645b4fdf75088c60050fd6d12549747358b653"
+  },
+  "images": [
+    {
+      "file": "home.jpg",
+      "width": 1280,
+      "height": 720,
+      "bytes": 32006,
+      "sha256": "7523e67ce159a8c1c938cf533381f0ec503acf16d5ac752323ba7553b3339ca7"
+    },
+    {
+      "file": "customization.jpg",
+      "width": 1280,
+      "height": 720,
+      "bytes": 54464,
+      "sha256": "22d2a061067ad980f3ee3012af1614755aee6eb9a2b0a64f65875b907c10f3bf"
+    },
+    {
+      "file": "home-pt-br.jpg",
+      "width": 1280,
+      "height": 720,
+      "bytes": 35635,
+      "sha256": "4441f2bdc055385f6a6e549eb9dcd7a76d001ff14328868d84f0388dd00b7226"
+    },
+    {
+      "file": "team.jpg",
+      "width": 1280,
+      "height": 720,
+      "bytes": 59691,
+      "sha256": "15333075b9c9501f629fa8107596ea9824dca80e8fb8e22518694ee4126f7399"
+    }
+  ]
+}
