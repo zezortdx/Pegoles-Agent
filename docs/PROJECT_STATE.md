@@ -223,9 +223,9 @@ a stale prompt fails closed. The UI accepts bounded mouse, scroll, atomic key/
 chord and manual text events only under confirmed User ownership. Captured
 frames are periodically refreshed, not a native live view. IME is explicitly
 unsupported; paste is limited to 256 characters, without host clipboard APIs.
-A running task waits outside Core while User owns control. Starting a new task
-while User already owns control currently fails closed; give control back first.
-Returning releases
+A running or newly started task waits outside Core while User owns control,
+within its cancellation and preparation/run deadlines. Initial observations
+retry if ownership changes before the planner starts. Returning releases
 input, refreshes the guest observation and replans; stale calls and conclusions
 are discarded, exact tool IDs and completed prefixes preserved. Approvals
 invalidated by intervention never automatically execute. Denial/expiry remain

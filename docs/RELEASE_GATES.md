@@ -163,6 +163,9 @@ Offline requirements: native localized refusal/post-prompt race; wrong owner,
 computer/frame/session and stale/unchanged captures; finite letterbox mapping;
 input/rate/queue bounds; release on blur/error/stop; same-task cancellable wait;
 channel-controlled take-and-return during blocked planning (Calls/Done/Failed);
+a task started while User already owns control waiting outside Core (return, Stop,
+VM failure and preparation deadline), with stale initial observations retried
+before the planner starts;
 matching tool outcomes and prefix progress; typed ControlChanged versus
 Denied/Expired; active-task artifact suppression; strict IPC/ACL/no model control.
 Run `RUST_TEST_THREADS=1 bash scripts/check.sh` after frozen script-free install.
@@ -193,7 +196,10 @@ must request a fresh approval; Deny/expiry must still terminate;
 (6) Stop while User owns control and while native prompt is open, verify stale
 responses cannot grant input; repeat after guest failure and computer replacement;
 (7) enter an opaque manual secret with individual keys, finish/restart and verify
-no task result artifact persisted; check VoiceOver focus/status and refusal text.
+no task result artifact persisted; check VoiceOver focus/status and refusal text;
+(8) with User already controlling the guest, start a new task: it must wait without
+freezing the app, start from a fresh observation after Give back, and end cleanly
+on Stop or when the preparation deadline passes; its result must not be persisted.
 Record actual device/build, observed native behavior and remaining failures.
 No native embed, hardware, cloud or installed-app acceptance is implied by unit
 checks. The native VZ embed remains a contract stub.

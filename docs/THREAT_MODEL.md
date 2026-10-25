@@ -259,7 +259,10 @@ on blur/hide/error/return; no held modifiers exist because key/chord operations
 release atomically. Pointer buttons release on all exits. IME is unsupported.
 
 Human intervention pauses the original task without resetting cancellation or
-replaying typed prefixes. Generation checks invalidate even a planner that
+replaying typed prefixes. A task submitted while the person already controls the
+guest waits outside the Core lock (bounded by Stop and its preparation/run
+deadlines), re-observes if ownership changes before planning starts, and is
+privacy-tainted from its first running status. Generation checks invalidate even a planner that
 returns after the person took and returned control. Outstanding tool IDs receive
 explicit intervention results before fresh observation/replanning. Deny/expiry
 stay terminal. Human takeover conservatively taints active-task artifacts even
