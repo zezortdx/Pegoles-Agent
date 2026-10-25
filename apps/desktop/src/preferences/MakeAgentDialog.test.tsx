@@ -30,12 +30,26 @@ function Harness() {
     {open && <MakeAgentDialog onClose={() => setOpen(false)} />}
   </FluxGlassRoot></PreferencesProvider>;
 }
-const open = async () => {
+const open = async (waitUntilReady = true) => {
   const trigger = screen.getByRole("button", { name: "Customize" });
   trigger.focus(); fireEvent.click(trigger);
-  return screen.findByRole("dialog", { name: "Make your agent" });
+  const dialog = await screen.findByRole("dialog", { name: "Make your agent" });
+  if (waitUntilReady) await waitFor(() => expect((within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false));
+  return dialog;
 };
 describe("agent preferences", () => {
+  it("waits for Core preferences before accepting edits to the initial default", async () => {
+    let loaded!: (preferences: Preferences) => void;
+    vi.mocked(api.getPreferences).mockImplementation(() => new Promise((resolve) => { loaded = resolve; }));
+    render(<Harness />);
+    const dialog = await open(false);
+    expect((within(dialog).getByRole("textbox", { name: "Agent name" }) as HTMLInputElement).disabled).toBe(true);
+    expect((within(dialog).getByRole("combobox", { name: "Language" }) as HTMLSelectElement).disabled).toBe(true);
+    expect((within(dialog).getByRole("radio", { name: "Cloud" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => loaded({ ...DEFAULT_PREFERENCES, avatar: { ...DEFAULT_PREFERENCES.avatar, name: "Saved agent" } }));
+    await waitFor(() => expect((within(dialog).getByRole("textbox", { name: "Agent name" }) as HTMLInputElement).disabled).toBe(false));
+    expect((within(dialog).getByRole("textbox", { name: "Agent name" }) as HTMLInputElement).value).toBe("Saved agent");
+  });
   it("loads, edits, confirms and reopens the profile, and keeps preview motion static", async () => {
     render(<Harness />);
     const dialog = await open();
@@ -95,7 +109,7 @@ describe("agent preferences", () => {
   });
   it("reports load errors and requires retry before replacing unreadable preferences", async () => {
     vi.mocked(api.getPreferences).mockRejectedValue(new Error("corrupt"));
-    render(<Harness />); const dialog = await open();
+    render(<Harness />); const dialog = await open(false);
     expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", "Could not load preferences. Try again.");
     expect((within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
     vi.mocked(api.getPreferences).mockResolvedValue(DEFAULT_PREFERENCES);
