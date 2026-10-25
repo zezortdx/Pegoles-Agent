@@ -45,6 +45,7 @@ ipc_commands! {
         set_model_settings,
         get_intelligence,
         set_provider,
+        set_team_mode,
         install_local_model,
         cancel_local_model_install,
         remove_local_model,

@@ -240,6 +240,7 @@ fn the_acl_allows_the_product_commands_and_denies_the_rest() {
     for cmd in [
         "get_status",
         "set_provider",
+        "set_team_mode",
         "enter_api_key",
         "capture_screen",
         "human_input",

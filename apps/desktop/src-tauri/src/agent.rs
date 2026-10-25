@@ -19,9 +19,12 @@ use std::sync::{Arc, Mutex};
 use pegoles_agent::anthropic::{
     AnthropicConfig, AnthropicPlanner, DEFAULT_EFFORT, DEFAULT_MODEL, EFFORTS, SUPPORTED_MODELS,
 };
-use pegoles_agent::{run_task, CoreAccess, CoreComputer, Planner, RunLimits};
+use pegoles_agent::team::{AnthropicRoleModel, TeamEvent, TeamSink};
+use pegoles_agent::{
+    run_task, CoreAccess, CoreComputer, Planner, RunLimits, TeamConfig, TeamLimits, TeamPlanner,
+};
 use pegoles_core::{CancellationToken, ComputerRegistry, EventBus, TaskManager};
-use pegoles_protocol::{TaskId, TaskStatus};
+use pegoles_protocol::{AgentEvent, TaskId, TaskStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{lock_state, SharedState};
@@ -124,6 +127,37 @@ impl ModelSettings {
     }
 }
 
+/// Which version of the team-mode disclosure the person confirmed. Raising
+/// it (the disclosure changed) turns team mode off until it is confirmed
+/// again.
+pub const TEAM_CONSENT_VERSION: u32 = 1;
+
+/// Experimental team mode. Off by default; `enabled` is only ever saved
+/// after a native confirmation (see consent.rs), recorded as the
+/// disclosure version that was confirmed.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub consent_version: u32,
+}
+
+impl TeamSettings {
+    /// Team mode runs only when it is on, confirmed for the current
+    /// disclosure, and a cloud model plans. Pegoles Local never qualifies.
+    pub fn active(&self, provider: Provider) -> bool {
+        self.enabled && self.consent_version == TEAM_CONSENT_VERSION && provider != Provider::Local
+    }
+
+    pub fn confirmed() -> Self {
+        Self {
+            enabled: true,
+            consent_version: TEAM_CONSENT_VERSION,
+        }
+    }
+}
+
 /// Everything about "who plans", persisted in `settings.json` (never a
 /// secret).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +165,8 @@ pub struct IntelligenceSettings {
     pub provider: Provider,
     pub local_model: String,
     pub anthropic: ModelSettings,
+    #[serde(default)]
+    pub team: TeamSettings,
 }
 
 impl Default for IntelligenceSettings {
@@ -139,6 +175,7 @@ impl Default for IntelligenceSettings {
             provider: Provider::Local,
             local_model: pegoles_inference::Catalog::builtin().default_model,
             anthropic: ModelSettings::default(),
+            team: TeamSettings::default(),
         }
     }
 }
@@ -146,6 +183,9 @@ impl Default for IntelligenceSettings {
 impl IntelligenceSettings {
     pub fn validate(&self) -> Result<(), String> {
         self.anthropic.validate()?;
+        if self.team.enabled && self.provider == Provider::Local {
+            return Err("team mode needs a cloud model".to_string());
+        }
         if pegoles_inference::Catalog::builtin()
             .get(&self.local_model)
             .is_none()
@@ -161,7 +201,13 @@ impl IntelligenceSettings {
     fn parse(raw: &str) -> Option<Self> {
         let v: serde_json::Value = serde_json::from_str(raw).ok()?;
         let s = if v.get("provider").is_some() {
-            serde_json::from_value::<Self>(v).ok()?
+            let mut s = serde_json::from_value::<Self>(v).ok()?;
+            // A hand-edited file cannot run the team on the local model:
+            // it falls back to the single-model planner.
+            if s.provider == Provider::Local {
+                s.team = TeamSettings::default();
+            }
+            s
         } else {
             Self {
                 anthropic: serde_json::from_value::<ModelSettings>(v).ok()?,
@@ -307,11 +353,7 @@ pub fn start_run(
         Provider::Anthropic => {
             let (key, _) = load_api_key()
                 .ok_or("Connect a model in Settings first: add an Anthropic key or switch to Pegoles Local.")?;
-            Box::new(AnthropicPlanner::new(AnthropicConfig::new(
-                key,
-                &settings.anthropic.model,
-                &settings.anthropic.effort,
-            )))
+            cloud_planner(&settings, key, task, &bus)?
         }
     };
     let cancel = supervisor.claim(task)?;
@@ -337,6 +379,45 @@ pub fn start_run(
             supervisor.release(task);
             format!("could not start the task thread: {e}")
         })
+}
+
+/// The Anthropic planner: alone, or (experimental team mode, only when the
+/// person turned it on and confirmed it) as the executor of a team whose
+/// progress is published on the Core bus. Either way the runner, Core's
+/// executor and Pegoles Policy are the same.
+pub fn cloud_planner(
+    settings: &IntelligenceSettings,
+    key: String,
+    task: TaskId,
+    bus: &EventBus,
+) -> Result<Box<dyn Planner>, String> {
+    let cfg = AnthropicConfig::new(key, &settings.anthropic.model, &settings.anthropic.effort);
+    if !settings.team.active(settings.provider) {
+        return Ok(Box::new(AnthropicPlanner::new(cfg)));
+    }
+    let bus = bus.clone();
+    let sink: TeamSink = Box::new(move |event: TeamEvent| {
+        bus.publish(AgentEvent::TeamProgress {
+            task_id: task,
+            step: event.step,
+            status: event.status,
+            summary: event.summary,
+            at: chrono::Utc::now(),
+        });
+    });
+    let team = TeamPlanner::new(
+        TeamConfig {
+            enabled: settings.team.enabled,
+            // `active` already required the confirmed disclosure version.
+            cloud_consent: settings.team.consent_version == TEAM_CONSENT_VERSION,
+            limits: TeamLimits::default(),
+        },
+        Box::new(AnthropicPlanner::new(cfg.clone())),
+        Box::new(AnthropicRoleModel::new(&cfg)),
+        sink,
+    )
+    .map_err(|refusal| refusal.to_string())?;
+    Ok(Box::new(team))
 }
 
 struct SlotGuard(AgentSupervisor, TaskId);
@@ -394,6 +475,86 @@ mod tests {
             effort: "ludicrous".into(),
         };
         assert!(bad.validate().is_err());
+    }
+
+    fn cloud(team: TeamSettings) -> IntelligenceSettings {
+        IntelligenceSettings {
+            provider: Provider::Anthropic,
+            team,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn team_mode_is_off_by_default_and_old_files_keep_it_off() {
+        assert_eq!(
+            IntelligenceSettings::default().team,
+            TeamSettings::default()
+        );
+        assert!(!IntelligenceSettings::default()
+            .team
+            .active(Provider::Anthropic));
+        let old = r#"{"provider":"anthropic","local_model":"mai-ui-2b-6bit","anthropic":{"model":"claude-opus-5","effort":"high"}}"#;
+        let s = IntelligenceSettings::parse(old).unwrap();
+        assert!(!s.team.enabled && !s.team.active(s.provider));
+    }
+
+    #[test]
+    fn team_mode_needs_the_current_consent_cloud_and_the_flag() {
+        let on = TeamSettings::confirmed();
+        assert!(on.active(Provider::Anthropic));
+        assert!(!on.active(Provider::Local), "never on the local model");
+        let stale = TeamSettings {
+            enabled: true,
+            consent_version: TEAM_CONSENT_VERSION - 1,
+        };
+        assert!(!stale.active(Provider::Anthropic), "old disclosure");
+        let unconsented = TeamSettings {
+            enabled: true,
+            consent_version: 0,
+        };
+        assert!(!unconsented.active(Provider::Anthropic));
+        assert!(!TeamSettings {
+            enabled: false,
+            consent_version: TEAM_CONSENT_VERSION
+        }
+        .active(Provider::Anthropic));
+    }
+
+    #[test]
+    fn a_file_cannot_enable_team_mode_on_the_local_model() {
+        let file = format!(
+            r#"{{"provider":"local","local_model":"{}","anthropic":{{"model":"claude-opus-5","effort":"high"}},"team":{{"enabled":true,"consent_version":{TEAM_CONSENT_VERSION}}}}}"#,
+            IntelligenceSettings::default().local_model
+        );
+        let parsed = IntelligenceSettings::parse(&file).unwrap();
+        assert_eq!(parsed.provider, Provider::Local);
+        assert_eq!(parsed.team, TeamSettings::default());
+        let bad = IntelligenceSettings {
+            team: TeamSettings::confirmed(),
+            ..Default::default()
+        };
+        assert!(bad.validate().is_err(), "saving it is refused too");
+        assert!(cloud(TeamSettings::confirmed()).validate().is_ok());
+    }
+
+    #[test]
+    fn the_planner_is_the_plain_model_unless_the_team_is_on_and_confirmed() {
+        let bus = EventBus::new();
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz".to_string();
+        let task = TaskId::new();
+        let plain =
+            cloud_planner(&cloud(TeamSettings::default()), key.clone(), task, &bus).unwrap();
+        assert_eq!(plain.name(), DEFAULT_MODEL);
+        let unconfirmed = TeamSettings {
+            enabled: true,
+            consent_version: 0,
+        };
+        let still_plain = cloud_planner(&cloud(unconfirmed), key.clone(), task, &bus).unwrap();
+        assert_eq!(still_plain.name(), DEFAULT_MODEL);
+        let team = cloud_planner(&cloud(TeamSettings::confirmed()), key, task, &bus).unwrap();
+        assert_eq!(team.name(), format!("team:{DEFAULT_MODEL}"));
+        assert!(team.is_cloud());
     }
 
     #[test]

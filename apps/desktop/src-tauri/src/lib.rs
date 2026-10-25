@@ -16,6 +16,8 @@ pub mod nav_guard;
 pub mod preference_commands;
 pub mod preferences;
 pub mod state;
+#[cfg(any(target_os = "macos", test))]
+mod team_consent;
 pub mod webview_egress;
 
 #[cfg(test)]

@@ -1284,6 +1284,15 @@ pub struct IntelligencePayload {
     pub local_model: String,
     pub local: crate::local::LocalRuntimePayload,
     pub anthropic: ModelSettingsPayload,
+    /// Experimental team mode, as it will actually run.
+    pub team: TeamPayload,
+}
+
+/// Whether experimental team mode would run a task now: on, confirmed for
+/// the current disclosure, and a cloud model plans. Never a secret.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct TeamPayload {
+    pub enabled: bool,
 }
 
 fn intelligence_payload(local: &LocalModels) -> IntelligencePayload {
@@ -1293,6 +1302,9 @@ fn intelligence_payload(local: &LocalModels) -> IntelligencePayload {
         local_model: settings.local_model,
         local: local.payload(),
         anthropic: model_settings_payload(),
+        team: TeamPayload {
+            enabled: settings.team.active(settings.provider),
+        },
     }
 }
 
@@ -1336,6 +1348,30 @@ pub async fn set_provider(
             consent.0.as_ref(),
             provider,
             local_model,
+            crate::agent::load_settings,
+            crate::agent::save_settings,
+        )
+    })
+    .await
+}
+
+/// Turn experimental team mode on or off. Turning it on needs a cloud
+/// planner and waits for the user's answer in a native alert (see
+/// consent.rs); declined, nothing changes. The webview only says which way
+/// it wants the switch to go: the confirmation and the saved record are
+/// Core's.
+#[tauri::command]
+pub async fn set_team_mode(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+    consent: tauri::State<'_, ConsentGate>,
+    enabled: bool,
+) -> Result<IntelligencePayload, String> {
+    let consent = consent.inner().clone();
+    intelligence_op(state.inner().clone(), local.inner().clone(), move |_| {
+        crate::consent::change_team_mode(
+            consent.0.as_ref(),
+            enabled,
             crate::agent::load_settings,
             crate::agent::save_settings,
         )

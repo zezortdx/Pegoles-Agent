@@ -144,6 +144,9 @@ export interface FrameMetaWire {
   byte_len: number;
   capture_latency_ms: number;
 }
+export type TeamStepId = "captain_plan" | "research" | "execute" | "critique" | "synthesis";
+export type TeamStatus = "working" | "done" | "failed" | "skipped";
+
 /** What an `agent_message` carries: notes between actions, the final account, or why a run stopped. */
 export type AgentMessageKind = "progress" | "summary" | "error";
 
@@ -198,6 +201,8 @@ export type AgentEvent =
       at: string;
     }
   | { type: "approval_requested"; task_id: string; reason: string; at: string }
+  /** One step of the experimental team changed state. `summary` is untrusted model text: plain text only. */
+  | { type: "team_progress"; task_id: string; step: TeamStepId; status: TeamStatus; summary: string; at: string }
   | {
       type: "frame_observed";
       computer_id: string;
@@ -313,6 +318,8 @@ export interface Intelligence {
   readonly local_model: string;
   readonly local: LocalRuntime;
   readonly anthropic: ModelSettings;
+  /** Experimental team mode as it would run a task now (on, confirmed, and a cloud model plans). */
+  readonly team: { readonly enabled: boolean };
 }
 
 /** Emitted ~4×/s while downloading and on every phase change. */
@@ -349,6 +356,11 @@ export const api = {
    */
   setProvider: (provider: Provider, localModel?: string) =>
     invoke<Intelligence>("set_provider", { provider, localModel: localModel ?? null }),
+  /**
+   * Experimental team mode. Turning it on needs a cloud model and waits for
+   * the person to confirm in a macOS dialog; it rejects when they don't.
+   */
+  setTeamMode: (enabled: boolean) => invoke<Intelligence>("set_team_mode", { enabled }),
   /** Download, verify and install a local model (default: the chosen one). Resumes a partial download. */
   installLocalModel: (model?: string) => invoke<Intelligence>("install_local_model", { model: model ?? null }),
   cancelLocalModelInstall: () => invoke<Intelligence>("cancel_local_model_install"),
