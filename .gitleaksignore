@@ -9,3 +9,7 @@ d7b4d33b98b7ccd86bbed8fb56c6aa63d8fd82d0:crates/pegoles-policy/tests/escape_matr
 1698c7d8ad2371e80f14fc6874b5703ed76d5e0d:crates/pegoles-agent/tests/security_matrix.rs:private-key:359
 1698c7d8ad2371e80f14fc6874b5703ed76d5e0d:crates/pegoles-agent/tests/security_matrix.rs:generic-api-key:361
 1698c7d8ad2371e80f14fc6874b5703ed76d5e0d:crates/pegoles-agent/tests/security_matrix.rs:private-key:594
+
+# RFC 6455 section 1.3 sample nonce (\"the sample nonce\" in base64) in a
+# WebSocket pass-through test; a public protocol example, not a key.
+1fbe2a9d422422e1e4ec04bd5dc7ac6cf9ecc503:crates/pegoles-egress/src/proxy/tests.rs:generic-api-key:391
