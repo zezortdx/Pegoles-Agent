@@ -13,6 +13,15 @@
 //! window, no page code, before it is in force; a list that fails to
 //! compile quits the app). In every frame, before page code runs, the
 //! WebRTC constructors are removed.
+//!
+//! On Windows (WebView2, Chromium) the same outcome comes from browser
+//! switches set when the webview is created (`WEBVIEW2_ARGS`): every
+//! proxied request (http, https, ws, wss; hostnames and IP literals)
+//! goes to a dead proxy on the loopback discard port, including loopback
+//! itself, every host name resolves to nothing (DNS prefetch), and WebRTC
+//! may not send UDP outside a proxy. The app's own `http://tauri.localhost`
+//! and `http://ipc.localhost` are answered inside WebView2 (custom
+//! protocol handlers) and never reach the network stack.
 
 /// Block every load whose URL starts with a network scheme or `file:`
 /// (one rule per scheme: WebKit's url-filter has no disjunction). The app
@@ -44,6 +53,17 @@ pub const DISABLE_WEBRTC: &str = r#"(() => {
     } catch (_) {}
   }
 })();"#;
+
+/// WebView2 switches for the contained main webview (Windows). They
+/// replace wry's defaults, so those are repeated first.
+pub const WEBVIEW2_ARGS: &str = concat!(
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection ",
+    "--proxy-server=http://127.0.0.1:9 ",
+    "--proxy-bypass-list=<-loopback> ",
+    "--host-resolver-rules=\"MAP * ~NOTFOUND\" ",
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp ",
+    "--force-webrtc-ip-handling-policy"
+);
 
 /// Whether this build contains the webview: every non-`tauri dev` build
 /// (the dev server itself is plain HTTP).
@@ -168,6 +188,22 @@ mod tests {
         ] {
             assert!(!blocked(url), "{url}");
         }
+    }
+
+    #[test]
+    fn webview2_switches_keep_wry_defaults_and_close_every_route() {
+        let args = WEBVIEW2_ARGS;
+        assert!(args.starts_with("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection "));
+        for switch in [
+            "--proxy-server=http://127.0.0.1:9",
+            "--proxy-bypass-list=<-loopback>",
+            "--host-resolver-rules=\"MAP * ~NOTFOUND\"",
+            "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--force-webrtc-ip-handling-policy",
+        ] {
+            assert!(args.contains(switch), "{switch}");
+        }
+        assert!(!args.contains('\n') && !args.ends_with(' '));
     }
 
     #[test]

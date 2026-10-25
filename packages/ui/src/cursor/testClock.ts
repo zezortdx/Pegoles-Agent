@@ -1,21 +1,21 @@
 /** Deterministic frame clock for AgentCursor tests (not exported from the package). */
-import type { CursorTimers, FrameScheduler } from "./AgentCursorController.js";
+import type { FrameScheduler } from "./AgentCursorController.js";
 
 export interface FakeClock extends FrameScheduler {
   /** Advance time and run the callbacks queued for the next frame. */
   frame(ms?: number): void;
   /** Run frames until no callback is queued (or `max` frames). Returns frames run. */
   runUntilIdle(ms?: number, max?: number): number;
+  /** Advance time without running frames (a frame that never came). */
+  advance(ms: number): void;
   readonly pending: number;
   readonly time: number;
-  readonly timers: CursorTimers & { advance(ms: number): void };
 }
 
 export function createFakeClock(): FakeClock {
   let t = 1000;
   let nextId = 1;
   const queue = new Map<number, (now: number) => void>();
-  let timeouts: { at: number; fn: () => void; id: number }[] = [];
 
   const clock: FakeClock = {
     request(cb) {
@@ -41,27 +41,14 @@ export function createFakeClock(): FakeClock {
       }
       return n;
     },
+    advance(ms) {
+      t += ms;
+    },
     get pending() {
       return queue.size;
     },
     get time() {
       return t;
-    },
-    timers: {
-      setTimeout(fn, ms) {
-        const id = nextId++;
-        timeouts.push({ at: t + ms, fn, id });
-        return id;
-      },
-      clearTimeout(handle) {
-        timeouts = timeouts.filter((x) => x.id !== handle);
-      },
-      advance(ms) {
-        t += ms;
-        const due = timeouts.filter((x) => x.at <= t);
-        timeouts = timeouts.filter((x) => x.at > t);
-        for (const x of due) x.fn();
-      },
     },
   };
   return clock;

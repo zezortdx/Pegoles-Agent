@@ -43,6 +43,13 @@
     "allow-cancel-agent-input",
     "allow-capture-screen",
     "allow-install-computer-image",
-    "allow-cancel-computer-image-install"
+    "allow-cancel-computer-image-install",
+    "allow-get-onboarding",
+    "allow-set-onboarding-step",
+    "allow-finish-onboarding",
+    "allow-system-check",
+    "allow-fix-virtualization",
+    "allow-restart-to-finish-setup",
+    "allow-save-diagnostic-report"
   ]
 }

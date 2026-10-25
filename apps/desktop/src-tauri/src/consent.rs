@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use pegoles_protocol::{InternetAccess, InternetMode};
+
 use crate::agent::{IntelligenceSettings, Provider};
 
 /// The user kept the local planner (also returned when the question could
@@ -27,6 +29,56 @@ pub trait Consent: Send + Sync {
     /// Ask for an API key in a native secure field. `Ok(None)` when the
     /// user cancelled.
     fn api_key(&self, replacing: bool) -> Result<Option<String>, String>;
+    /// Ask before one task's computer gets internet (docs/EGRESS.md):
+    /// the domains it may reach, or the open-web warning. Cancel is the
+    /// default. `Ok(true)` only for a deliberate yes; per task, never
+    /// remembered.
+    fn allow_internet(&self, access: &InternetAccess) -> Result<bool, String>;
+}
+
+/// The wording of the internet confirmation, shared by every native
+/// dialog. `None` for `off`: nothing to ask.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InternetPrompt {
+    pub title: String,
+    pub body: String,
+    pub confirm: &'static str,
+}
+
+pub fn internet_prompt(access: &InternetAccess) -> Option<InternetPrompt> {
+    const ENDS: &str =
+        "Internet access ends when the task stops, pauses or fails, or when you take control.";
+    match access.mode {
+        InternetMode::Off => None,
+        InternetMode::Allowlist => {
+            let sites: String = access
+                .domains
+                .iter()
+                .map(|d| format!("\u{2022} {d}\n"))
+                .collect();
+            Some(InternetPrompt {
+                title: "Let this task use the internet?".to_string(),
+                body: format!(
+                    "Pegoles’ computer will be able to open only these sites (and their \
+                     subdomains) during this task:\n\n{sites}\nEverything else stays blocked. \
+                     Its virtual machine still has no network of its own: Pegoles fetches \
+                     these pages for it and checks every request and download.\n\n{ENDS}"
+                ),
+                confirm: "Allow these sites",
+            })
+        }
+        InternetMode::OpenWeb => Some(InternetPrompt {
+            title: "Give this task open internet access?".to_string(),
+            body: format!(
+                "Warning: Pegoles’ computer will be able to open almost any public website \
+                 during this task. Known malware and phishing sites, adult and gambling \
+                 sites, and downloads of programs or archives are blocked, but a page can \
+                 still be unsafe or hold untrusted content, and anything the agent types \
+                 into a page can leave the computer. Don’t give it passwords or secrets.\n\n{ENDS}"
+            ),
+            confirm: "Allow open web",
+        }),
+    }
 }
 
 /// A prompt the page kept reopening after the person dismissed it.
@@ -125,8 +177,9 @@ mod native {
     use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSSecureTextField};
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-    use super::{Consent, DeclineBackoff, PROMPT_PAUSED};
+    use super::{internet_prompt, Consent, DeclineBackoff, PROMPT_PAUSED};
     use crate::agent::Provider;
+    use pegoles_protocol::InternetAccess;
 
     /// One alert at a time: a page can't stack prompts behind the one the
     /// user is reading.
@@ -135,6 +188,7 @@ mod native {
         open: AtomicBool,
         cloud_backoff: Mutex<DeclineBackoff>,
         key_backoff: Mutex<DeclineBackoff>,
+        internet_backoff: Mutex<DeclineBackoff>,
     }
 
     struct Reopen<'a>(&'a AtomicBool);
@@ -152,6 +206,7 @@ mod native {
                 open: AtomicBool::new(false),
                 cloud_backoff: Mutex::new(DeclineBackoff::default()),
                 key_backoff: Mutex::new(DeclineBackoff::default()),
+                internet_backoff: Mutex::new(DeclineBackoff::default()),
             }
         }
 
@@ -231,6 +286,33 @@ mod native {
             Ok(allowed)
         }
 
+        fn allow_internet(&self, access: &InternetAccess) -> Result<bool, String> {
+            let Some(prompt) = internet_prompt(access) else {
+                return Ok(true);
+            };
+            if lock(&self.internet_backoff).closed(Instant::now()) {
+                return Err(PROMPT_PAUSED.to_string());
+            }
+            let allowed = self.ask(move |mtm| {
+                let alert = alert(mtm, &prompt.title, &prompt.body, prompt.confirm);
+                // Return and Escape both keep the task offline.
+                let buttons = alert.buttons();
+                if let (Some(confirm), Some(cancel)) = (buttons.firstObject(), buttons.lastObject())
+                {
+                    confirm.setKeyEquivalent(&NSString::from_str(""));
+                    cancel.setKeyEquivalent(&NSString::from_str("\r"));
+                }
+                alert.runModal() == NSAlertFirstButtonReturn
+            })?;
+            let mut backoff = lock(&self.internet_backoff);
+            if allowed {
+                backoff.accepted();
+            } else {
+                backoff.declined(Instant::now());
+            }
+            Ok(allowed)
+        }
+
         fn api_key(&self, replacing: bool) -> Result<Option<String>, String> {
             if lock(&self.key_backoff).closed(Instant::now()) {
                 return Err(PROMPT_PAUSED.to_string());
@@ -272,24 +354,99 @@ mod native {
     }
 }
 
-/// Off macOS there is no native confirmation yet: fail closed.
+/// Off macOS the cloud-planner and key questions have no native window yet
+/// (fail closed). The internet question has one on Windows (a system
+/// message box the webview cannot answer) and fails closed elsewhere.
 #[cfg(not(target_os = "macos"))]
-pub struct NativeConsent;
+pub struct NativeConsent {
+    open: std::sync::atomic::AtomicBool,
+    internet_backoff: std::sync::Mutex<DeclineBackoff>,
+}
 
 #[cfg(not(target_os = "macos"))]
 impl NativeConsent {
     pub fn new(_app: tauri::AppHandle) -> Self {
-        Self
+        Self {
+            open: std::sync::atomic::AtomicBool::new(false),
+            internet_backoff: std::sync::Mutex::new(DeclineBackoff::default()),
+        }
     }
+}
+
+/// The Windows question: a system message box (OK / Cancel, Cancel is the
+/// default button and Escape). No owner window: nothing in the webview
+/// can reach, answer or dismiss it.
+#[cfg(windows)]
+fn ask_ok_cancel(title: &str, text: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let (title, text) = (wide(title), wide(text));
+    // SAFETY: both buffers are NUL-terminated UTF-16 that outlive the call.
+    let answer = unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST,
+        )
+    };
+    answer == IDOK
 }
 
 #[cfg(not(target_os = "macos"))]
 impl Consent for NativeConsent {
+    fn allow_internet(&self, access: &InternetAccess) -> Result<bool, String> {
+        use std::sync::atomic::Ordering;
+        let Some(prompt) = internet_prompt(access) else {
+            return Ok(true);
+        };
+        if !cfg!(windows) {
+            return Err("internet access needs a native confirmation window, which exists only on macOS and Windows so far.".into());
+        }
+        let lock = || {
+            self.internet_backoff
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+        };
+        if lock().closed(std::time::Instant::now()) {
+            return Err(PROMPT_PAUSED.to_string());
+        }
+        if self.open.swap(true, Ordering::SeqCst) {
+            return Err("another Pegoles confirmation is already open; answer it first.".into());
+        }
+        #[cfg(windows)]
+        let allowed = {
+            let text = format!(
+                "{}\n\nChoose OK to {}, or Cancel to keep this task offline.",
+                prompt.body,
+                prompt.confirm.to_lowercase()
+            );
+            ask_ok_cancel(&prompt.title, &text)
+        };
+        #[cfg(not(windows))]
+        let allowed = false;
+        self.open.store(false, Ordering::SeqCst);
+        let mut backoff = lock();
+        if allowed {
+            backoff.accepted();
+        } else {
+            backoff.declined(std::time::Instant::now());
+        }
+        Ok(allowed)
+    }
+
     fn allow_cloud_planner(&self, _provider: Provider) -> Result<bool, String> {
-        Err("cloud planners need the macOS confirmation dialog.".into())
+        Err("cloud models aren't available on this system yet: they need a native confirmation window, which exists only on macOS so far. Pegoles Local keeps planning.".into())
     }
     fn api_key(&self, _replacing: bool) -> Result<Option<String>, String> {
-        Err("adding a key needs the macOS key dialog; set ANTHROPIC_API_KEY instead.".into())
+        Err("adding a key needs a native key window, which exists only on macOS so far.".into())
     }
 }
 
@@ -328,6 +485,10 @@ mod tests {
         fn api_key(&self, _replacing: bool) -> Result<Option<String>, String> {
             self.asked.lock().unwrap().push("key");
             self.key.clone()
+        }
+        fn allow_internet(&self, _access: &InternetAccess) -> Result<bool, String> {
+            self.asked.lock().unwrap().push("internet");
+            self.cloud.clone()
         }
     }
 
@@ -444,6 +605,27 @@ mod tests {
         let busy = Scripted::new(Ok(false), Err("another one is open".into()));
         let result = enter_api_key(&busy, true, |_| panic!("nothing to store"));
         assert_eq!(result, Err("another one is open".to_string()));
+    }
+
+    #[test]
+    fn the_internet_question_lists_the_domains_or_warns_and_off_asks_nothing() {
+        let sites = InternetAccess {
+            mode: InternetMode::Allowlist,
+            domains: vec!["example.com".into(), "docs.example.org".into()],
+        };
+        let p = internet_prompt(&sites).unwrap();
+        assert!(p.body.contains("\u{2022} example.com\n"));
+        assert!(p.body.contains("\u{2022} docs.example.org\n"));
+        assert!(p.body.contains("ends when the task stops"));
+        let open = internet_prompt(&InternetAccess {
+            mode: InternetMode::OpenWeb,
+            domains: vec![],
+        })
+        .unwrap();
+        assert!(open.body.starts_with("Warning:"));
+        assert!(open.body.contains("untrusted") && open.body.contains("secrets"));
+        assert_ne!(p.confirm, open.confirm);
+        assert!(internet_prompt(&InternetAccess::off()).is_none());
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::computer::ComputerState;
 use crate::display::{ControlOwner, ObservedFrameMeta};
 use crate::ids::{ActionId, ComputerId, TaskId};
 use crate::policy::PolicyVerdict;
-use crate::tasks::TaskStatus;
+use crate::tasks::{InternetMode, TaskStatus};
 
 /// What an `AgentMessage` carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +24,23 @@ pub enum AgentMessageKind {
 
 /// Longest `AgentMessage.text` published (characters).
 pub const MAX_AGENT_MESSAGE_CHARS: usize = 4_000;
+
+/// One internet decision made by the host proxy (docs/EGRESS.md). Host,
+/// verdict, reason code, size and time only: never a path, query string,
+/// header or body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressDecision {
+    pub task_id: TaskId,
+    pub host: String,
+    pub allowed: bool,
+    /// Stable reason code: `allowed` or a deny code (`threat_malware`,
+    /// `inspect_download_not_safe`, ...). The UI words it.
+    pub reason: String,
+    pub bytes: u64,
+    /// Decisions dropped before this one because the UI was slow.
+    pub dropped_before: u64,
+    pub at: DateTime<Utc>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -179,6 +196,27 @@ pub enum AgentEvent {
     /// Host framebuffer view removed (stop, destroy, explicit detach).
     DisplayDetached {
         computer_id: ComputerId,
+        reason: String,
+        at: DateTime<Utc>,
+    },
+    /// The task's computer can reach the internet (consented, per task).
+    InternetOpened {
+        task_id: TaskId,
+        mode: InternetMode,
+        domains: Vec<String>,
+        at: DateTime<Utc>,
+    },
+    /// The task's internet access ended (kill switch: stop, pause,
+    /// takeover, task end, failure).
+    InternetClosed {
+        task_id: TaskId,
+        reason: String,
+        at: DateTime<Utc>,
+    },
+    /// The person asked for internet but the task runs offline (not
+    /// confirmed, or the channel could not open).
+    InternetUnavailable {
+        task_id: TaskId,
         reason: String,
         at: DateTime<Utc>,
     },

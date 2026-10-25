@@ -1,0 +1,134 @@
+/*
+ * Internet for a task: the choice in the composer and, while a task is
+ * online, the persistent indicator above the work bar with the live list
+ * of what Pegoles' proxy decided. Blue words mean Pegoles is acting; amber
+ * means you must mind it (open web). Colour never carries a verdict alone:
+ * every row says Allowed, Blocked or Failed in words.
+ */
+.internet-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 12px -14px;
+  padding: 12px 14px 26px;
+  border-radius: 16px 16px 0 0;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 0.5px var(--hairline);
+  font: var(--type-small);
+  color: var(--text-2);
+}
+.internet-panel__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.internet-panel__title { color: var(--text-1); font-weight: 600; }
+.internet-panel__note,
+.internet-panel__meta { margin: 0; color: var(--text-3); }
+.internet-panel__meta { display: flex; justify-content: space-between; gap: 12px; }
+.internet-panel__warning {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  color: var(--text-1);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 0.5px var(--warn-line);
+}
+.internet-panel__problem { margin: 0; color: var(--danger-text); }
+.internet-panel__sites { display: grid; gap: 6px; }
+
+.site-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 10px;
+  background: var(--well);
+  box-shadow: inset 0 0 0 0.5px var(--hairline);
+}
+.site-chips:focus-within { box-shadow: inset 0 0 0 1px var(--accent-line); }
+.site-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px 2px 2px 8px;
+  border-radius: 7px;
+  background: var(--fill-press);
+  color: var(--text-1);
+}
+.site-chip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.site-chip__remove {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  color: var(--text-3);
+}
+.site-chip__remove:hover { background: var(--fill-press); color: var(--text-1); }
+.site-chips__entry { flex: 1 1 140px; min-width: 120px; }
+.site-input {
+  width: 100%;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: var(--type-small);
+}
+.site-input:focus-visible { outline: none; }
+.site-input::placeholder { color: var(--text-3); }
+
+.netbar {
+  display: grid;
+  border-radius: 16px;
+  background: var(--surface-2);
+  box-shadow: var(--edge), var(--shadow-raised);
+  font: var(--type-small);
+}
+.netbar[data-mode="open_web"] {
+  background: linear-gradient(var(--warn-wash), var(--warn-wash)), var(--surface-2);
+  box-shadow: inset 0 0 0 0.5px var(--warn-line), var(--shadow-raised);
+}
+.netbar__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px 9px 14px;
+  border-radius: inherit;
+  text-align: left;
+  color: var(--text-2);
+}
+.netbar__head:hover { background: var(--fill-quiet); }
+.netbar__icon { display: grid; place-items: center; flex: none; color: var(--accent-text); }
+.netbar[data-mode="open_web"] .netbar__icon { color: var(--warn-text); }
+.netbar__text { display: grid; flex: 1; min-width: 0; }
+.netbar__title { color: var(--text-1); font-weight: 600; }
+.netbar__scope { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.netbar__count { flex: none; color: var(--text-3); }
+.netbar__chevron { flex: none; color: var(--icon-3); transition: transform var(--dur-micro) var(--ease-out); }
+.netbar__head[aria-expanded="false"] .netbar__chevron { transform: rotate(-90deg); }
+.netbar__body { display: grid; gap: 4px; padding: 0 14px 10px; }
+.netbar__list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.netbar__row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+}
+.netbar__verdict { font-weight: 600; color: var(--tone-done); }
+.netbar__row[data-verdict="blocked"] .netbar__verdict { color: var(--tone-error); }
+.netbar__row[data-verdict="failed"] .netbar__verdict { color: var(--tone-attention); }
+.netbar__host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.netbar__reason { color: var(--text-3); text-align: right; }
+.netbar__empty { margin: 0; color: var(--text-3); }
+
+@container (max-width: 520px) {
+  .netbar__count { display: none; }
+}
+@media (max-width: 520px) {
+  .netbar__count { display: none; }
+  .netbar__row { grid-template-columns: 52px minmax(0, 1fr); }
+  .netbar__reason { grid-column: 2; text-align: left; }
+}

@@ -7,7 +7,8 @@
 //! cargo run -p pegoles-inference --example models -- remove mai-ui-2b-6bit
 //! cargo run -p pegoles-inference --example models -- hw
 //! ```
-//! `PEGOLES_DATA_DIR` overrides the data directory.
+//! `PEGOLES_DATA_DIR` overrides the data directory (default: the app's own,
+//! `~/Library/Application Support/Pegoles` or `%LOCALAPPDATA%\Pegoles`).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -18,6 +19,9 @@ use pegoles_inference::{hardware, models_dir, Catalog, ModelStore};
 fn data_dir() -> PathBuf {
     if let Ok(p) = std::env::var("PEGOLES_DATA_DIR") {
         return PathBuf::from(p);
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        return PathBuf::from(local).join("Pegoles");
     }
     PathBuf::from(std::env::var("HOME").expect("HOME")).join("Library/Application Support/Pegoles")
 }
@@ -108,6 +112,8 @@ fn main() {
         Some("hw") => {
             println!("{:#?}", hardware::detect());
             println!("{:#?}", hardware::system_memory());
+            #[cfg(windows)]
+            println!("{:#?}", hardware::windows_acceleration());
         }
         _ => eprintln!(
             "usage: models list|install <id>|verify <id>|import <id> <dir>|remove <id>|hw"

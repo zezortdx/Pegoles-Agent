@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero-task.webp" width="880" alt="Pegoles running a task: the agent's narration on the left, the isolated VM on the right">
+  <img src="docs/images/hero-task.webp" width="880" alt="A finished Pegoles task: the agent's narration on the left, the isolated VM on the right with the agent's cursor where it clicked">
 </p>
 
 ## Quick start
@@ -74,7 +74,7 @@ Gatekeeper is not involved and nothing is turned off. To uninstall, delete
 | | |
 |---|---|
 | <img src="docs/images/home.webp" width="420" alt="Home"> | <img src="docs/images/task-running.webp" width="420" alt="A task running"> |
-| **Home.** Describe a task for the agent's computer. | **A task with Pegoles Local.** Its narration and each action beside the VM's screen. |
+| **Home.** Describe a task for the agent's computer. | **A task with Pegoles Local.** Its narration and each action beside the VM's screen, where the agent's cursor shows each click. |
 | <img src="docs/images/intelligence.webp" width="420" alt="Intelligence settings"> | <img src="docs/images/setup-computer.webp" width="420" alt="Setting up the computer"> |
 | **Pegoles Local.** The pinned model, downloaded and verified in the app. | **Set up computer.** The sealed image, downloaded and verified once. |
 
@@ -97,6 +97,26 @@ Pegoles Local completes short, concrete tasks with no API key (17 of 22
 goals on the real-VM benchmark, [details](benchmarks/local-models/README.md)).
 The evidence for each release gate is in
 [docs/RELEASE_GATES.md](docs/RELEASE_GATES.md).
+
+### Windows (in development, not released)
+
+A Windows 11 x64 version is being built on the `phase/windows-0.2`
+branch with the same design: Hyper-V's Host Compute System (works on
+Home with the Virtual Machine Platform feature, which onboarding helps
+turn on), a small privileged service that only creates Pegoles' VMs, an
+offline Debian guest, and Pegoles Local on llama.cpp (Vulkan or CPU) in
+an AppContainer sandbox. On GitHub's Windows Server runners it builds,
+passes its tests, installs, boots its own x64 guest through Hyper-V, and
+the agent operates that guest end to end (clicks, typing, screenshots,
+policy, cancel, recovery), but **it has not run on a Windows PC yet**,
+its x64 guest image is published and pinned (release
+`guest-image-x64-0.1`), and there is no public Windows download: an
+unsigned preview installer is being tried by invited testers
+([docs/WINDOWS_PREVIEW_TESTING.md](docs/WINDOWS_PREVIEW_TESTING.md)).
+The GGUF model path it uses scored 17 of 22 on the
+same real-VM benchmark on a Mac, like the MLX default. Status and
+evidence: [docs/PLATFORM_MATRIX.md](docs/PLATFORM_MATRIX.md),
+[docs/WINDOWS_ARCHITECTURE.md](docs/WINDOWS_ARCHITECTURE.md).
 
 ## Security model, briefly
 

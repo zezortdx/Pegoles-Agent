@@ -1,31 +1,32 @@
 [package]
 name = "pegoles-vm-host-windows"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 publish = false
-description = "Pegoles Windows VM host: HCS lifecycle + Hyper-V socket transport (Phase 3.6)"
+description = "Pegoles Windows VM host helper (unprivileged): the macOS helper's JSONL command set over the broker service, with the guest channel over Hyper-V sockets"
 license = "MIT"
 
 [[bin]]
 name = "pegoles-vm-host"
 path = "src/main.rs"
 
-[[bin]]
-name = "pegoles-windows-setup"
-path = "src/setup.rs"
-
 [dependencies]
 pegoles-computer = { path = "../../../crates/pegoles-computer" }
 pegoles-guest-proto = { path = "../../../crates/pegoles-guest-proto" }
-pegoles-protocol = { workspace = true }
+pegoles-broker-proto = { path = "../pegoles-broker-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Windows-only OS bindings (registry + Winsock for the setup tool and
-# Hyper-V socket transport). Never built on other platforms.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Networking_WinSock",
-  "Win32_System_Registry",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Hypervisor",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Services",
+  "Win32_System_Threading",
 ] }

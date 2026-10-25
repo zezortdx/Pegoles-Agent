@@ -147,6 +147,9 @@ pub struct StatusPayload {
     pub input_available: bool,
     /// A deterministic agent sequence currently owns control.
     pub agent_busy: bool,
+    /// The task's internet session: mode, domains, counters, recent
+    /// decisions (host, verdict, reason code, bytes, time).
+    pub internet: pegoles_core::EgressStatus,
     /// Phase 4 computer surface: viewport_state, viewport_issue,
     /// display_available, display_config, display_backend,
     /// display_attached, graphical_session, control_owner,
@@ -371,6 +374,7 @@ fn status_of(state: &AppState, agent: &AgentSupervisor) -> StatusPayload {
         display_setup_error: state.display_error.clone(),
         input_available: state.registry.input_available(),
         agent_busy: state.registry.input_status().agent_busy,
+        internet: state.registry.egress_status(),
         view: state
             .registry
             .computer_view_for(computer_state, state.preparing_image),
@@ -893,13 +897,19 @@ pub async fn return_control(state: tauri::State<'_, SharedState>) -> Result<Comp
 
 // --- tasks (created pending; `run_task` starts the agent) ---
 
+/// Create a pending task. `internet` is the task's mode and domain
+/// strings and nothing else (no URLs, paths or endpoints); it is validated
+/// here, refused with a sentence if wrong, and only ever confirmed
+/// natively when the task runs. Absent means off.
 #[tauri::command]
 pub async fn create_task(
     state: tauri::State<'_, SharedState>,
     title: String,
+    internet: Option<pegoles_protocol::InternetAccess>,
 ) -> Result<AgentTask, String> {
+    let internet = internet.unwrap_or_default();
     with_state(state.inner().clone(), move |s| {
-        s.tasks.submit_task(&title).map_err(err)
+        s.tasks.submit_task_with_internet(&title, &internet)
     })
     .await
 }
@@ -1376,15 +1386,21 @@ pub async fn run_task(
     state: tauri::State<'_, SharedState>,
     agent: tauri::State<'_, AgentSupervisor>,
     local: tauri::State<'_, LocalModels>,
+    consent: tauri::State<'_, ConsentGate>,
     task_id: String,
 ) -> Result<(), String> {
     let task: pegoles_protocol::TaskId = task_id.parse().map_err(|_| "invalid task id")?;
     let shared = state.inner().clone();
     let agent = agent.inner().clone();
     let local = local.inner().clone();
+    // The native question for this task's internet (the webview cannot
+    // answer it); asked by the run, only if the task wants internet.
+    let gate = consent.inner().clone();
+    let confirm: pegoles_agent::InternetConfirm =
+        Arc::new(move |access| gate.0.allow_internet(access));
     tauri::async_runtime::spawn_blocking(move || {
         let bus = lock_state(&shared).bus.clone();
-        crate::agent::start_run(shared, bus, agent, local, task)
+        crate::agent::start_run_with(shared, bus, agent, local, task, Some(confirm))
     })
     .await
     .map_err(|e| format!("background task failed: {e}"))?
@@ -1473,12 +1489,15 @@ mod tests {
             "display_setup_error",
             "input_available",
             "agent_busy",
+            "internet",
         ] {
             assert!(v.get(key).is_some(), "missing {key}: {v}");
         }
         assert_eq!(v["viewport_state"], "off");
         assert_eq!(v["display_backend"], "unavailable");
         assert_eq!(v["control_owner"], "none");
+        assert_eq!(v["internet"]["active"], false);
+        assert_eq!(v["internet"]["mode"], "off");
         assert_eq!(v["graphical_session"]["state"], "unavailable");
         s.registry.create_default().unwrap();
         s.registry.start().unwrap();
@@ -1510,4 +1529,256 @@ mod tests {
         .unwrap();
         assert_eq!(g.animate_ms, 0, "animate_ms is optional");
     }
+}
+
+// ── First-run onboarding ─────────────────────────────────────────────
+
+/// The model and the computer image are both in place (someone who set
+/// Pegoles up before onboarding existed is not sent through it again).
+pub fn already_set_up(shared: &SharedState, local: &LocalModels) -> bool {
+    let model = crate::agent::load_settings().local_model;
+    local.ready(&model)
+        && matches!(
+            lock_state(shared).registry.image_status(),
+            ImageStatus::Ready
+        )
+}
+
+/// Where the person is in onboarding (persisted across restarts).
+#[tauri::command]
+pub async fn get_onboarding(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<crate::onboarding::OnboardingState, String> {
+    let shared = state.inner().clone();
+    let local = local.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        Ok(crate::onboarding::load(&data, || {
+            already_set_up(&shared, &local)
+        }))
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Remember the screen the person reached, so a restart resumes there.
+#[tauri::command]
+pub async fn set_onboarding_step(
+    step: crate::onboarding::Step,
+) -> Result<crate::onboarding::OnboardingState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        let mut next = crate::onboarding::load(&data, || false);
+        next.step = step;
+        // Reaching the check again means any requested restart happened.
+        if step == crate::onboarding::Step::Check {
+            next.restart_requested = false;
+        }
+        crate::onboarding::save(&data, &next)?;
+        Ok(next)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Onboarding is over: the main window from now on.
+#[tauri::command]
+pub async fn finish_onboarding() -> Result<crate::onboarding::OnboardingState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        let done = crate::onboarding::OnboardingState::finished();
+        crate::onboarding::save(&data, &done)?;
+        Ok(done)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// The system check's facts (blocking: reads the OS, the model store and
+/// the image status). Shared by onboarding and the diagnostic report.
+fn gather_system_check(
+    shared: &SharedState,
+    local: &LocalModels,
+) -> crate::onboarding::SystemCheck {
+    let data = pegoles_computer::pegoles_data_dir();
+    let settings = crate::agent::load_settings();
+    let runtime = local.payload();
+    let catalog = pegoles_inference::Catalog::builtin();
+    let model_bytes = catalog
+        .get(&settings.local_model)
+        .map_or(0, pegoles_inference::ModelSpec::total_bytes);
+    let image_ready = matches!(
+        lock_state(shared).registry.image_status(),
+        ImageStatus::Ready
+    );
+    let image_bytes =
+        pegoles_computer::image_release::release_image(&pegoles_computer::active_image_id())
+            .map_or(0, |pin| pin.archive.bytes + pin.disk.bytes);
+    let setup = crate::onboarding::SetupFacts {
+        runtime_ready: runtime.runtime_ready,
+        runtime_problem: runtime.runtime_problem.clone(),
+        model_ready: local.ready(&settings.local_model),
+        model_bytes,
+        image_ready,
+        image_bytes,
+        disk_free_bytes: pegoles_inference::store::free_disk_bytes(&data),
+    };
+    crate::onboarding::check(crate::onboarding::host_facts(), setup)
+}
+
+/// Can this computer run Pegoles? OS, processor, virtualization, memory,
+/// disk, acceleration and the bundled runtime, plus what is already set up.
+#[tauri::command]
+pub async fn system_check(
+    state: tauri::State<'_, SharedState>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<crate::onboarding::SystemCheck, String> {
+    let shared = state.inner().clone();
+    let local = local.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(gather_system_check(&shared, &local)))
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// A saved diagnostic report: where it went (home folder as `~`) and its text.
+#[derive(Debug, Serialize, Clone)]
+pub struct DiagnosticReportPayload {
+    pub file_name: String,
+    pub location: String,
+    pub text: String,
+}
+
+/// Build and save a diagnostic report (technical facts only, see
+/// `diagnostics.rs`) in `dir`, or the person's Downloads folder. The
+/// Anthropic key is never read into the report: only whether one is set.
+/// Blocking; shared by the command and `examples/diagnostic_report.rs`.
+pub fn write_diagnostic_report(
+    shared: &SharedState,
+    agent: &AgentSupervisor,
+    local: &LocalModels,
+    dir: Option<&std::path::Path>,
+) -> Result<DiagnosticReportPayload, String> {
+    let data = pegoles_computer::pegoles_data_dir();
+    let system = gather_system_check(shared, local);
+    let settings = crate::agent::load_settings();
+    let runtime = local.payload();
+    let key_source = crate::agent::load_api_key().map(|(_, source)| source);
+    let (status, events, boot_log_path) = {
+        let s = lock_state(shared);
+        let events: Vec<serde_json::Value> = s
+            .event_log
+            .iter()
+            .filter_map(|e| serde_json::to_value(e).ok())
+            .collect();
+        (status_of(&s, agent), events, s.registry.serial_log_path())
+    };
+    let boot_log = boot_log_path
+        .and_then(|path| {
+            pegoles_core::ComputerRegistry::read_boot_log_file(
+                &path,
+                crate::diagnostics::BOOT_LOG_LINES,
+            )
+            .ok()
+        })
+        .map(|log| log.tail)
+        .unwrap_or_default();
+    // As the app sees it at start: an existing install counts as onboarded.
+    let onboarding = crate::onboarding::load(&data, || already_set_up(shared, local));
+    let intelligence = serde_json::json!({
+        "provider": settings.provider,
+        "local_model": settings.local_model,
+        "runtime_ready": runtime.runtime_ready,
+        "runtime_problem": runtime.runtime_problem,
+        "loaded_model": runtime.loaded_model,
+        "host_supported": runtime.host_supported,
+        "chip": runtime.chip,
+        "models": runtime.models.iter().map(|m| serde_json::json!({
+            "id": m.id, "state": m.state, "invalid_reason": m.invalid_reason,
+        })).collect::<Vec<_>>(),
+        "install": runtime.install,
+        "anthropic_key_configured": key_source.is_some(),
+    });
+    #[cfg(windows)]
+    let windows = serde_json::to_value(pegoles_computer::windows::readiness()).ok();
+    #[cfg(not(windows))]
+    let windows: Option<serde_json::Value> = None;
+    let home = crate::diagnostics::home_dir();
+    let now = chrono::Utc::now();
+    let report = crate::diagnostics::build(crate::diagnostics::ReportFacts {
+        created_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        app_version: env!("CARGO_PKG_VERSION"),
+        commit: option_env!("PEGOLES_BUILD_COMMIT"),
+        release_build: !cfg!(debug_assertions),
+        system_check: serde_json::to_value(&system).unwrap_or_default(),
+        onboarding: serde_json::to_value(&onboarding).unwrap_or_default(),
+        intelligence,
+        status: serde_json::to_value(&status).unwrap_or_default(),
+        windows,
+        events,
+        boot_log,
+        home: home.as_ref().map(|h| h.to_string_lossy().into_owned()),
+    });
+    let text = serde_json::to_string_pretty(&report)
+        .map_err(|e| format!("could not write the report: {e}"))?;
+    let dir = dir.map_or_else(
+        || crate::diagnostics::report_dir(home.as_deref(), &data),
+        std::path::Path::to_path_buf,
+    );
+    let file_name = crate::diagnostics::file_name(now);
+    std::fs::write(dir.join(&file_name), &text)
+        .map_err(|e| format!("could not save the report in {}: {e}", dir.display()))?;
+    let location = crate::diagnostics::sanitize(
+        &dir.to_string_lossy(),
+        home.as_ref().map(|h| h.to_string_lossy()).as_deref(),
+    );
+    Ok(DiagnosticReportPayload {
+        file_name,
+        location,
+        text,
+    })
+}
+
+/// Save a diagnostic report in the person's Downloads folder, to send to
+/// whoever helps them (Settings → Help, onboarding's failure screens).
+#[tauri::command]
+pub async fn save_diagnostic_report(
+    state: tauri::State<'_, SharedState>,
+    agent: tauri::State<'_, AgentSupervisor>,
+    local: tauri::State<'_, LocalModels>,
+) -> Result<DiagnosticReportPayload, String> {
+    let shared = state.inner().clone();
+    let agent = agent.inner().clone();
+    let local = local.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        write_diagnostic_report(&shared, &agent, &local, None)
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Turn on what Windows needs for Pegoles' computer. Windows asks for
+/// administrator approval in its own prompt (the onboarding explains why
+/// first); a restart usually follows. Refused where nothing can be fixed.
+#[tauri::command]
+pub async fn fix_virtualization() -> Result<crate::onboarding::FixOutcome, String> {
+    tauri::async_runtime::spawn_blocking(crate::onboarding::fix_virtualization)
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
+}
+
+/// Restart Windows to finish turning virtualization on. Only after the
+/// person pressed "Restart now"; onboarding resumes after they sign in.
+#[tauri::command]
+pub async fn restart_to_finish_setup() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = pegoles_computer::pegoles_data_dir();
+        let mut next = crate::onboarding::load(&data, || false);
+        next.step = crate::onboarding::Step::Check;
+        next.restart_requested = true;
+        crate::onboarding::save(&data, &next)?;
+        crate::onboarding::restart_host()
+    })
+    .await
+    .map_err(|e| format!("background task failed: {e}"))?
 }

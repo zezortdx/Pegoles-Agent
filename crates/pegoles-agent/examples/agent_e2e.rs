@@ -1,4 +1,5 @@
-//! Real end-to-end proof on Apple Silicon: the product orchestrator
+//! Real end-to-end proof on Apple Silicon (and, with the same code, on
+//! Windows through the Host Compute System): the product orchestrator
 //! (`run_task` + `CoreComputer`, the same code the desktop app runs)
 //! drives a real Virtualization.framework VM booted from the sealed
 //! Pegoles image. No mocks: every action crosses Core's executor,
@@ -22,6 +23,13 @@
 //! 5. recovery: kill the guest runtime from inside the guest; the host
 //!    sees the disconnect and the runtime reconnects;
 //! 6. teardown, then a second session boots and observes successfully.
+//!
+//! On Windows, with Pegoles' broker service installed: a release build
+//! placed next to the installed helper boots the published, pinned x64
+//! image (installed by `install_image`, re-hashed before boot); CI's
+//! `windows-guest-boot` job runs it that way. A debug build can instead
+//! boot a locally sealed image (`seal_x64_image`) with
+//! `PEGOLES_VM_HOST_WINDOWS` pointing at the installed helper.
 //!
 //! `PEGOLES_E2E_OUT=<dir>` saves the verification frames as PNG.
 //! Exit 0 only when every assertion holds.
@@ -58,10 +66,14 @@ impl CoreAccess for Shared {
 fn fail(msg: &str, shared: &Shared) -> ! {
     eprintln!("AGENT E2E FAIL: {msg}");
     shared.with_core(|r, _| {
-        if let Ok(log) = r.read_boot_log(40) {
-            for line in log.tail {
-                eprintln!("serial: {line}");
+        match r.read_boot_log(40) {
+            Ok(log) => {
+                eprintln!("serial log: {} lines shown", log.tail.len());
+                for line in log.tail {
+                    eprintln!("serial: {line}");
+                }
             }
+            Err(e) => eprintln!("serial log unavailable: {e}"),
         }
         let _ = r.destroy();
     });
@@ -155,12 +167,34 @@ fn main() {
     println!("image: {}", pegoles_computer::active_image_id());
     let bus = EventBus::new();
     let shared = Shared(Arc::new(Mutex::new(Core {
+        // The host's own backend: Virtualization.framework on a Mac, the
+        // Host Compute System (through the broker service) on Windows.
         registry: ComputerRegistry::with_backend_kind(
             bus.clone(),
-            BackendKind::MacOSVirtualization,
+            if cfg!(windows) {
+                BackendKind::WindowsHcs
+            } else {
+                BackendKind::MacOSVirtualization
+            },
         ),
         tasks: TaskManager::new(bus.clone()),
     })));
+    // Guest and computer lifecycle events, as they happen (diagnostics:
+    // why a boot or a handshake failed).
+    {
+        let mut events = bus.subscribe();
+        std::thread::spawn(move || {
+            while let Ok(event) = events.blocking_recv() {
+                let text = format!("{event:?}");
+                if text.starts_with("Guest")
+                    || text.starts_with("Computer")
+                    || text.starts_with("InputCapability")
+                {
+                    eprintln!("event: {}", text.chars().take(300).collect::<String>());
+                }
+            }
+        });
+    }
     // Core maintenance independent of any caller (the desktop app runs
     // the same loop): guest heartbeats keep flowing during waits.
     {

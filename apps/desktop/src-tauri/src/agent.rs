@@ -19,8 +19,10 @@ use std::sync::{Arc, Mutex};
 use pegoles_agent::anthropic::{
     AnthropicConfig, AnthropicPlanner, DEFAULT_EFFORT, DEFAULT_MODEL, EFFORTS, SUPPORTED_MODELS,
 };
-use pegoles_agent::{run_task, CoreAccess, CoreComputer, Planner, RunLimits};
-use pegoles_core::{CancellationToken, ComputerRegistry, EventBus, TaskManager};
+use pegoles_agent::{
+    run_task, CoreAccess, CoreComputer, InternetConfirm, InternetPlan, Planner, RunLimits,
+};
+use pegoles_core::{CancellationToken, ComputerRegistry, EgressKill, EventBus, TaskManager};
 use pegoles_protocol::{TaskId, TaskStatus};
 use serde::{Deserialize, Serialize};
 
@@ -44,11 +46,32 @@ impl CoreAccess for AppCore {
 /// At most one agent run at a time (one computer). The cancel token is
 /// held outside the app-state lock so Stop is always immediate.
 #[derive(Clone, Default)]
-pub struct AgentSupervisor(Arc<Mutex<Option<(TaskId, CancellationToken)>>>);
+pub struct AgentSupervisor {
+    run: Arc<Mutex<Option<(TaskId, CancellationToken)>>>,
+    /// Cuts the task's internet session without the app lock (docs/EGRESS.md
+    /// kill switch): every Stop, pause, takeover and exit goes through
+    /// `cancel`, so the internet ends with the run, not a planner turn later.
+    internet: Arc<Mutex<Option<EgressKill>>>,
+}
 
 impl AgentSupervisor {
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<(TaskId, CancellationToken)>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.run.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Wire the lock-free internet kill switch (once, at startup).
+    pub fn set_internet_kill(&self, kill: EgressKill) {
+        *self.internet.lock().unwrap_or_else(|e| e.into_inner()) = Some(kill);
+    }
+
+    /// Cut the internet session now, whatever the run is doing.
+    pub fn cut_internet(&self, reason: &str) -> bool {
+        let kill = self
+            .internet
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        kill.is_some_and(|k| k.kill(reason))
     }
 
     fn claim(&self, task: TaskId) -> Result<CancellationToken, String> {
@@ -71,13 +94,17 @@ impl AgentSupervisor {
     /// Cancel the active run (all runs when `task` is None). Returns
     /// whether a run was signalled.
     pub fn cancel(&self, task: Option<TaskId>) -> bool {
-        match self.slot().as_ref() {
+        let signalled = match self.slot().as_ref() {
             Some((running, cancel)) if task.is_none_or(|t| t == *running) => {
                 cancel.cancel();
                 true
             }
             _ => false,
+        };
+        if signalled || task.is_none() {
+            self.cut_internet("the task was stopped");
         }
+        signalled
     }
 
     pub fn active(&self) -> Option<TaskId> {
@@ -208,7 +235,9 @@ pub enum KeySource {
     Environment,
 }
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "dev.pegoles.agent";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "anthropic-api-key";
 
 /// Shape check only (the API is the authority). Rejects anything that
@@ -284,6 +313,8 @@ pub fn delete_api_key() -> Result<(), String> {
 // --- runs ------------------------------------------------------------------
 
 /// Start the model-driven run for a pending task on a dedicated thread.
+/// Without a way to ask the person (`start_run_with(.., None)`), a task
+/// that wants internet runs offline.
 pub fn start_run(
     shared: SharedState,
     bus: EventBus,
@@ -291,15 +322,29 @@ pub fn start_run(
     local: LocalModels,
     task: TaskId,
 ) -> Result<(), String> {
+    start_run_with(shared, bus, supervisor, local, task, None)
+}
+
+/// [`start_run`] with the native consent for the task's internet access.
+pub fn start_run_with(
+    shared: SharedState,
+    bus: EventBus,
+    supervisor: AgentSupervisor,
+    local: LocalModels,
+    task: TaskId,
+    internet_consent: Option<InternetConfirm>,
+) -> Result<(), String> {
     let settings = load_settings();
-    let objective = {
+    let (objective, internet) = {
         let guard = lock_state(&shared);
         let t = guard.tasks.get(&task).map_err(|e| e.to_string())?;
         if t.status != TaskStatus::Pending {
             return Err(format!("task is {:?}, not pending", t.status));
         }
-        t.title.clone()
+        (t.title.clone(), t.internet.clone())
     };
+    let confirm: InternetConfirm = internet_consent
+        .unwrap_or_else(|| Arc::new(|_| Err("there is no way to confirm it here".to_string())));
     // Build the planner before claiming the run slot: a missing model or
     // key is an immediate, explained refusal.
     let mut planner: Box<dyn Planner> = match settings.provider {
@@ -322,7 +367,14 @@ pub fn start_run(
             // Frees the run slot even if the run panics.
             let _slot = SlotGuard(slot, task);
             let _use = local.in_use();
-            let computer = CoreComputer::new(AppCore(shared), bus);
+            let mut computer = CoreComputer::new(AppCore(shared), bus);
+            if !internet.is_off() {
+                computer = computer.with_internet(InternetPlan {
+                    task,
+                    access: internet,
+                    confirm,
+                });
+            }
             let _report = run_task(
                 task,
                 &objective,
@@ -343,6 +395,9 @@ struct SlotGuard(AgentSupervisor, TaskId);
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
+        // Belt and braces: however the run ended (even a panic), its
+        // internet ends with it before the slot frees for the next task.
+        self.0.cut_internet("the task ended");
         self.0.release(self.1);
     }
 }

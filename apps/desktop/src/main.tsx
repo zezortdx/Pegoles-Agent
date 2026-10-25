@@ -5,6 +5,7 @@ import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/shell.css";
 import "./styles/composer.css";
+import "./styles/internet.css";
 import "./styles/home.css";
 import "./styles/task.css";
 import "./styles/computer.css";

@@ -1,20 +1,43 @@
 /**
- * AgentCursorController — imperative, React-free driver of the AgentCursor.
+ * AgentCursorController — imperative, React-free driver of THE AGENT's
+ * cursor in the computer preview. A visualization of actions that already
+ * happened in the guest: it never feeds input anywhere and nothing waits
+ * for it.
  *
- * Performance architecture:
- * - Positions never touch React state or context. Every frame writes
- *   `transform` / `opacity` straight onto a handful of DOM nodes inside an
- *   isolated overlay layer.
- * - The rAF loop runs ONLY while something moves (spring not settled, or
- *   the trail still catching up) and stops the frame it settles. It never
- *   runs while the document is hidden: hiding snaps to the target.
- * - Click ripple / press feedback / reduced-motion fades use WAAPI
- *   (compositor), not the loop.
+ * Behaviour:
+ * - Every action targets a NORMALIZED guest point; the frame rectangle
+ *   (set by the layer from its size and the guest frame size) maps it to
+ *   overlay pixels on every render, so a resize mid-glide stays exact.
+ * - One glide at a time. A new action starts a fresh glide from the
+ *   position on screen right now (see glide.ts); an effect still waiting
+ *   for the old glide to land (a click pulse) plays at once, at its own real
+ *   coordinate. Nothing is ever queued behind the newest action.
+ * - `stop()` (Stop, task cancelled or failed, the person taking control,
+ *   the computer stopping or being replaced) cancels motion and effects in
+ *   the same call and forgets the position.
+ *
+ * Performance: positions never touch React. The rAF loop runs only while a
+ * glide is in flight and writes `transform` on two nodes; pulses and cues
+ * are Web Animations (compositor). No layout is read here: the layer
+ * measures with a ResizeObserver.
  */
-import { effectsTiers, type EffectsTier } from "../tokens/effects.js";
+import type { EffectsTier } from "../tokens/effects.js";
 import { easing } from "../tokens/motion.js";
-import { canTransition, transitionCursor, type CursorEvent, type CursorState } from "./cursorMachine.js";
-import { AGENT_CURSOR_SPRING, isSettled, stepSpring, type SpringAxis, type SpringConfig } from "./spring.js";
+import { DRAG_APPROACH_MAX_MS, dragDuration, glideDuration, sampleGlide, startGlide, type Glide } from "./glide.js";
+import { clampUnit, snapToDevice, toOverlay, type Point, type Rect } from "./mapping.js";
+
+export const CURSOR_STATES = [
+  "hidden",
+  "moving",
+  "clicking",
+  "dragging",
+  "scrolling",
+  "typing",
+  "observing",
+  "thinking",
+  "done",
+] as const;
+export type CursorState = (typeof CURSOR_STATES)[number];
 
 export interface FrameScheduler {
   request(callback: (now: number) => void): number;
@@ -22,61 +45,50 @@ export interface FrameScheduler {
   now(): number;
 }
 
-export interface CursorTimers {
-  setTimeout(fn: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
-
 export interface AgentCursorElements {
-  /** Overlay root; receives data-state / data-tier / data-rm. */
+  /** Overlay root; receives data-state / data-pressed / data-tier / data-rm. */
   readonly root: HTMLElement;
   /** Positioned so its origin is the pointer's hotspot. */
   readonly pointer: HTMLElement;
   /** Inner node for press feedback (scale), so it never fights the position. */
   readonly pointerBody: HTMLElement;
-  /** Up to MAX_TRAIL_ELEMENTS nodes; extras are hidden per tier. */
-  readonly trail: readonly HTMLElement[];
-  readonly ripple: HTMLElement;
-  /** 1 px-wide base line, origin at its left-middle. */
+  /** Two rings: a click uses the first, a double click both. */
+  readonly pulses: readonly [HTMLElement, HTMLElement];
+  /** 1 px-wide line, origin at its left-middle, scaled to the drag. */
   readonly dragPath: HTMLElement;
+  /** Small directional mark shown beside the pointer on a scroll. */
+  readonly scrollCue: HTMLElement;
 }
 
 export interface AgentCursorControllerOptions {
   readonly elements: AgentCursorElements;
   readonly tier?: EffectsTier;
   readonly reducedMotion?: boolean;
-  readonly spring?: SpringConfig;
   readonly scheduler?: FrameScheduler;
-  readonly timers?: CursorTimers;
   readonly document?: Document;
+  readonly devicePixelRatio?: () => number;
 }
 
-export interface CursorPoint {
-  readonly x: number;
-  readonly y: number;
+/** Click pulse: a soft ring, ~220 ms. */
+export const PULSE_MS = 220;
+/** A double click is two pulses this far apart. */
+export const DOUBLE_GAP_MS = 110;
+/** Reduced motion: the ring only fades, no growth. */
+export const RM_PULSE_MS = 160;
+export const SCROLL_CUE_MS = 420;
+export const PRESS_MS = 160;
+
+type Effect =
+  | { readonly kind: "pulse"; readonly at: Point; readonly count: 1 | 2 }
+  | { readonly kind: "scroll"; readonly at: Point; readonly dx: number; readonly dy: number };
+
+interface DragLeg {
+  readonly to: Point;
+  readonly durationMs: number;
 }
 
-/** Rendered trail nodes (Full). */
-export const MAX_TRAIL_ELEMENTS = 4;
-/** Trail samples per tier: a few in Full, one in Reduced, none in Minimal. */
-export const TRAIL_BY_TIER: Readonly<Record<EffectsTier, number>> = { full: 4, reduced: 1, minimal: 0 };
-/** Each trail sample lags the previous one by this much time. */
-export const TRAIL_LAG_MS = 18;
-/** Click ripple / refraction duration (150–180 ms). */
-export const CLICK_MS = 170;
-/** Reduced motion: moves become a quick fade at the destination. */
-export const RM_FADE_MS = 160;
-const DRAG_FADE_DELAY_MS = 120;
-/** Speed (px/s) at which the trail reaches full opacity. */
-const TRAIL_FULL_SPEED = 900;
-const MAX_DT_S = 0.1;
-const HISTORY = 48;
-
-interface Sample {
-  readonly t: number;
-  readonly x: number;
-  readonly y: number;
-}
+const ZERO: Point = { x: 0, y: 0 };
+const EMPTY: Rect = { x: 0, y: 0, width: 0, height: 0 };
 
 const rafScheduler: FrameScheduler = {
   request: (cb) => requestAnimationFrame(cb),
@@ -84,83 +96,89 @@ const rafScheduler: FrameScheduler = {
   now: () => performance.now(),
 };
 
-const defaultTimers: CursorTimers = {
-  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
-  clearTimeout: (h) => globalThis.clearTimeout(h as ReturnType<typeof setTimeout>),
-};
-
-function finite(n: number): number {
-  return Number.isFinite(n) ? n : 0;
+function unit(p: Point): Point {
+  return { x: clampUnit(p.x), y: clampUnit(p.y) };
 }
 
-function play(el: HTMLElement, frames: Keyframe[], ms: number): void {
-  if (typeof el.animate === "function") {
-    el.animate(frames, { duration: ms, easing: easing.out, fill: "none" });
-  }
+function play(el: HTMLElement, frames: Keyframe[], options: KeyframeAnimationOptions): void {
+  if (typeof el.animate === "function") el.animate(frames, { fill: "none", ...options });
 }
 
-export function trailLengthFor(tier: EffectsTier, reducedMotion: boolean): number {
-  if (reducedMotion) return 0;
-  return Math.min(TRAIL_BY_TIER[tier], effectsTiers[tier].cursorTrailLength, MAX_TRAIL_ELEMENTS);
+function cancelAnimations(el: HTMLElement): void {
+  if (typeof el.getAnimations === "function") for (const a of el.getAnimations()) a.cancel();
 }
 
 export class AgentCursorController {
   private readonly el: AgentCursorElements;
   private readonly scheduler: FrameScheduler;
-  private readonly timers: CursorTimers;
   private readonly doc: Document | null;
-  private readonly springConfig: SpringConfig;
-  private tier: EffectsTier;
+  private readonly dpr: () => number;
   private reducedMotion: boolean;
   private current: CursorState = "hidden";
-  private x: SpringAxis = { position: 0, velocity: 0 };
-  private y: SpringAxis = { position: 0, velocity: 0 };
-  private target: CursorPoint = { x: 0, y: 0 };
-  private dragFrom: CursorPoint | null = null;
-  private history: Sample[] = [];
-  private lastMotion = -Infinity;
-  private lastTime = 0;
+  private frameRect: Rect = EMPTY;
+  /** Normalized position on screen; null until the first action (and after stop). */
+  private pos: Point | null = null;
+  private glide: Glide | null = null;
+  private dragLeg: DragLeg | null = null;
+  private dragFrom: Point | null = null;
+  private pending: Effect | null = null;
+  private pressed = false;
   private frame: number | null = null;
-  private clickTimer: unknown = null;
-  private dragFadeTimer: unknown = null;
-  private pending: ((arrived: boolean) => void) | null = null;
-  private disposed = false;
   private frames = 0;
+  private disposed = false;
   private readonly listeners = new Set<(state: CursorState) => void>();
 
   constructor(options: AgentCursorControllerOptions) {
     this.el = options.elements;
     this.scheduler = options.scheduler ?? rafScheduler;
-    this.timers = options.timers ?? defaultTimers;
     this.doc = options.document ?? (typeof document === "undefined" ? null : document);
-    this.springConfig = options.spring ?? AGENT_CURSOR_SPRING;
-    this.tier = options.tier ?? "full";
+    this.dpr = options.devicePixelRatio ?? (() => (typeof window === "undefined" ? 1 : window.devicePixelRatio || 1));
     this.reducedMotion = options.reducedMotion ?? false;
     this.doc?.addEventListener("visibilitychange", this.onVisibility);
-    this.applyEnvironment();
+    this.setTier(options.tier ?? "full");
+    this.setReducedMotion(this.reducedMotion);
     this.writeState();
-    this.render(this.scheduler.now());
+    this.render();
   }
 
-  // ── Public API ────────────────────────────────────────────────────────
+  // ── Diagnostics ─────────────────────────────────────────────────────
 
   get state(): CursorState {
     return this.current;
   }
 
-  /** Displayed hotspot position (px, overlay space). */
-  get position(): CursorPoint {
-    return { x: this.x.position, y: this.y.position };
+  /** Normalized position on screen now (null before the first action). */
+  get normalizedPosition(): Point | null {
+    const glide = this.glide;
+    if (!glide) return this.pos;
+    return sampleGlide(glide, this.scheduler.now()).position;
   }
 
-  /** True while the rAF loop is scheduled. */
+  /** Hotspot in overlay px (as last rendered). */
+  get position(): Point {
+    return this.pos ? toOverlay(this.pos, this.frameRect) : ZERO;
+  }
+
+  /** Where the current glide ends (normalized), if one is in flight. */
+  get target(): Point | null {
+    return this.glide?.to ?? null;
+  }
+
   get isAnimating(): boolean {
     return this.frame !== null;
   }
 
-  /** Frames rendered by the loop since creation (diagnostics / perf readout). */
+  /** Visual work waiting behind the current glide: never more than one effect plus a drag's second leg. */
+  get backlog(): number {
+    return (this.pending ? 1 : 0) + (this.dragLeg ? 1 : 0);
+  }
+
   get frameCount(): number {
     return this.frames;
+  }
+
+  get frameRectangle(): Rect {
+    return this.frameRect;
   }
 
   subscribe(listener: (state: CursorState) => void): () => void {
@@ -168,153 +186,205 @@ export class AgentCursorController {
     return () => this.listeners.delete(listener);
   }
 
-  /** Glide to (x, y). Resolves true on arrival, false if interrupted. */
-  moveTo(x: number, y: number): Promise<boolean> {
-    if (this.disposed) return Promise.resolve(false);
-    const point = { x: finite(x), y: finite(y) };
-    if (this.current === "hidden") {
-      this.jumpTo(point);
-      return Promise.resolve(false);
-    }
-    this.send("move");
-    return this.travelTo(point);
+  // ── Actions (each one is a real agent action that already happened) ──
+
+  moveTo(point: Point): void {
+    if (!this.begin()) return;
+    this.setState("moving");
+    this.travel(unit(point));
   }
 
-  /** Brief 170 ms ripple/refraction at the hotspot. */
-  click(): void {
-    if (this.disposed || !canTransition(this.current, "click")) return;
-    this.send("click");
-    const { x, y } = this.position;
-    const at = `translate3d(${x}px, ${y}px, 0)`;
-    if (this.reducedMotion) {
-      play(this.el.ripple, [
-        { transform: `${at} scale(1)`, opacity: 0.85 },
-        { transform: `${at} scale(1)`, opacity: 0 },
-      ], CLICK_MS);
-    } else {
-      play(this.el.ripple, [
-        { transform: `${at} scale(0.35)`, opacity: 0.9 },
-        { transform: `${at} scale(1.6)`, opacity: 0 },
-      ], CLICK_MS);
-      play(this.el.pointerBody, [{ transform: "scale(0.86)" }, { transform: "scale(1)" }], CLICK_MS);
-    }
-    if (this.clickTimer !== null) this.timers.clearTimeout(this.clickTimer);
-    this.clickTimer = this.timers.setTimeout(() => {
-      this.clickTimer = null;
-      this.send("clickEnd");
-    }, CLICK_MS);
+  click(point: Point, count: 1 | 2 = 1): void {
+    if (!this.begin()) return;
+    this.setState("clicking");
+    const at = unit(point);
+    this.pending = { kind: "pulse", at, count };
+    this.travel(at);
   }
 
-  /** Press-and-drag from the current position to (x, y), drawing a fading direction path. */
-  dragTo(x: number, y: number): Promise<boolean> {
-    if (this.disposed || !canTransition(this.current, "dragStart")) return Promise.resolve(false);
-    this.send("dragStart");
-    this.dragFrom = this.position;
-    if (this.dragFadeTimer !== null) this.timers.clearTimeout(this.dragFadeTimer);
-    this.dragFadeTimer = null;
-    this.el.dragPath.style.opacity = "1";
-    return this.travelTo({ x: finite(x), y: finite(y) });
+  /** mouse_down: the pointer is held from here on (a pulse marks the press). */
+  press(point: Point): void {
+    if (!this.begin()) return;
+    this.setState("clicking");
+    const at = unit(point);
+    this.setPressed(true);
+    this.pending = { kind: "pulse", at, count: 1 };
+    this.travel(at);
   }
+
+  /** mouse_up: travel there and let go. */
+  release(point: Point): void {
+    if (!this.begin()) return;
+    this.setState("moving");
+    this.travel(unit(point));
+    this.setPressed(false);
+  }
+
+  /**
+   * Press at `from`, move continuously to `to` at the real drag's pace
+   * (`durationMs`, bounded), release. A faint path shows the stroke and
+   * fades as soon as it ends.
+   */
+  drag(from: Point, to: Point, durationMs: number): void {
+    if (!this.begin()) return;
+    this.setState("dragging");
+    const start = unit(from);
+    this.dragLeg = { to: unit(to), durationMs: dragDuration(durationMs, this.motionReduced()) };
+    this.travel(start, DRAG_APPROACH_MAX_MS);
+  }
+
+  scroll(point: Point, dx: number, dy: number): void {
+    if (!this.begin()) return;
+    this.setState("scrolling");
+    const at = unit(point);
+    this.pending = { kind: "scroll", at, dx: Number.isFinite(dx) ? dx : 0, dy: Number.isFinite(dy) ? dy : 0 };
+    this.travel(at);
+  }
+
+  // ── State only (no motion; a glide in flight finishes normally) ──────
 
   typing(on: boolean): void {
-    if (this.disposed) return;
-    this.send(on ? "typeStart" : "typeEnd");
+    if (this.disposed || this.current === "hidden") return;
+    this.setState(on ? "typing" : "thinking");
   }
 
-  /** Become still and show attention (subtle ring; no bouncing). */
-  wait(): void {
-    if (this.disposed) return;
-    this.send("wait");
+  /** The agent is looking at its screen: visible but subdued. */
+  observe(): void {
+    if (this.disposed || this.current === "hidden") return;
+    this.setState("observing");
   }
 
-  /** Human took control (or no agent action): disappear immediately. */
-  hide(): void {
-    if (this.disposed) return;
-    this.send("hide");
-    this.settleNow();
+  /** Between actions (the planner is thinking, a wait): quieter. */
+  think(): void {
+    if (this.disposed || this.current === "hidden") return;
+    this.setState("thinking");
   }
 
-  show(): void {
+  /** The task finished: settle where the last action was, unobtrusive. */
+  done(): void {
+    if (this.disposed || this.current === "hidden") return;
+    this.setState("done");
+  }
+
+  /**
+   * Stop, reset, cancellation, failure, the person taking control, the
+   * computer stopping or being replaced: everything visual ends now.
+   */
+  stop(): void {
     if (this.disposed) return;
-    this.send("show");
+    this.stopLoop();
+    this.glide = null;
+    this.dragLeg = null;
+    this.pending = null;
+    this.pos = null;
+    this.endDragPath(false);
+    this.setPressed(false);
+    for (const node of [...this.el.pulses, this.el.scrollCue, this.el.pointerBody]) cancelAnimations(node);
+    this.setState("hidden");
+  }
+
+  // ── Environment ──────────────────────────────────────────────────────
+
+  /** The guest frame's rectangle inside the overlay (px). */
+  setFrame(rect: Rect): void {
+    if (this.disposed) return;
+    this.frameRect = rect;
+    this.render();
   }
 
   setTier(tier: EffectsTier): void {
-    this.tier = tier;
-    this.applyEnvironment();
+    this.el.root.setAttribute("data-tier", tier);
   }
 
   setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
-    this.applyEnvironment();
-    if (reducedMotion) this.settleNow();
+    this.el.root.setAttribute("data-rm", reducedMotion ? "true" : "false");
+    if (reducedMotion) this.finishNow(true);
   }
 
   dispose(): void {
     if (this.disposed) return;
-    this.stopLoop();
-    this.resolvePending(false);
-    if (this.clickTimer !== null) this.timers.clearTimeout(this.clickTimer);
-    if (this.dragFadeTimer !== null) this.timers.clearTimeout(this.dragFadeTimer);
+    this.stop();
     this.doc?.removeEventListener("visibilitychange", this.onVisibility);
     this.listeners.clear();
     this.disposed = true;
   }
 
-  // ── Internals ─────────────────────────────────────────────────────────
+  // ── Internals ────────────────────────────────────────────────────────
 
-  private send(event: CursorEvent): void {
-    const next = transitionCursor(this.current, event);
-    if (next === this.current) return;
-    const prev = this.current;
-    this.current = next;
-    if (prev === "dragging" && next !== "dragging") this.endDragPath();
-    this.writeState();
-    for (const listener of this.listeners) listener(next);
-  }
-
-  private travelTo(point: CursorPoint): Promise<boolean> {
-    this.resolvePending(false);
-    this.target = point;
-    const done = new Promise<boolean>((resolve) => {
-      this.pending = resolve;
-    });
-    if (this.reducedMotion || this.documentHidden()) {
-      // No travel: appear at the destination with a short opacity fade.
-      this.x = { position: point.x, velocity: 0 };
-      this.y = { position: point.y, velocity: 0 };
-      this.render(this.scheduler.now());
-      if (this.reducedMotion) play(this.el.pointer, [{ opacity: 0 }, { opacity: 1 }], RM_FADE_MS);
-      this.arrive();
-      return done;
-    }
-    this.startLoop();
-    return done;
-  }
-
-  private jumpTo(point: CursorPoint): void {
-    this.target = point;
-    this.x = { position: point.x, velocity: 0 };
-    this.y = { position: point.y, velocity: 0 };
-    this.history = [];
-    this.render(this.scheduler.now());
-  }
-
-  private arrive(): void {
-    if (this.current === "moving") this.send("arrive");
-    else if (this.current === "dragging") this.send("dragEnd");
-    this.resolvePending(true);
-  }
-
-  private resolvePending(arrived: boolean): void {
-    const pending = this.pending;
+  /** A new action: whatever the previous one still owed plays now, then it is gone. */
+  private begin(): boolean {
+    if (this.disposed) return false;
+    const effect = this.pending;
     this.pending = null;
-    pending?.(arrived);
+    if (effect) this.playEffect(effect);
+    if (this.dragLeg || this.dragFrom) {
+      this.dragLeg = null;
+      this.endDragPath(true);
+      this.setPressed(false);
+    }
+    return true;
+  }
+
+  private motionReduced(): boolean {
+    return this.reducedMotion || this.doc?.visibilityState === "hidden";
+  }
+
+  private travel(to: Point, maxMs = Infinity): void {
+    const now = this.scheduler.now();
+    if (this.pos === null) {
+      // First sight: appear where the action happened, no travel from nowhere.
+      this.pos = to;
+      this.glide = null;
+      this.render();
+      this.arrive();
+      return;
+    }
+    const here = this.glide ? sampleGlide(this.glide, now) : { position: this.pos, velocity: ZERO };
+    const distance = Math.hypot((to.x - here.position.x) * this.frameRect.width, (to.y - here.position.y) * this.frameRect.height);
+    const duration = Math.min(glideDuration(distance, this.motionReduced()), maxMs);
+    this.pos = here.position;
+    if (duration <= 0) {
+      this.glide = null;
+      this.pos = to;
+      this.stopLoop();
+      this.render();
+      this.arrive();
+      return;
+    }
+    this.glide = startGlide(here.position, to, here.velocity, now, duration);
+    this.startLoop();
+  }
+
+  /** The glide landed (or there was none). */
+  private arrive(): void {
+    const leg = this.dragLeg;
+    if (leg && this.pos) {
+      this.dragLeg = null;
+      this.dragFrom = this.pos;
+      this.setPressed(true);
+      this.el.dragPath.style.opacity = "1";
+      if (leg.durationMs <= 0) {
+        this.pos = leg.to;
+        this.render();
+        this.arrive();
+        return;
+      }
+      this.glide = startGlide(this.pos, leg.to, ZERO, this.scheduler.now(), leg.durationMs);
+      this.startLoop();
+      return;
+    }
+    if (this.dragFrom) {
+      this.endDragPath(true);
+      this.setPressed(false);
+    }
+    const effect = this.pending;
+    this.pending = null;
+    if (effect) this.playEffect(effect);
   }
 
   private startLoop(): void {
     if (this.frame !== null || this.disposed) return;
-    this.lastTime = this.scheduler.now();
     this.el.pointer.style.willChange = "transform";
     this.frame = this.scheduler.request(this.tick);
   }
@@ -328,120 +398,119 @@ export class AgentCursorController {
   private readonly tick = (now: number): void => {
     this.frame = null;
     this.frames += 1;
-    const dt = Math.min(Math.max((now - this.lastTime) / 1000, 0), MAX_DT_S);
-    this.lastTime = now;
-    const settledBefore = isSettled(this.x, this.target.x) && isSettled(this.y, this.target.y);
-    if (!settledBefore) {
-      this.x = stepSpring(this.x, this.target.x, this.springConfig, dt);
-      this.y = stepSpring(this.y, this.target.y, this.springConfig, dt);
-      this.lastMotion = now;
-    }
-    const settled = isSettled(this.x, this.target.x) && isSettled(this.y, this.target.y);
-    if (settled) {
-      this.x = { position: this.target.x, velocity: 0 };
-      this.y = { position: this.target.y, velocity: 0 };
-    }
-    this.render(now);
-    if (settled && this.pending) this.arrive();
-    const trailBusy = trailLengthFor(this.tier, this.reducedMotion) > 0 && now - this.lastMotion <= this.trailSpan();
-    if (!settled || trailBusy) {
-      this.frame = this.scheduler.request(this.tick);
-    } else {
+    const glide = this.glide;
+    if (!glide) return;
+    const sample = sampleGlide(glide, now);
+    this.pos = sample.position;
+    if (sample.done) {
+      this.glide = null;
       this.el.pointer.style.willChange = "";
+      this.render();
+      this.arrive();
+      return;
     }
+    this.render();
+    this.frame = this.scheduler.request(this.tick);
   };
 
-  /** Jump to the end state without a loop (hidden document, hide, reduced motion). */
-  private settleNow(): void {
+  /** Land immediately (reduced motion switched on, window hidden). */
+  private finishNow(playEffects: boolean): void {
+    if (!this.glide && !this.dragLeg) return;
     this.stopLoop();
-    this.x = { position: this.target.x, velocity: 0 };
-    this.y = { position: this.target.y, velocity: 0 };
-    this.history = [];
-    this.lastMotion = -Infinity;
-    this.render(this.scheduler.now());
-    if (this.pending) this.arrive();
-  }
-
-  private trailSpan(): number {
-    return TRAIL_LAG_MS * (trailLengthFor(this.tier, this.reducedMotion) + 1);
-  }
-
-  private documentHidden(): boolean {
-    return this.doc?.visibilityState === "hidden";
+    if (this.glide) this.pos = this.glide.to;
+    this.glide = null;
+    if (this.dragLeg) this.pos = this.dragLeg.to;
+    this.dragLeg = null;
+    if (!playEffects) this.pending = null;
+    this.render();
+    this.arrive();
   }
 
   private readonly onVisibility = (): void => {
-    if (this.documentHidden()) this.settleNow();
+    if (this.doc?.visibilityState === "hidden") this.finishNow(false);
   };
 
-  private render(now: number): void {
-    const px = this.x.position;
-    const py = this.y.position;
-    this.el.pointer.style.transform = `translate3d(${px}px, ${py}px, 0)`;
-    this.renderTrail(now, px, py);
-    if (this.current === "dragging" && this.dragFrom) this.renderDragPath(this.dragFrom, { x: px, y: py });
+  private render(): void {
+    if (!this.pos) return;
+    const moving = this.glide !== null;
+    const p = toOverlay(this.pos, this.frameRect);
+    const dpr = this.dpr();
+    const x = moving ? p.x : snapToDevice(p.x, dpr);
+    const y = moving ? p.y : snapToDevice(p.y, dpr);
+    this.el.pointer.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    if (this.dragFrom) this.renderDragPath(toOverlay(this.dragFrom, this.frameRect), p);
   }
 
-  private renderTrail(now: number, px: number, py: number): void {
-    const count = trailLengthFor(this.tier, this.reducedMotion);
-    if (count === 0) return;
-    this.history.push({ t: now, x: px, y: py });
-    if (this.history.length > HISTORY) this.history.shift();
-    const speed = Math.hypot(this.x.velocity, this.y.velocity);
-    const energy = Math.min(1, speed / TRAIL_FULL_SPEED);
-    for (let i = 0; i < count; i += 1) {
-      const node = this.el.trail[i];
-      if (!node) continue;
-      const p = this.sampleAt(now - TRAIL_LAG_MS * (i + 1), px, py);
-      const fade = 1 - (i + 1) / (count + 1);
-      const scale = 1 - (i + 1) * (0.5 / (count + 1));
-      node.style.transform = `translate3d(${p.x}px, ${p.y}px, 0) scale(${scale.toFixed(3)})`;
-      node.style.opacity = (0.55 * fade * energy).toFixed(3);
-    }
-  }
-
-  private sampleAt(t: number, px: number, py: number): CursorPoint {
-    const h = this.history;
-    if (h.length === 0) return { x: px, y: py };
-    const first = h[0] as Sample;
-    if (t <= first.t) return { x: first.x, y: first.y };
-    for (let i = h.length - 1; i > 0; i -= 1) {
-      const a = h[i - 1] as Sample;
-      const b = h[i] as Sample;
-      if (t >= a.t && t <= b.t) {
-        const k = b.t === a.t ? 1 : (t - a.t) / (b.t - a.t);
-        return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
-      }
-    }
-    return { x: px, y: py };
-  }
-
-  private renderDragPath(from: CursorPoint, to: CursorPoint): void {
+  private renderDragPath(from: Point, to: Point): void {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
-    const len = Math.hypot(dx, dy);
-    const angle = Math.atan2(dy, dx);
-    this.el.dragPath.style.transform = `translate3d(${from.x}px, ${from.y}px, 0) rotate(${angle}rad) scaleX(${Math.max(len, 0.001)})`;
+    const length = Math.max(Math.hypot(dx, dy), 0.001);
+    this.el.dragPath.style.transform = `translate3d(${from.x}px, ${from.y}px, 0) rotate(${Math.atan2(dy, dx)}rad) scaleX(${length})`;
   }
 
-  private endDragPath(): void {
+  private endDragPath(fade: boolean): void {
     this.dragFrom = null;
-    if (this.dragFadeTimer !== null) this.timers.clearTimeout(this.dragFadeTimer);
-    // Let the finished path read for a beat, then fade (CSS opacity transition).
-    this.dragFadeTimer = this.timers.setTimeout(() => {
-      this.dragFadeTimer = null;
-      this.el.dragPath.style.opacity = "0";
-    }, DRAG_FADE_DELAY_MS);
+    const path = this.el.dragPath;
+    // CSS owns the fade (opacity transition); without it the path vanishes at once.
+    path.style.transition = fade ? "" : "none";
+    path.style.opacity = "0";
   }
 
-  private applyEnvironment(): void {
-    const count = trailLengthFor(this.tier, this.reducedMotion);
-    this.el.trail.forEach((node, i) => {
-      node.style.display = i < count ? "" : "none";
-      if (i >= count) node.style.opacity = "0";
-    });
-    this.el.root.setAttribute("data-tier", this.tier);
-    this.el.root.setAttribute("data-rm", this.reducedMotion ? "true" : "false");
+  private playEffect(effect: Effect): void {
+    const at = toOverlay(effect.at, this.frameRect);
+    const place = `translate3d(${at.x}px, ${at.y}px, 0)`;
+    if (effect.kind === "pulse") {
+      for (let i = 0; i < effect.count; i += 1) {
+        const ring = this.el.pulses[i as 0 | 1];
+        cancelAnimations(ring);
+        const delay = i * DOUBLE_GAP_MS;
+        if (this.reducedMotion) {
+          play(ring, [{ transform: place, opacity: 0.8 }, { transform: place, opacity: 0 }], { duration: RM_PULSE_MS, delay, easing: easing.out });
+        } else {
+          play(ring, [
+            { transform: `${place} scale(${i === 0 ? 0.3 : 0.45})`, opacity: 0.95 },
+            { transform: `${place} scale(${i === 0 ? 1 : 0.85})`, opacity: 0 },
+          ], { duration: PULSE_MS, delay, easing: easing.out });
+        }
+      }
+      if (!this.reducedMotion) {
+        cancelAnimations(this.el.pointerBody);
+        play(this.el.pointerBody, [{ transform: "scale(0.86)" }, { transform: "scale(1)" }], {
+          duration: PRESS_MS,
+          easing: easing.out,
+          iterations: effect.count,
+        });
+      }
+      return;
+    }
+    const cue = this.el.scrollCue;
+    cancelAnimations(cue);
+    const horizontal = Math.abs(effect.dx) > Math.abs(effect.dy);
+    const sign = (horizontal ? effect.dx : effect.dy) < 0 ? -1 : 1;
+    // The cue's chevron points down at 0deg.
+    const angle = horizontal ? (sign > 0 ? -90 : 90) : sign > 0 ? 0 : 180;
+    const shift = this.reducedMotion ? 0 : 4 * sign;
+    const tx = horizontal ? shift : 0;
+    const ty = horizontal ? 0 : shift;
+    const base = `${place} translate(16px, 10px) rotate(${angle}deg)`;
+    play(cue, [
+      { transform: `${place} translate(16px, 10px) translate(${-tx}px, ${-ty}px) rotate(${angle}deg)`, opacity: 0 },
+      { transform: base, opacity: 0.85, offset: 0.35 },
+      { transform: `${place} translate(16px, 10px) translate(${tx}px, ${ty}px) rotate(${angle}deg)`, opacity: 0 },
+    ], { duration: SCROLL_CUE_MS, easing: easing.out });
+  }
+
+  private setPressed(pressed: boolean): void {
+    if (this.pressed === pressed) return;
+    this.pressed = pressed;
+    this.el.root.toggleAttribute("data-pressed", pressed);
+  }
+
+  private setState(next: CursorState): void {
+    if (next === this.current) return;
+    this.current = next;
+    this.writeState();
+    for (const listener of this.listeners) listener(next);
   }
 
   private writeState(): void {

@@ -25,6 +25,34 @@ pub struct MockComputerBackend {
     input_enabled: bool,
     input_log: Vec<InputOp>,
     pressed: PressedState,
+    /// The egress stream is open (mirrors the real backend's rule: one
+    /// stream per computer, closed by stop/reset).
+    egress_open: bool,
+    /// The "guest" end of the egress stream until a test takes it.
+    #[cfg(unix)]
+    egress_peer: EgressPeerHandle,
+    /// How long an egress open takes to complete (a slow helper).
+    egress_open_delay: std::time::Duration,
+}
+
+/// Shared slot for the guest end of the mock egress stream: a test keeps a
+/// handle before handing the backend to Core, which owns it afterwards.
+#[cfg(unix)]
+#[derive(Clone, Debug, Default)]
+pub struct EgressPeerHandle(
+    std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>,
+);
+
+#[cfg(unix)]
+impl EgressPeerHandle {
+    /// The far end, once (`None` until `open_egress`, or after a close).
+    pub fn take(&self) -> Option<std::os::unix::net::UnixStream> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    fn put(&self, peer: Option<std::os::unix::net::UnixStream>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = peer;
+    }
 }
 
 impl Default for MockComputerBackend {
@@ -45,7 +73,32 @@ impl MockComputerBackend {
             input_enabled: false,
             input_log: Vec::new(),
             pressed: PressedState::default(),
+            egress_open: false,
+            #[cfg(unix)]
+            egress_peer: EgressPeerHandle::default(),
+            egress_open_delay: std::time::Duration::ZERO,
         }
+    }
+
+    /// Makes an egress open take `delay` to complete, like a slow helper:
+    /// `begin_open_egress` returns at once, waiting takes the delay.
+    pub fn set_egress_open_delay(&mut self, delay: std::time::Duration) {
+        self.egress_open_delay = delay;
+    }
+
+    /// A handle to the guest end of the egress stream that stays valid
+    /// after the backend is boxed into Core.
+    #[cfg(unix)]
+    pub fn egress_peer_handle(&self) -> EgressPeerHandle {
+        self.egress_peer.clone()
+    }
+
+    /// The far end of the open egress stream (what the guest's forwarder
+    /// would hold), once. `None` until `open_egress`. Dropping it is the
+    /// guest closing the stream.
+    #[cfg(unix)]
+    pub fn take_egress_peer(&mut self) -> Option<std::os::unix::net::UnixStream> {
+        self.egress_peer.take()
     }
 
     /// Enable the mock input plane for executor/runner tests.
@@ -56,6 +109,12 @@ impl MockComputerBackend {
     /// Recorded input primitives, in dispatch order.
     pub fn input_log(&self) -> &[InputOp] {
         &self.input_log
+    }
+
+    fn close_egress_now(&mut self) {
+        self.egress_open = false;
+        #[cfg(unix)]
+        self.egress_peer.put(None);
     }
 
     fn require_created(&self) -> Result<(ComputerState, ComputerId)> {
@@ -80,6 +139,9 @@ impl MockComputerBackend {
             return Err(ComputerError::InvalidTransition { from, to });
         }
         self.state = Some(to);
+        if to == ComputerState::Stopped {
+            self.close_egress_now();
+        }
         Ok(to)
     }
 }
@@ -145,6 +207,7 @@ impl ComputerBackend for MockComputerBackend {
         self.require_created()?;
         self.state = Some(ComputerState::Stopped);
         self.instance = None;
+        self.close_egress_now();
         Ok(ComputerState::Stopped)
     }
 
@@ -196,6 +259,40 @@ impl ComputerBackend for MockComputerBackend {
 
     fn instance(&self) -> Option<ComputerInstance> {
         self.instance.clone()
+    }
+
+    #[cfg(unix)]
+    fn open_egress(&mut self) -> Result<crate::egress::EgressEndpoint> {
+        self.begin_open_egress()?.wait()
+    }
+
+    #[cfg(unix)]
+    fn begin_open_egress(&mut self) -> Result<Box<dyn crate::egress::PendingEgressOpen>> {
+        let (state, _) = self.require_created()?;
+        if state != ComputerState::Running {
+            return Err(ComputerError::WrongState {
+                expected: ComputerState::Running,
+                actual: state,
+            });
+        }
+        if self.egress_open {
+            return Err(ComputerError::Backend(
+                "the egress stream is already open".to_string(),
+            ));
+        }
+        let (host, guest) = std::os::unix::net::UnixStream::pair()
+            .map_err(|e| ComputerError::Backend(e.to_string()))?;
+        self.egress_open = true;
+        self.egress_peer.put(Some(guest));
+        Ok(Box::new(SlowOpen {
+            delay: self.egress_open_delay,
+            endpoint: host,
+        }))
+    }
+
+    fn close_egress(&mut self) -> Result<()> {
+        self.close_egress_now();
+        Ok(())
     }
 
     fn input_available(&self) -> bool {
@@ -282,6 +379,22 @@ impl ComputerBackend for MockComputerBackend {
             },
             bytes,
         })
+    }
+}
+
+#[cfg(unix)]
+struct SlowOpen {
+    delay: std::time::Duration,
+    endpoint: std::os::unix::net::UnixStream,
+}
+
+#[cfg(unix)]
+impl crate::egress::PendingEgressOpen for SlowOpen {
+    fn wait(self: Box<Self>) -> Result<crate::egress::EgressEndpoint> {
+        if !self.delay.is_zero() {
+            std::thread::sleep(self.delay);
+        }
+        Ok(crate::egress::EgressEndpoint::Unix(self.endpoint))
     }
 }
 
@@ -412,5 +525,28 @@ mod tests {
         assert!(!caps.vsock && !caps.graphical_display);
         let v = serde_json::to_value(&caps).unwrap();
         assert_eq!(v["disk_formats"], serde_json::json!(["raw"]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mock_egress_is_a_socketpair_one_stream_at_a_time() {
+        use std::io::{Read, Write};
+        let mut b = created();
+        assert!(matches!(
+            b.open_egress().unwrap_err(),
+            ComputerError::WrongState { .. }
+        ));
+        b.start().unwrap();
+        let mut ep = b.open_egress().unwrap();
+        let mut peer = b.take_egress_peer().unwrap();
+        ep.write_all(b"hi").unwrap();
+        let mut buf = [0u8; 2];
+        peer.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hi");
+        assert!(b.open_egress().is_err(), "one stream per computer");
+        b.close_egress().unwrap();
+        b.stop().unwrap();
+        b.start().unwrap();
+        assert!(b.open_egress().is_ok());
     }
 }

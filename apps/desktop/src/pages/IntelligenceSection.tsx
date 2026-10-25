@@ -6,8 +6,9 @@ import { localView } from "../state/localModel";
 import { AnthropicControls, anthropicProblem, PRIVACY_NOTE } from "./AnthropicControls";
 import { LocalAdvanced, LocalStateRow, LocalStatus } from "./LocalModel";
 import { Row } from "./settingsParts";
+import { HOST } from "../lib/host";
 
-const LOCAL_HINT = "Free · Private · Runs on this Mac";
+const LOCAL_HINT = `Free · Private · Runs on this ${HOST}`;
 const ANTHROPIC_HINT = "Claude models, with your own API key";
 
 interface ProviderRowProps {

@@ -24,6 +24,8 @@ The two must stay field-compatible; `vmhost_proto.rs` tests lock the shape.
 | `stop` | `computer_id` | `{ok, state:"stopped"}` (graceful `requestStop` first, forced `stop` fallback) |
 | `state` | `computer_id` | `{ok, state}` |
 | `destroy` | `computer_id` | `{ok, state:"stopped"}` |
+| `egress_open` | `computer_id`, `endpoint` | `{ok}` or `egress_failed` / `unknown_computer` / `invalid_params` |
+| `egress_close` | `computer_id` | `{ok}` (idempotent) or `unknown_computer` |
 
 `params` (create/validate):
 
@@ -46,7 +48,8 @@ The two must stay field-compatible; `vmhost_proto.rs` tests lock the shape.
 
 Error codes: `unknown_command`, `unknown_computer`, `already_exists`,
 `invalid_params`, `validation_failed`, `start_failed`, `stop_failed`,
-`pause_failed`, `resume_failed`, `not_entitled`, `internal`.
+`pause_failed`, `resume_failed`, `not_entitled`, `guest_unavailable`,
+`egress_failed`, `internal`.
 
 ## Async events (Swift -> Rust, no `id`)
 
@@ -56,6 +59,42 @@ Error codes: `unknown_command`, `unknown_computer`, `already_exists`,
 Emitted from `VZVirtualMachineDelegate` (`guestDidStop`,
 `didStopWithError`). Rust applies them to its cached state while waiting
 for command responses.
+
+- `{ "event": "egress_closed", "computer_id": "…", "reason": "…" }` — the
+  egress stream ended by itself (`guest_closed`, `app_closed`,
+  `read_error`, `write_error`). Never sent in reply to `egress_close`,
+  stop or destroy (the app caused those). See below.
+
+## Egress stream (`egress_open` / `egress_close`)
+
+Transport only, for `docs/EGRESS.md`. The app creates a private local
+endpoint FIRST, then sends `egress_open`; the helper connects the guest's
+forwarder (vsock port 4051) and the endpoint, replies `{ok}`, and pumps
+raw bytes both ways with one fixed buffer per direction (no queues, no
+parsing, no payload logging). The app accepts exactly one connection
+(10 s) and the endpoint disappears. Either side closing closes both.
+
+- `endpoint` on macOS: absolute path `<Pegoles data dir>/egress/<id>/s`,
+  a Unix socket in a fresh 0700 directory (not in the computer folder:
+  `sun_path` is 104 bytes on macOS). The Swift helper derives the data dir
+  from the computer's own folder, never from the request, and rejects
+  anything else (other directories, `..`, symlinks, sockets or directories
+  not owned by this user, directories not 0700, non-sockets).
+- `endpoint` on Windows: exactly `\\.\pipe\pegoles-egress-<lowercase uuid>`,
+  a named pipe the app created (current-user-only DACL,
+  `PIPE_REJECT_REMOTE_CLIENTS`, first instance). The helper connects to
+  the guest service `{00000fd3-facb-11e6-bd58-64006a7986d3}` (port 4051,
+  Linux hv_sock pattern). The HCS document already allows it: its two
+  default HvSocket descriptors cover every service id.
+- At most one stream per computer (`egress_failed` otherwise); the
+  computer must be running. `egress_failed` also covers a guest that is
+  not listening or an endpoint the helper cannot reach.
+- The stream also ends on `stop`, `destroy`, helper exit and VM loss. The
+  VM keeps NO network device (asserted in `VmManager.buildConfiguration`;
+  `egress::tests::the_vm_never_gets_a_network_device` guards the source).
+- Port 4051 is duplicated in `EgressBridge.swift` and
+  `pegoles-computer::egress::EGRESS_VSOCK_PORT`; canonical:
+  `pegoles-egress-proto`.
 
 ## State mapping
 
@@ -77,7 +116,8 @@ is a guard test against protocol creep.
 The command SET above is hypervisor-independent by design and does not
 change on Windows: the future `pegoles-vm-host.exe` answers the same
 `version/validate/create/start/pause/resume/stop/state/destroy` plus
-`guest_send/guest_status/guest_disconnect`. Backend specifics travel in
+`guest_send/guest_status/guest_disconnect` and
+`egress_open/egress_close`. Backend specifics travel in
 capabilities and optional fields (e.g. `CreateParams.seed_iso_path`,
 `HostResponse.connected`) — there will never be `windowsStart` vs
 `macStart` forks. Guest channel events (`guest_connected/guest_frame/

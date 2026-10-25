@@ -52,8 +52,6 @@ export interface EffectsTierParams {
     /** Relative amplitude of ambient loops (0..1). */
     readonly amplitude: number;
   };
-  /** AgentCursor trail samples (0 = no trail). */
-  readonly cursorTrailLength: number;
   readonly transition: TransitionRichness;
   /**
    * Blur budget: max backdrop-filter surfaces visible at once. The dev
@@ -76,7 +74,6 @@ export const effectsTiers: Readonly<Record<EffectsTier, EffectsTierParams>> = {
     glowIntensity: 1,
     specular: 1,
     ambient: { enabled: true, periodMs: 6000, amplitude: 1 },
-    cursorTrailLength: 10,
     transition: "rich",
     maxBackdropSurfaces: 6,
   },
@@ -93,7 +90,6 @@ export const effectsTiers: Readonly<Record<EffectsTier, EffectsTierParams>> = {
     glowIntensity: 0.7,
     specular: 0.85,
     ambient: { enabled: true, periodMs: 8000, amplitude: 0.5 },
-    cursorTrailLength: 3,
     transition: "standard",
     maxBackdropSurfaces: 3,
   },
@@ -110,7 +106,6 @@ export const effectsTiers: Readonly<Record<EffectsTier, EffectsTierParams>> = {
     glowIntensity: 0.4,
     specular: 0.7,
     ambient: { enabled: false, periodMs: 8000, amplitude: 0 },
-    cursorTrailLength: 0,
     transition: "simple",
     maxBackdropSurfaces: 0,
   },

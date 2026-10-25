@@ -36,10 +36,10 @@ Argument names: Tauri maps top-level JS keys from camelCase
 | `get_host_capabilities`, `suggested_config`, `suggested_effects`, `accessibility_display` | … | host facts |
 | `display_set_geometry` / `display_detach` | … | native view (stub on macOS today) |
 | `take_control` / `return_control` | — | `ComputerView`; take_control cancels any agent run first |
-| `create_task` | `title` | `AgentTask` (pending) |
+| `create_task` | `title`, `internet?` | `AgentTask` (pending). `internet` is `{ mode: "off" \| "allowlist" \| "open_web", domains: string[] }`: a mode and site-name strings, nothing else (no URLs, paths or endpoints). Absent = off. Validated by Core (`validate_internet`: 1..=32 registrable domains or subdomains for `allowlist`, no wildcards or IPs; `open_web` carries none) and refused with a sentence if wrong; nothing is created then |
 | `list_tasks` | — | `AgentTask[]` |
-| `run_task` | `taskId` | starts the agent on a pending task (one run at a time) |
-| `cancel_task` | `taskId` | stops the run, or cancels a pending task |
+| `run_task` | `taskId` | starts the agent on a pending task (one run at a time). If the task asked for internet, the run asks for it in a **native** confirmation (macOS alert, Windows message box; Cancel is the default; the webview cannot see or answer it; decline back-off as for the cloud planner) before the computer boots, and opens it only once the agent holds the computer. Declined, unanswerable or failed to open: the task runs offline and says so (`internet_unavailable`, plus a progress note) |
+| `cancel_task` | `taskId` | stops the run (its internet is cut at once, without the app lock), or cancels a pending task |
 | `get_model_settings` / `set_api_key` / `clear_api_key` / `set_model_settings` | … (Anthropic, optional) | `{ configured, key_source, model, effort, models, efforts }` — the key is never returned |
 | `get_intelligence` | — | `{ provider: "local"\|"anthropic", local_model, local: { runtime_ready, runtime_problem, loaded_model, worker_footprint_bytes, default_model, models[], install, chip, memory_bytes, apple_silicon }, anthropic: ModelSettings }` — no secrets |
 | `set_provider` | `provider`, `localModel?` | `Intelligence` (persists `settings.json`) |
@@ -71,7 +71,22 @@ type StatusPayload = {
              | "disconnected" | "incompatible" | "error";
   guest_ready_ms: number | null;
   display_setup_error: string | null; // display adapter failed to install at startup
+  internet: InternetStatus; // the running task's internet session (docs/EGRESS.md)
 } & ComputerView; // flattened (same top-level object)
+
+type InternetMode = "off" | "allowlist" | "open_web";
+type InternetStatus = {
+  active: boolean; task_id: string | null;
+  mode: InternetMode; domains: string[];       // what this session may reach
+  allowed: number; blocked: number;            // counters since it opened
+  dropped: number;                             // decisions not listed (UI too slow)
+  recent: EgressDecision[];                    // last 20, newest last
+};
+type EgressDecision = {
+  task_id: string; host: string; allowed: boolean;
+  reason: string;          // "allowed" or a stable deny code (docs/EGRESS.md)
+  bytes: number; dropped_before: number; at: string;
+};   // never a path, query string, header or body
 
 type ComputerState = "stopped" | "starting" | "running" | "paused" | "stopping" | "error";
 ```
@@ -213,6 +228,7 @@ type AgentTask = {
   status: "pending" | "running" | "waiting_for_approval" | "completed" | "failed" | "cancelled";
   created_at: string; // RFC 3339
   updated_at: string;
+  internet: { mode: InternetMode; domains: string[] }; // normalized; off unless the person chose otherwise
 };
 ```
 
@@ -228,6 +244,7 @@ model: nothing runs tasks, they stay `pending` — say so in the UI.
   after every command, so history carries exactly the live events (same
   timestamps, no heartbeat noise).
 - Image progress: `listen("pegoles://image-progress", …)`.
+- Internet: `listen("pegoles://egress", …)` — one `EgressDecision` per proxy decision (the UI just refreshes `get_status`, whose `internet.recent` carries the last 20, so a reload loses nothing). Lifecycle rides the main bus as `internet_opened { task_id, mode, domains }`, `internet_closed { task_id, reason }` and `internet_unavailable { task_id, reason }`. Decisions are not in `list_events` history (a page load would push task events out of it).
 - Display wake: `listen("pegoles://display-activity", …)` (emitted by the
   native display layer) → call `pump()`; never poll per frame.
 - Polling guidance: `get_status` every ~2 s only while `viewport_state` is

@@ -1,64 +1,72 @@
 import { forwardRef, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { EffectsTier } from "../tokens/effects.js";
 import { useResolvedEffects } from "../presence/useResolvedEffects.js";
-import {
-  AgentCursorController,
-  MAX_TRAIL_ELEMENTS,
-  type CursorTimers,
-  type FrameScheduler,
-  type CursorPoint,
-} from "./AgentCursorController.js";
-import type { CursorState } from "./cursorMachine.js";
+import { AgentCursorController, type CursorState, type FrameScheduler } from "./AgentCursorController.js";
+import { frameRect, type FrameFit, type Point, type Rect, type Size } from "./mapping.js";
 import "./cursor.css";
 
-/** The imperative surface exposed through the layer's ref. */
+/** The imperative surface exposed through the layer's ref (normalized guest points). */
 export interface AgentCursorHandle {
-  moveTo(x: number, y: number): Promise<boolean>;
-  click(): void;
-  dragTo(x: number, y: number): Promise<boolean>;
+  moveTo(point: Point): void;
+  click(point: Point, count?: 1 | 2): void;
+  press(point: Point): void;
+  release(point: Point): void;
+  drag(from: Point, to: Point, durationMs: number): void;
+  scroll(point: Point, dx: number, dy: number): void;
   typing(on: boolean): void;
-  wait(): void;
-  hide(): void;
-  show(): void;
+  observe(): void;
+  think(): void;
+  done(): void;
+  stop(): void;
   readonly state: CursorState;
-  readonly position: CursorPoint;
+  /** Hotspot in overlay px. */
+  readonly position: Point;
+  readonly normalizedPosition: Point | null;
+  readonly target: Point | null;
   readonly isAnimating: boolean;
+  readonly backlog: number;
   readonly frameCount: number;
+  readonly frameRectangle: Rect;
   /** State changes only (rare) — never positions. */
   subscribe(listener: (state: CursorState) => void): () => void;
 }
 
 export interface AgentCursorLayerProps {
+  /**
+   * Guest framebuffer size (px). The frame is drawn `object-fit: contain`
+   * in the layer's box; without a size it fills the box.
+   */
+  readonly frameSize?: Size | null;
+  /** How the preview draws the frame in this box (its CSS `object-fit`). Default contain. */
+  readonly fit?: FrameFit;
   readonly effectsTier?: EffectsTier;
   readonly reducedMotion?: boolean;
   readonly className?: string;
   readonly style?: CSSProperties;
   /** Advanced/tests: custom frame clock (default requestAnimationFrame). */
   readonly frameScheduler?: FrameScheduler;
-  /** Advanced/tests: custom timers (default setTimeout). */
-  readonly timers?: CursorTimers;
 }
 
-const TRAIL_KEYS = Array.from({ length: MAX_TRAIL_ELEMENTS }, (_, i) => i);
-const NOT_READY = Promise.resolve(false);
+const IDLE: AgentCursorHandle["state"] = "hidden";
 
-/** Luminous agent pointer; hotspot (tip) at the element origin. */
+/**
+ * The agent pointer: a small silver arrow with a dark hairline (legible on
+ * light and dark guest content) and the mark's soft white glow. Hotspot =
+ * the tip, at the element origin.
+ */
 function PointerGlyph({ uid }: { uid: string }) {
-  const d = "M0 0L0 15.6C0 16.7 1.3 17.2 2 16.4L5.6 12.6C5.9 12.3 6.3 12.1 6.8 12.1L12.2 12.1C13.3 12.1 13.8 10.8 13 10L1.9 -0.8C1.2 -1.5 0 -1 0 0Z";
+  const d = "M0.6 0.9L0.6 15.2C0.6 16.1 1.7 16.5 2.3 15.9L5.2 12.9L7.5 18.3C7.8 18.9 8.4 19.2 9 18.9L10 18.5C10.6 18.2 10.9 17.5 10.6 16.9L8.4 11.8L12.5 11.8C13.4 11.8 13.8 10.7 13.2 10.1L2.2 0.2C1.6 -0.3 0.6 0.1 0.6 0.9Z";
   return (
-    <svg className="pgc-glyph" viewBox="-5 -5 24 27" aria-hidden="true" focusable="false">
+    <svg className="pgc-glyph" viewBox="-4 -4 22 27" aria-hidden="true" focusable="false">
       <defs>
-        <linearGradient id={`${uid}-core`} x1="0" y1="0" x2="0.9" y2="1">
-          <stop offset="0" stopColor="#F4F7FC" />
-          <stop offset="0.45" stopColor="#97EBFD" />
-          <stop offset="1" stopColor="#4CCEFC" />
+        <linearGradient id={`${uid}-fill`} x1="0.1" y1="0" x2="0.75" y2="1">
+          <stop offset="0" stopColor="#FFFFFF" />
+          <stop offset="0.55" stopColor="#EEF0F2" />
+          <stop offset="1" stopColor="#C4C8CD" />
         </linearGradient>
-        <filter id={`${uid}-glow`} x="-60%" y="-60%" width="220%" height="220%">
-          <feGaussianBlur stdDeviation="2.2" />
-        </filter>
       </defs>
-      <path d={d} fill="#169CFD" opacity="0.75" filter={`url(#${uid}-glow)`} />
-      <path d={d} fill={`url(#${uid}-core)`} stroke="#169CFD" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d={d} fill={`url(#${uid}-fill)`} stroke="#0B0C0E" strokeOpacity="0.82" strokeWidth="1.15" strokeLinejoin="round" />
+      <path d="M2.1 3.2L2.1 13.2" stroke="#FFFFFF" strokeOpacity="0.9" strokeWidth="0.8" strokeLinecap="round" />
     </svg>
   );
 }
@@ -67,72 +75,108 @@ function PointerGlyph({ uid }: { uid: string }) {
  * Overlay for THE AGENT's cursor (never the human's pointer). Renders its
  * DOM once; all motion goes through the imperative handle (see
  * `AgentCursorController`) so moving it never re-renders React. The layer
- * is `pointer-events: none` and aria-hidden: agent actions are announced
- * by the activity feed, not by this decoration.
+ * covers the preview box, is `pointer-events: none` and aria-hidden: the
+ * activity feed announces actions, this only shows them.
  */
 export const AgentCursorLayer = forwardRef<AgentCursorHandle, AgentCursorLayerProps>(function AgentCursorLayer(
-  { effectsTier, reducedMotion, className, style, frameScheduler, timers },
+  { frameSize = null, fit = "contain", effectsTier, reducedMotion, className, style, frameScheduler },
   ref,
 ) {
   const effects = useResolvedEffects(effectsTier, reducedMotion);
   const rootRef = useRef<HTMLDivElement>(null);
   const pointerRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
-  const rippleRef = useRef<HTMLDivElement>(null);
+  const pulseA = useRef<HTMLDivElement>(null);
+  const pulseB = useRef<HTMLDivElement>(null);
   const dragRef = useRef<HTMLDivElement>(null);
-  const trailRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const cueRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<AgentCursorController | null>(null);
+  const boxRef = useRef<Size>({ width: 0, height: 0 });
+  const frameSizeRef = useRef<Size | null>(frameSize);
+  const fitRef = useRef<FrameFit>(fit);
   const uid = `pgc${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
   // Stable facade: survives StrictMode remounts (the controller behind it may be recreated).
   const [facade] = useState<AgentCursorHandle>(() => ({
-    moveTo: (x, y) => controllerRef.current?.moveTo(x, y) ?? NOT_READY,
-    click: () => controllerRef.current?.click(),
-    dragTo: (x, y) => controllerRef.current?.dragTo(x, y) ?? NOT_READY,
+    moveTo: (p) => controllerRef.current?.moveTo(p),
+    click: (p, count) => controllerRef.current?.click(p, count),
+    press: (p) => controllerRef.current?.press(p),
+    release: (p) => controllerRef.current?.release(p),
+    drag: (from, to, ms) => controllerRef.current?.drag(from, to, ms),
+    scroll: (p, dx, dy) => controllerRef.current?.scroll(p, dx, dy),
     typing: (on) => controllerRef.current?.typing(on),
-    wait: () => controllerRef.current?.wait(),
-    hide: () => controllerRef.current?.hide(),
-    show: () => controllerRef.current?.show(),
+    observe: () => controllerRef.current?.observe(),
+    think: () => controllerRef.current?.think(),
+    done: () => controllerRef.current?.done(),
+    stop: () => controllerRef.current?.stop(),
     get state() {
-      return controllerRef.current?.state ?? "hidden";
+      return controllerRef.current?.state ?? IDLE;
     },
     get position() {
       return controllerRef.current?.position ?? { x: 0, y: 0 };
     },
+    get normalizedPosition() {
+      return controllerRef.current?.normalizedPosition ?? null;
+    },
+    get target() {
+      return controllerRef.current?.target ?? null;
+    },
     get isAnimating() {
       return controllerRef.current?.isAnimating ?? false;
+    },
+    get backlog() {
+      return controllerRef.current?.backlog ?? 0;
     },
     get frameCount() {
       return controllerRef.current?.frameCount ?? 0;
     },
+    get frameRectangle() {
+      return controllerRef.current?.frameRectangle ?? { x: 0, y: 0, width: 0, height: 0 };
+    },
     subscribe: (listener) => controllerRef.current?.subscribe(listener) ?? (() => undefined),
   }));
+
   useLayoutEffect(() => {
     const root = rootRef.current;
     const pointer = pointerRef.current;
     const pointerBody = bodyRef.current;
-    const ripple = rippleRef.current;
+    const a = pulseA.current;
+    const b = pulseB.current;
     const dragPath = dragRef.current;
-    if (!root || !pointer || !pointerBody || !ripple || !dragPath) return undefined;
+    const scrollCue = cueRef.current;
+    if (!root || !pointer || !pointerBody || !a || !b || !dragPath || !scrollCue) return undefined;
     const controller = new AgentCursorController({
-      elements: {
-        root,
-        pointer,
-        pointerBody,
-        ripple,
-        dragPath,
-        trail: trailRefs.current.filter((n): n is HTMLDivElement => n !== null),
-      },
+      elements: { root, pointer, pointerBody, pulses: [a, b], dragPath, scrollCue },
       scheduler: frameScheduler,
-      timers,
     });
     controllerRef.current = controller;
+    const place = () => controller.setFrame(frameRect(boxRef.current, frameSizeRef.current, fitRef.current));
+    // The box is measured by the observer (no layout reads per frame).
+    boxRef.current = { width: root.clientWidth, height: root.clientHeight };
+    place();
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver((entries) => {
+        const entry = entries[entries.length - 1];
+        if (!entry) return;
+        boxRef.current = { width: entry.contentRect.width, height: entry.contentRect.height };
+        place();
+      });
+      observer.observe(root);
+    }
     return () => {
+      observer?.disconnect();
       controller.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
     };
-    // The clock and timers are fixed for the layer's lifetime by design.
+    // The clock is fixed for the layer's lifetime by design.
   }, []);
+
+  useLayoutEffect(() => {
+    frameSizeRef.current = frameSize;
+    fitRef.current = fit;
+    controllerRef.current?.setFrame(frameRect(boxRef.current, frameSize, fit));
+  }, [frameSize?.width, frameSize?.height, fit]);
 
   useLayoutEffect(() => {
     controllerRef.current?.setTier(effects.tier);
@@ -146,28 +190,17 @@ export const AgentCursorLayer = forwardRef<AgentCursorHandle, AgentCursorLayerPr
   useImperativeHandle(ref, () => facade, [facade]);
 
   return (
-    <div
-      ref={rootRef}
-      className={className ? `pgc-layer ${className}` : "pgc-layer"}
-      style={style}
-      aria-hidden="true"
-    >
+    <div ref={rootRef} className={className ? `pgc-layer ${className}` : "pgc-layer"} style={style} data-state="hidden" aria-hidden="true">
       <div ref={dragRef} className="pgc-drag" />
-      {TRAIL_KEYS.map((i) => (
-        <div
-          key={i}
-          className="pgc-trail"
-          ref={(node) => {
-            trailRefs.current[i] = node;
-          }}
-        />
-      ))}
-      <div ref={rippleRef} className="pgc-ripple" />
+      <div ref={pulseA} className="pgc-pulse" />
+      <div ref={pulseB} className="pgc-pulse" />
+      <div ref={cueRef} className="pgc-scroll">
+        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <path d="M3 3.2L6 6.2L9 3.2M3 6.4L6 9.4L9 6.4" />
+        </svg>
+      </div>
       <div ref={pointerRef} className="pgc-pointer">
         <div ref={bodyRef} className="pgc-body">
-          <span className="pgc-wait">
-            <i className="pg-ambient" />
-          </span>
           <PointerGlyph uid={uid} />
           <span className="pgc-typing">
             <i className="pg-work-anim" />

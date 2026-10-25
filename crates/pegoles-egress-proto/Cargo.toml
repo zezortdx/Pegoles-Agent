@@ -1,0 +1,12 @@
+[package]
+name = "pegoles-egress-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Pegoles egress mux protocol v1 (docs/EGRESS.md): frames, incremental decoder, per-stream credit accounting; no dependencies, shared by host and guest"
+license = "MIT"
+
+[dependencies]
+
+[dev-dependencies]
+proptest = { workspace = true }

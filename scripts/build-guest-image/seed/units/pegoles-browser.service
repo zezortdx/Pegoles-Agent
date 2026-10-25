@@ -1,0 +1,56 @@
+# Chromium, locked to the host proxy by the root-owned managed policy
+# /etc/chromium/policies/managed/pegoles.json (docs/EGRESS.md). Started
+# by pegoles-browser.path (panel click), not at boot; not enabled itself.
+# The profile, cache and downloads live in a tmpfs RuntimeDirectory that
+# is wiped every time the browser closes.
+# No RestrictNamespaces / MemoryDenyWriteExecute / SystemCallFilter here on
+# purpose: Chromium's own sandbox needs user/pid/net namespaces and V8 needs
+# JIT. No setuid sandbox (chromium-sandbox is not installed). No AF_VSOCK:
+# the browser cannot even dial the host control channel.
+[Unit]
+Description=Pegoles browser (Chromium behind the host proxy)
+After=pegoles-weston.service
+Requires=pegoles-weston.service
+
+[Service]
+Type=simple
+User=pegoles
+Group=pegoles
+Environment=XDG_RUNTIME_DIR=/run/pegoles
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=HOME=/run/pegoles-browser/home
+Environment=XDG_CONFIG_HOME=/run/pegoles-browser/config
+Environment=XDG_CACHE_HOME=/run/pegoles-browser/cache-home
+RuntimeDirectory=pegoles-browser
+RuntimeDirectoryMode=0700
+# "+": run as root outside the sandbox (this unit cannot write /run/pegoles).
+ExecStartPre=+/bin/rm -f /run/pegoles/launch-browser
+ExecStartPre=/bin/mkdir -p /run/pegoles-browser/home /run/pegoles-browser/config /run/pegoles-browser/cache-home /run/pegoles-browser/downloads
+ExecStart=/usr/bin/chromium --ozone-platform=wayland --start-maximized --disable-gpu \
+  --user-data-dir=/run/pegoles-browser/profile --disk-cache-dir=/run/pegoles-browser/cache \
+  --disk-cache-size=67108864 --no-first-run --no-default-browser-check --password-store=basic \
+  --disable-crash-reporter --proxy-server=127.0.0.1:3128 --proxy-bypass-list=<-loopback> about:blank
+ExecStopPost=+/bin/rm -f /run/pegoles/launch-browser
+Restart=no
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+MemoryMax=768M
+TasksMax=2048

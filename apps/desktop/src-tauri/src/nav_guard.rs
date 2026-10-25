@@ -33,12 +33,12 @@ pub fn is_app_url(url: &Url, dev_url: Option<&Url>) -> bool {
 }
 
 /// Build the main window from its tauri.conf.json entry with the
-/// navigation guard, new-window refusal, WebRTC removed in every frame and
-/// (on macOS outside `tauri dev`) the network rule list of
-/// `webview_egress` attached before the webview exists. On that path the
-/// window appears once WebKit has compiled the list (a moment after
-/// setup); the app exits instead of showing an uncontained window.
-pub fn build_main_window(app: &tauri::App) -> tauri::Result<()> {
+/// navigation guard, new-window refusal, WebRTC removed in every frame and,
+/// outside `tauri dev`, `webview_egress` containment in force before the
+/// webview exists: on macOS the network rule list (the window appears once
+/// WebKit has compiled it; the app exits instead of showing an uncontained
+/// window), on Windows the WebView2 switches.
+pub fn build_main_window(app: &tauri::App, boot_script: String) -> tauri::Result<()> {
     let config = app
         .config()
         .app
@@ -59,13 +59,20 @@ pub fn build_main_window(app: &tauri::App) -> tauri::Result<()> {
     let make = move |builder: WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle>| {
         let builder = builder
             .on_navigation(move |url| is_app_url(url, dev_url.as_ref()))
-            .initialization_script_for_all_frames(crate::webview_egress::DISABLE_WEBRTC);
+            .initialization_script_for_all_frames(crate::webview_egress::DISABLE_WEBRTC)
+            .initialization_script(&boot_script);
         // WKWebView with no new-window handler already refuses window.open().
         // Installing one on macOS adds nothing and routes window.open() through
         // wry code that unwraps the window's screen (nil while the window is
         // off every display), so it is only installed on the other platforms.
         #[cfg(not(target_os = "macos"))]
         let builder = builder.on_new_window(|_, _| NewWindowResponse::Deny);
+        #[cfg(windows)]
+        let builder = if crate::webview_egress::contained() {
+            builder.additional_browser_args(crate::webview_egress::WEBVIEW2_ARGS)
+        } else {
+            builder
+        };
         builder.build().map(|_| ())
     };
     #[cfg(target_os = "macos")]

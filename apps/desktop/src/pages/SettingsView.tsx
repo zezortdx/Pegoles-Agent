@@ -5,8 +5,10 @@ import type { IntelligenceState } from "../state/useIntelligence";
 import type { HostCapabilities, StatusPayload } from "../lib/tauri";
 import { hostLabel, shortcutModifier } from "../lib/format";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { DiagnosticReportButton } from "../ui/DiagnosticReport";
 import { IntelligenceSection } from "./IntelligenceSection";
 import { Row, Section } from "./settingsParts";
+import { HOST } from "../lib/host";
 
 export type QualityChoice = "auto" | "full" | "reduced";
 /** A section another surface points at (Home's safety line, the composer's model chip, a task waiting for a model). */
@@ -45,7 +47,7 @@ export interface SettingsViewProps {
  */
 const SECURITY_RULES: readonly { label: string; value: string; tone: "on" | "blocked" }[] = [
   { label: "Computer isolation", value: "On", tone: "on" },
-  { label: "Your Mac’s files, apps and screen", value: "No access", tone: "blocked" },
+  { label: `Your ${HOST}’s files, apps and screen`, value: "No access", tone: "blocked" },
   { label: "Typing private keys", value: "Blocked", tone: "blocked" },
   { label: "Clicking, typing and scrolling on its computer", value: "Within safety limits", tone: "on" },
 ];
@@ -83,7 +85,7 @@ export function SettingsView(props: SettingsViewProps) {
       <IntelligenceSection id="settings-intelligence" native={props.native} intelligence={props.intelligence} model={props.model} />
 
       <Section id="settings-appearance" title="Appearance">
-        <Row label="Motion quality" hint={props.quality === "auto" ? `Auto is using ${props.resolvedQuality === "full" ? "Full" : "Reduced"} on this Mac.` : "Full adds deeper glass, glow and motion. Reduced keeps it light."}>
+        <Row label="Motion quality" hint={props.quality === "auto" ? `Auto is using ${props.resolvedQuality === "full" ? "Full" : "Reduced"} on this ${HOST}.` : "Full adds deeper glass, glow and motion. Reduced keeps it light."}>
           <SegmentedControl id="quality" label="Motion quality" segments={QUALITY_SEGMENTS} value={props.quality} onChange={props.onQuality} />
         </Row>
         <Row label="Reduce motion" hint="Follows your system accessibility setting.">
@@ -93,16 +95,23 @@ export function SettingsView(props: SettingsViewProps) {
 
       <Section id="settings-computer" title="Computer" note="Pegoles’ own isolated computer. It never shares your desktop.">
         <Row label="Status"><span>{computer.chip}</span></Row>
-        {status && <Row label="System"><span className="mono">{status.spec_os} · {status.spec_arch}</span></Row>}
-        {status && <Row label="Resources"><span className="mono">{status.spec_vcpus} CPU · {+(status.spec_ram_mb / 1024).toFixed(1)} GB</span></Row>}
-        {status?.display_config && <Row label="Display"><span className="mono">{status.display_config.width_px} × {status.display_config.height_px}</span></Row>}
-        <Row label="Runs on"><span>{host ? hostLabel(host.platform, host.architecture) : "—"}</span></Row>
         {host?.required_setup.length ? (
           <div className="setting setting--stack" role="listitem">
             <span className="setting__label">Setup needed</span>
             <ul className="setting__list">{host.required_setup.map((step) => <li key={step}>{step}</li>)}</ul>
           </div>
         ) : null}
+        <details className="details advanced">
+          <summary>Advanced</summary>
+          <div className="advanced__body">
+            <div className="settings__group settings__group--dense" role="list" aria-label="Computer details">
+              {status && <Row label="System"><span className="mono">{status.spec_os} · {status.spec_arch}</span></Row>}
+              {status && <Row label="Resources"><span className="mono">{status.spec_vcpus} CPU · {+(status.spec_ram_mb / 1024).toFixed(1)} GB</span></Row>}
+              {status?.display_config && <Row label="Display"><span className="mono">{status.display_config.width_px} × {status.display_config.height_px}</span></Row>}
+              <Row label="Runs on"><span>{host ? hostLabel(host.platform, host.architecture) : "—"}</span></Row>
+            </div>
+          </div>
+        </details>
       </Section>
 
       <Section
@@ -116,6 +125,12 @@ export function SettingsView(props: SettingsViewProps) {
         ))}
         <Row label="What it types" hint="The audit log records that text was typed, never the text itself.">
           <span className="security-value" data-tone="on">Never logged</span>
+        </Row>
+      </Section>
+
+      <Section id="settings-help" title="Help">
+        <Row label="Report a problem" hint="Saves a file with technical facts to your Downloads folder, to send to whoever helps you." wrap>
+          <DiagnosticReportButton />
         </Row>
       </Section>
 

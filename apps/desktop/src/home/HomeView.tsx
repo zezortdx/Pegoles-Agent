@@ -51,7 +51,7 @@ export function HomeView({ presence, headingRef, attentive, nudge, firstRun, onS
           <PegolesPresence mode={presence} size={52} look={attentive ? { x: 0, y: 1 } : null} nudge={nudge}
             interactive pressable onPress={onPressPresence} field={false} />
         </m.div>
-        <m.h1 id="home-title" ref={headingRef} tabIndex={-1} className="home__title" {...enter(0.04)}>What should Pegoles do?</m.h1>
+        <m.h1 id="home-title" ref={headingRef} tabIndex={-1} className="home__title" {...enter(0.04)}>Give Pegoles a task</m.h1>
         <m.p className="home__lead" {...enter(0.08)}>It works on its own computer, never yours. Watch it work and stop it whenever you like.</m.p>
         {firstRun && (
           <m.ul className="starters" aria-label="A few places to start" {...enter(0.12)}>

@@ -178,11 +178,21 @@ bash scripts/release/verify-artifact.sh target/release-artifacts/Pegoles_<v>_arm
 1. Official binary distribution (deferred): Developer ID certificate and
    notary credentials, then `PEGOLES_BINARY_RELEASES` and the release
    workflow (`docs/GITHUB_RELEASE_CHECKLIST.md` §4–5).
-2. Internet for the agent's computer, after 0.1 (asked for by early
-   testers): opt-in per task with a native confirmation, egress only
-   through a host-side proxy with a domain allowlist and a log, a browser
-   in a new sealed image, and policy rules for what may be typed into
-   pages. Today the VM has no network device by design.
+2. Internet for the agent's computer (asked for by early testers): **in
+   progress** on `phase/windows-0.2` (`docs/EGRESS.md` is the contract).
+   Built and unit-tested: the `pegoles-egress` proxy (mux, policy, TLS
+   interception, inspection, audit), the macOS/Windows stream bridges,
+   Core's per-task session (`pegoles-core::egress`: opens after consent
+   once the agent holds the computer, closed by every control-loss path,
+   lock-free kill switch, audit to the UI), the native consent (macOS alert,
+   Windows message box), the composer's Internet control and the online
+   indicator with the live decision list, and the planner prompt note.
+   Still to do: build and seal image `pegoles-base-0.4` (arm64) and
+   `pegoles-base-x64-0.2` with Chromium and the forwarder, publish and pin
+   them, then run the hardware E2E (real VM, real bridge, allowlist and
+   open web, kill switch under Stop/pause/takeover, soak). Until then a
+   task that asks for internet on an older image runs offline and says so.
+   The VM still has no network device.
 3. Measure on 8 GB and 16 GB Macs and set a minimum RAM; only a 24 GB
    M4 Pro was available.
 4. Settings shows Pegoles Local as "Ready" when a model file is corrupted

@@ -21,7 +21,6 @@ const ROWS: readonly Row[] = [
   { label: "Glow intensity", value: (p) => p.glowIntensity.toFixed(2) },
   { label: "Specular edge", value: (p) => p.specular.toFixed(2) },
   { label: "Ambient life", value: (p) => (p.ambient.enabled ? `${p.ambient.periodMs / 1000} s · amplitude ${p.ambient.amplitude}` : "off") },
-  { label: "Agent cursor trail", value: (p) => (p.cursorTrailLength > 0 ? `${p.cursorTrailLength} samples` : "none") },
   { label: "Transitions", value: (p) => p.transition },
   { label: "Blur budget (visible surfaces)", value: (p) => String(p.maxBackdropSurfaces) },
 ];

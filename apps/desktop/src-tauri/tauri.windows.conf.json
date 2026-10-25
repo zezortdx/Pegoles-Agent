@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "windows/nsis-header.bmp",
+        "sidebarImage": "windows/nsis-sidebar.bmp",
+        "languages": ["English"],
+        "displayLanguageSelector": false,
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}

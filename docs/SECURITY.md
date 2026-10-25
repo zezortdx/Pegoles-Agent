@@ -29,7 +29,7 @@ document states what is enforced today, where, and what is not.
 | Action → execution | untrusted | `pegoles-policy::evaluate` (exhaustive, deterministic) on every action, then Core's executor (rate limit, control arbitration) |
 | Guest → host | hostile | vsock frames ≤ 64 KiB, UTF-8, typed parse, bounded fields; frame reassembly caps; per-connection line-rate limit; bounded queues everywhere between guest and Core |
 | Guest process → host channel | hostile | the helper accepts a vsock peer only from a reserved source port (≤ 1023), which only the runtime (CAP_NET_BIND_SERVICE via its unit) can bind |
-| Webview → Core | semi-trusted UI | app ACL (`build.rs` + `capabilities/default.json`): only the commands the release UI invokes, event listen/unlisten, window dragging; no path/URL/process arguments; navigation away from the app origin refused; strict CSP in release; no network egress at all from the webview (WebKit content rule list blocking every network URL, attached before the window exists; WebRTC removed; `webview_egress.rs`, proven by `examples/webview_egress_probe.rs`); Design Lab and diagnostic commands compiled and granted only in debug builds; switching to a cloud planner and storing an API key need a native macOS alert the page cannot answer (Cancel is the keyboard default; 30 s cooldown after a decline), and the key is typed into the alert's secure field, never the webview |
+| Webview → Core | semi-trusted UI | app ACL (`build.rs` + `capabilities/default.json`): only the commands the release UI invokes, event listen/unlisten, window dragging; no path/URL/process arguments; navigation away from the app origin refused; strict CSP in release; no network egress at all from the webview (WebKit content rule list blocking every network URL, attached before the window exists; WebRTC removed; `webview_egress.rs`, proven by `examples/webview_egress_probe.rs`); Design Lab and diagnostic commands compiled and granted only in debug builds; switching to a cloud planner, storing an API key and giving a task internet need a native macOS alert (Windows: a system message box, internet only) the page cannot answer (Cancel is the keyboard default; 30 s cooldown after a decline), and the key is typed into the alert's secure field, never the webview |
 | Host → model provider | external service | HTTPS only; sends the objective, screenshots of the VM and the model's own history; never host files, host screen, or the key in content |
 
 ## Invariants (enforced)
@@ -49,9 +49,18 @@ document states what is enforced today, where, and what is not.
    is reserved and treated as a denial (fail closed): no current action
    produces it.
 3. **The VM has no network device, no shared folders, no clipboard, no
-   host input devices** (`VmManager.swift::buildConfiguration`). With no
-   network, nothing the agent does inside the VM can have an external
-   side effect; that is why in-VM actions need no approval prompts.
+   host input devices** (`VmManager.swift::buildConfiguration`; Windows:
+   no adapter in the HCS document). There is no NAT, DNS or raw socket
+   path out of the guest, ever. The only egress is the host-initiated
+   proxy stream during a task the person started with internet enabled
+   and confirmed in a native dialog (per task, off by default): one byte
+   stream the host opens and closes, carrying the mux protocol to
+   `pegoles-egress`, whose rules are compiled into the signed binary
+   (`docs/EGRESS.md`). Stop, pause, failure, human takeover, task end and
+   exit cut it. Without internet, nothing the agent does inside the VM
+   can have an external side effect; that is why in-VM actions need no
+   approval prompts. With it, text the agent types into pages can leave
+   the VM (see the egress residuals in `docs/THREAT_MODEL.md`).
 4. **The guest is untrusted.** All guest frames are parsed as data with
    bounds; malformed or oversized input drops the connection, never the
    host (a char-boundary panic in error truncation was fixed and
@@ -130,8 +139,11 @@ offline VM". Reset returns the VM to the sealed image.
 - The key-material tripwire in policy is a heuristic, not a boundary.
 - Hypervisor escape is out of scope (Apple Virtualization.framework is
   the boundary).
-- Windows (HCS) code has not been compiled or run in this environment;
-  its security properties are unverified.
+- Windows (HCS) is implemented on the `phase/windows-0.2` branch and
+  exercised only on CI runners (Windows Server, as an administrator),
+  never on a consumer PC; its properties are designed and unit-tested,
+  not hardware-verified. See "Windows" below and
+  `docs/WINDOWS_ARCHITECTURE.md`.
 - The MLX worker's sandbox uses `sandbox-exec`, which Apple marks
   deprecated; it can still read files outside `$HOME` (system
   libraries, `/opt`) and file metadata under `$HOME`, and can fill its
@@ -146,6 +158,19 @@ offline VM". Reset returns the VM to the sealed image.
   release `build` job of the same commit (a dependency compromised at
   its locked version could alter what gets signed; it can no longer use
   the signing identity).
+
+## Windows (implemented, not hardware-verified)
+
+The same boundaries, with Windows mechanisms (`docs/WINDOWS_ARCHITECTURE.md`):
+
+| Boundary | Enforcement on Windows |
+|---|---|
+| App → hypervisor | The app never runs elevated. Host Compute System calls need administrator rights, so they live in `PegolesVmBroker` (LocalSystem, demand-start, per-machine install): eight typed verbs over a local named pipe, clients limited to Pegoles' own `pegoles-vm-host.exe`, paths limited to the calling user's own computer folder (no reparse points, opened while impersonating the user), the HCS document built by the broker from validated values with no network adapter, shared folder, keyboard or mouse (the guest's own synthetic display only; never shown on the host, no input through it). VMs die with the helper's connection and with the broker. |
+| Guest process → host channel | The guest runtime listens on privileged vsock port 850 (only it holds `CAP_NET_BIND_SERVICE`); the unprivileged helper connects over AF_HYPERV. HvSocket access is limited to SYSTEM and the signed-in user by the VM's own security descriptor (no registry registration). Guest bytes never reach the SYSTEM service. |
+| Local model worker → host | AppContainer with no capabilities (no network, no user files, read-only access granted to the model store only), child processes forbidden, job object (dies with Pegoles, one process, memory cap, UI restrictions), explicit handle list, rebuilt environment. |
+| Webview → network | WebView2 switches set before the webview exists: every proxied request goes to a dead proxy on the loopback discard port (loopback included), every host name resolves to nothing, WebRTC may not use UDP outside a proxy; WebRTC constructors removed; navigation guard as on macOS. |
+| Cloud planner and key | Not available on Windows yet: switching to a cloud planner and storing a key need a native confirmation the page cannot answer, which exists only on macOS, so both fail closed. Pegoles Local is the only planner on Windows. |
+| Installer | Per-machine NSIS installer (one UAC prompt). It registers the broker service and nothing else: no firewall rule, no Defender exclusion, no Windows feature. The Virtual Machine Platform is turned on later from onboarding, after an explanation, through a fixed elevated verb (`dism.exe` with fixed arguments); Pegoles restarts Windows only when the person presses "Restart now". Unsigned today: SmartScreen warns and Smart App Control blocks it; Pegoles never asks anyone to turn those off. |
 
 ## Tests that pin these properties
 

@@ -6,7 +6,7 @@ import { humanizeError, type ErrorScope, type HumanError } from "./errors";
 import { api, type AgentEvent, type AgentTask, type HostCapabilities, type StatusPayload } from "../lib/tauri";
 
 const POLL_MS = 2500;
-const CORE_EVENTS = ["pegoles://event", "pegoles://display-activity", "pegoles://image-progress"] as const;
+const CORE_EVENTS = ["pegoles://event", "pegoles://display-activity", "pegoles://image-progress", "pegoles://egress"] as const;
 
 export type Busy = Readonly<Record<ErrorScope, boolean>>;
 export type Errors = Readonly<Record<ErrorScope, HumanError | null>>;

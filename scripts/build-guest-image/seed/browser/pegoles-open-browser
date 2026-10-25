@@ -1,0 +1,6 @@
+#!/bin/sh
+# Weston panel launcher: ask systemd to (re)start the browser unit.
+# The compositor's sandbox may only write /run/pegoles, so this just
+# creates the trigger file that pegoles-browser.path watches; the unit
+# removes it again when it starts and when it stops.
+exec /usr/bin/touch /run/pegoles/launch-browser

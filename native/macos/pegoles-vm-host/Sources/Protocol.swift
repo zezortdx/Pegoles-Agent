@@ -30,6 +30,8 @@ struct IncomingRequest: Decodable {
     let params: CreateParams?
     /// Frame payload for `guest_send` (one JSONL line, no `\n`).
     let payload: String?
+    /// Local endpoint (Unix socket path) for `egress_open`.
+    let endpoint: String?
 }
 
 struct HostError: Codable {

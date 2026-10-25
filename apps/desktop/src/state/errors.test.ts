@@ -52,6 +52,24 @@ describe("humanizeError", () => {
   it("explains a refused reset or removal, and a missing computer image", () => {
     expect(humanizeError("stop the running task before resetting the computer", "general")).toMatchObject({ scope: "general", title: "Stop the running task first." });
     expect(humanizeError("computer image missing: no sealed image", "computer")).toMatchObject({ title: "Pegoles’ computer image isn’t ready." });
+    // Windows before its image is published: say so, don't suggest a retry.
+    const unpublished = humanizeError("computer image missing: pegoles-base-x64-0.1 has no release download in this build", "computer");
+    expect(unpublished).toMatchObject({ retryable: false });
+    expect(unpublished.title).toMatch(/isn’t available for this (Mac|PC) yet/);
+    expect(unpublished.hint).toMatch(/hasn’t been published yet/);
+  });
+
+  it("says Windows and guest failures as sentences people can act on, detail kept", () => {
+    const hr = humanizeError("computer error: backend error: HcsCreateComputeSystem failed: HRESULT 0x80370102 (call rejected)", "computer");
+    expect(hr).toMatchObject({ title: "Virtualization needs to be turned on.", retryable: false });
+    expect(hr.hint).toMatch(/its own isolated computer/);
+    expect(hr.detail).toContain("0x80370102");
+    expect(humanizeError("guest handshake timeout after 10000ms", "computer").title).toBe("Pegoles couldn’t start its computer.");
+    expect(humanizeError("guest handshake timeout after 10000ms", "computer").hint).toMatch(/Technical details/);
+    expect(humanizeError("model worker OOM", "computer").title).toBe("Pegoles ran out of available memory.");
+    expect(humanizeError("cannot reach pegoles-vm-broker: pipe not found", "computer").hint).toMatch(/Reinstalling Pegoles/);
+    // The local model's own memory message keeps its more precise words.
+    expect(humanizeError("not enough memory to run the local model: 3 GB", "run").title).toBe("Not enough free memory for Pegoles Local.");
   });
 
   it("never loses the detail", () => {

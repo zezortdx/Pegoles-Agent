@@ -7,7 +7,9 @@
 ///   for image builders only)
 /// - virtio entropy, traditional memory balloon
 /// - virtio console -> bounded logs/serial.log (guest output only)
-/// - virtio socket: the authenticated Core <-> guest runtime channel
+/// - virtio socket: the authenticated Core <-> guest runtime channel, and
+///   (only while the app asks) one raw egress stream to the guest's
+///   forwarder on port 4051 (EgressBridge.swift)
 /// - virtio-gpu, one 1440x900 scanout (guest compositor output only)
 /// Deliberately absent: network, shared directories, clipboard, audio,
 /// Rosetta, host keyboard/pointing devices.
@@ -82,6 +84,13 @@ final class VmManager {
     /// delegate callbacks on the main queue).
     private let linksLock = NSLock()
     private var serialLogs: [String: SerialLog] = [:]
+    /// Computer folder (`<data>/computers/<id>`) by computer id; the root
+    /// for validating egress endpoints.
+    private var computerDirs: [String: String] = [:]
+    /// Live egress stream per computer (at most one). Guarded by
+    /// `egressLock`: pumps report their end from their own threads.
+    private var egressBridges: [String: EgressBridge] = [:]
+    private let egressLock = NSLock()
     private let socketDelegate = GuestSocketDelegate()
     private let socketListener = VZVirtioSocketListener()
     /// Serial capture built by the last `buildConfiguration` call; adopted
@@ -186,6 +195,12 @@ final class VmManager {
         config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
         // No network, no shared directories, no clipboard, no host input.
+        // The egress stream (EgressBridge) rides the virtio socket above;
+        // it is not a network device and never becomes one.
+        guard config.networkDevices.isEmpty else {
+            throw VmHostError.failure(code: "internal",
+                                      message: "refusing a VM configuration with a network device")
+        }
         return config
     }
 
@@ -284,6 +299,8 @@ final class VmManager {
                                       message: "VM configuration invalid: \(error.localizedDescription)")
         }
         serialLogs[params.computer_id] = serial
+        computerDirs[params.computer_id] =
+            URL(fileURLWithPath: params.disk_path).deletingLastPathComponent().path
         let vm = onMainQueueSync { VZVirtualMachine(configuration: config) }
         vm.delegate = delegate
         delegate.register(vm, computerId: params.computer_id)
@@ -343,6 +360,104 @@ final class VmManager {
             throw VmHostError.failure(code: "unknown_computer", message: "no such computer")
         }
         guestLink(for: computerId).detach(reason: "kicked")
+    }
+
+    // MARK: - egress stream
+
+    /// Open the egress stream: connect the guest's forwarder (vsock 4051),
+    /// connect the app's endpoint, pump bytes both ways.
+    func egressOpen(computerId: String, endpoint: String) throws {
+        let vm = try machine(computerId)
+        guard let computerDir = computerDirs[computerId] else {
+            throw VmHostError.failure(code: "unknown_computer", message: "no such computer")
+        }
+        let path = try validatedEgressEndpoint(endpoint, computerDir: computerDir)
+        egressLock.lock()
+        let already = egressBridges[computerId] != nil
+        egressLock.unlock()
+        if already {
+            throw VmHostError.failure(code: "egress_failed", message: "egress stream already open")
+        }
+        guard vmState(vm) == .running else {
+            throw VmHostError.failure(code: "egress_failed", message: "the computer is not running")
+        }
+        let connection = try connectEgressVsock(vm)
+        let unixFd: Int32
+        do {
+            unixFd = try connectUnixSocket(path: path)
+        } catch {
+            closeConnectionOnMainQueue(connection)
+            throw error
+        }
+        let bridge = EgressBridge(computerId: computerId, vz: connection, unixFd: unixFd)
+        bridge.onEndedByItself = { [weak self] ended, reason in
+            self?.egressEnded(ended, reason: reason)
+        }
+        egressLock.lock()
+        egressBridges[computerId] = bridge
+        egressLock.unlock()
+        bridge.start()
+    }
+
+    func egressClose(computerId: String) throws {
+        guard machines[computerId] != nil else {
+            throw VmHostError.failure(code: "unknown_computer", message: "no such computer")
+        }
+        dropEgress(computerId: computerId)
+    }
+
+    /// Close and forget this computer's egress stream (idempotent, silent).
+    private func dropEgress(computerId: String) {
+        egressLock.lock()
+        let bridge = egressBridges.removeValue(forKey: computerId)
+        egressLock.unlock()
+        bridge?.close()
+    }
+
+    private func egressEnded(_ bridge: EgressBridge, reason: String) {
+        egressLock.lock()
+        let current = egressBridges[bridge.computerId] === bridge
+        if current { egressBridges.removeValue(forKey: bridge.computerId) }
+        egressLock.unlock()
+        guard current else { return }
+        emit(HostEvent(event: "egress_closed", computer_id: bridge.computerId, state: nil,
+                       message: nil, payload: nil, reason: reason))
+    }
+
+    /// `VZVirtioSocketDevice.connect` must run on the main queue; wait for
+    /// its completion on this (background) thread, bounded.
+    private func connectEgressVsock(_ vm: VZVirtualMachine) throws -> VZVirtioSocketConnection {
+        var outcome: Result<VZVirtioSocketConnection, Error>?
+        let sema = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            guard let device = vm.socketDevices.compactMap({ $0 as? VZVirtioSocketDevice }).first else {
+                outcome = .failure(VmHostError.failure(code: "egress_failed",
+                                                       message: "no socket device"))
+                sema.signal()
+                return
+            }
+            device.connect(toPort: egressVsockPort) { result in
+                outcome = result
+                sema.signal()
+            }
+        }
+        if sema.wait(timeout: .now() + egressConnectTimeoutSeconds) == .timedOut {
+            // A late success would leak a connection; close it when it lands.
+            DispatchQueue.global().async {
+                sema.wait()
+                if case .success(let late)? = outcome { closeConnectionOnMainQueue(late) }
+            }
+            throw VmHostError.failure(code: "egress_failed", message: "the guest did not accept the stream")
+        }
+        switch outcome {
+        case .success(let connection): return connection
+        case .failure(let error as VmHostError): throw error
+        case .failure(let error):
+            throw VmHostError.failure(code: "egress_failed",
+                                      message: "the guest is not listening: \(error.localizedDescription)")
+        case .none:
+            throw VmHostError.failure(code: "egress_failed", message: "no result")
+        }
     }
 
     private func dropGuestLink(computerId: String) {
@@ -409,6 +524,7 @@ final class VmManager {
 
     func stop(computerId: String) throws -> String {
         let vm = try machine(computerId)
+        dropEgress(computerId: computerId)
         // Prefer a graceful guest shutdown; fall back to a forced stop.
         if vmCan(vm, { $0.canRequestStop }) {
             onMainQueueSync { () in _ = try? vm.requestStop() }
@@ -430,11 +546,13 @@ final class VmManager {
 
     func destroy(computerId: String) throws {
         let vm = try machine(computerId)
+        dropEgress(computerId: computerId)
         let s = vmState(vm)
         if s == .running || s == .paused {
             _ = try? stop(computerId: computerId)
         }
         delegate.unregister(vm)
+        computerDirs.removeValue(forKey: computerId)
         machines.removeValue(forKey: computerId)
         dropGuestLink(computerId: computerId)
         serialLogs.removeValue(forKey: computerId)?.close()
@@ -447,6 +565,7 @@ final class VmManager {
     func shutdownAll() {
         for id in Array(machines.keys) {
             guard let vm = machines[id] else { continue }
+            dropEgress(computerId: id)
             let s = vmState(vm)
             if s == .running || s == .paused || s == .starting {
                 if vmCan(vm, { $0.canRequestStop }) {

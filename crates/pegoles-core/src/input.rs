@@ -266,6 +266,8 @@ impl ComputerRegistry {
     /// pause, stop, shutdown). Releases pressed state best-effort.
     pub fn cancel_agent_input(&mut self, reason: &str) {
         self.agent_cancel.cancel();
+        // The agent loses the computer, so the task loses the internet.
+        self.egress_close(reason);
         self.release_pressed_state(reason);
     }
 
@@ -298,6 +300,7 @@ impl ComputerRegistry {
 
     /// End an agent session: release pressed state, return control to None.
     pub fn end_agent_session(&mut self, out: &mut Vec<AgentEvent>) {
+        self.egress_close("the task ended");
         self.release_pressed_state("session end");
         if self.display.control == ControlOwner::Agent {
             if let Some(id) = self.current_id() {

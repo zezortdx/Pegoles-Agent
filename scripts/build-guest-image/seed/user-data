@@ -8,6 +8,9 @@
 #  - weston.ini (1440x900, screenshooter-capable) + units;
 #  - units from seed/units: runtime (reserved-port auth), workspace
 #    terminal (enabled), input fixture (installed, dev/test only);
+#  - images 0.4 / x64-0.2 (browser, docs/EGRESS.md): pinned chromium debs,
+#    system user pegoles-egress, root-owned managed policy, forwarder
+#    binary + units, weston.ini with the browser launcher (from the seed);
 # then disables cloud-init and powers off for snapshot.
 # The builder seals the disk as a NEW versioned v2 image; v0.1 is
 # never mutated. The normal lifecycle never attaches a seed and never
@@ -21,6 +24,15 @@ users:
     shell: /usr/sbin/nologin
     lock_passwd: true
     groups: [input, video, render]
+  # Owns the egress forwarder process and exactly one policy file. No login,
+  # no home, no extra groups, no password.
+  - name: pegoles-egress
+    system: true
+    shell: /usr/sbin/nologin
+    homedir: /nonexistent
+    no_create_home: true
+    lock_passwd: true
+    primary_group: pegoles-egress
 
 write_files:
   - path: /etc/udev/rules.d/99-pegoles-input.rules
@@ -34,41 +46,6 @@ write_files:
       # misc-device uevents vary; KERNEL match alone is precise enough
       # for the single uinput node.)
       KERNEL=="uinput", GROUP="input", MODE="0660"
-  - path: /etc/xdg/weston/weston.ini
-    owner: root:root
-    permissions: '0644'
-    content: |
-      # Pegoles Guest Image v2 — Weston compositor configuration.
-      # --debug is REQUIRED: weston 14 only exposes the
-      # weston_screenshooter global with the debug protocol extension.
-      # Scope note: guest-local clients only; the guest is already
-      # untrusted and isolated, so this exposes nothing beyond the VM.
-      # Backend is chosen by /usr/local/bin/pegoles-weston: DRM when VZ
-      # attaches a virtio-gpu (libinput seat, so the uinput agent device
-      # reaches clients), headless otherwise (capture only; headless has
-      # no libinput seat). Both use the pixman renderer: headless's
-      # default noop renderer never completes framebuffer captures.
-      [core]
-      shell=desktop-shell.so
-      xwayland=false
-      require-input=false
-
-      [shell]
-      locking=false
-      background-color=0x000000
-      panel-location=none
-
-      [output]
-      name=all
-      mode=1440x900
-
-      [keyboard]
-      # MUST match guest/runtime/src/input.rs dead-key tables.
-      keymap_layout=us
-      keymap_variant=intl
-
-      [libinput]
-      touchscreen_calibrator=false
   - path: /usr/local/bin/pegoles-weston
     owner: root:root
     permissions: '0755'
@@ -133,13 +110,30 @@ runcmd:
   - cp /mnt/pegoles-seed/pegoles-input-fixture /usr/local/bin/pegoles-input-fixture && chmod 0755 /usr/local/bin/pegoles-input-fixture
   # Units live as files in the repo (scripts/build-guest-image/seed/units):
   # the same bytes feed this build and patch-image.sh.
-  - install -m 0644 -o root -g root /mnt/pegoles-seed/units/*.service /etc/systemd/system/
+  - install -m 0644 -o root -g root /mnt/pegoles-seed/units/*.service /mnt/pegoles-seed/units/*.path /etc/systemd/system/
+  - install -d -m 0755 -o root -g root /etc/xdg/weston
+  - install -m 0644 -o root -g root /mnt/pegoles-seed/weston/weston.ini /etc/xdg/weston/weston.ini
   - install -m 0644 -o root -g root /mnt/pegoles-seed/sysctl/60-pegoles-hardening.conf /etc/sysctl.d/
   - /usr/local/bin/pegoles-guest-runtime --version
   # Version-pinned graphical stack (dpkg fails fast on missing deps —
   # extend the seed bundle and rebuild the ISO, never apt online here).
   - dpkg -i /mnt/pegoles-seed/debs/*.deb
   - weston --version && foot --version
+  # Browser (images 0.4 / x64-0.2). The managed-policy tree is root-owned and
+  # not writable by the agent's user; the single file pegoles-egress-ca.json
+  # is owned by pegoles-egress (the forwarder writes it in place, the
+  # directory stays closed). It sorts before pegoles.json, which therefore
+  # wins any key both define.
+  - test -x /usr/bin/chromium && chromium --version
+  - test -f /usr/share/icons/hicolor/48x48/apps/chromium.png
+  - install -d -m 0755 -o root -g root /etc/chromium /etc/chromium/policies /etc/chromium/policies/managed /usr/local/lib/pegoles
+  - install -m 0644 -o root -g root /mnt/pegoles-seed/browser/pegoles-policy.json /etc/chromium/policies/managed/pegoles.json
+  - install -m 0644 -o pegoles-egress -g pegoles-egress /mnt/pegoles-seed/browser/pegoles-egress-ca.json /etc/chromium/policies/managed/pegoles-egress-ca.json
+  - install -m 0755 -o root -g root /mnt/pegoles-seed/browser/pegoles-open-browser /usr/local/bin/pegoles-open-browser
+  - install -m 0755 -o root -g root /mnt/pegoles-seed/pegoles-egress-forwarder /usr/local/lib/pegoles/pegoles-egress-forwarder
+  - test "$(stat -c '%U:%G:%a' /etc/chromium /etc/chromium/policies /etc/chromium/policies/managed | sort -u)" = "root:root:755"
+  - test "$(stat -c '%U:%a' /etc/chromium/policies/managed/pegoles.json)" = "root:644"
+  - id pegoles-egress
   # Sanity gates: udev, uinput module source, XKB data present.
   - command -v udevadm && (modinfo uinput || ls /dev/uinput)
   - test -f /usr/share/X11/xkb/rules/evdev.lst
@@ -147,10 +141,26 @@ runcmd:
   # Activate udev rule + groups + units.
   - udevadm control --reload-rules && udevadm trigger --subsystem-match=misc || true
   - systemctl daemon-reload
-  - systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-workspace.service seatd.service || systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-workspace.service
-  # Serial console on the virtio-console (hvc0) for boot diagnostics.
-  # GuestReady never depends on serial; this is diagnostics only.
-  - grep -q 'console=hvc0' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=hvc0"/' /etc/default/grub
+  - systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-workspace.service pegoles-egress-forwarder.service pegoles-browser.path seatd.service || systemctl enable pegoles-guest-runtime.service pegoles-weston.service pegoles-workspace.service pegoles-egress-forwarder.service pegoles-browser.path
+  # Serial console for boot diagnostics (GuestReady never depends on it):
+  # the virtio-console (hvc0) under Virtualization.framework (arm64), COM1
+  # (ttyS0) under Hyper-V (amd64).
+  # amd64 (Windows) also: the host connects to the runtime, which listens
+  # on its privileged vsock port (pegoles.transport=listen, see
+  # docs/WINDOWS_ARCHITECTURE.md); hv_sock is the vsock transport; the
+  # Hyper-V storage and bus drivers are in the initramfs (the root disk is
+  # SCSI there). Weston gets its DRM seat from Hyper-V's synthetic video
+  # (hyperv_drm, loaded by the bus), so agent input reaches clients
+  # through libinput as on macOS.
+  - |
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then
+      grep -q 'pegoles.transport=listen' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=ttyS0,115200 pegoles.transport=listen"/' /etc/default/grub
+      printf 'hv_sock\n' > /etc/modules-load.d/pegoles-hyperv.conf
+      printf 'hv_vmbus\nhv_storvsc\nhv_sock\n' >> /etc/initramfs-tools/modules
+      update-initramfs -u
+    else
+      grep -q 'console=hvc0' /etc/default/grub || sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 console=hvc0"/' /etc/default/grub
+    fi
   - update-grub
   # cloud-init did its one job: disable it for every later boot,
   # then power off for snapshot. NOTE: runcmd `poweroff` is refused

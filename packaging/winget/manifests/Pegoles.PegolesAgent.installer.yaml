@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+# DRAFT — not submitted. VERSION, the release URL and INSTALLER_SHA256 come
+# from the published GitHub release (see ../README.md).
+PackageIdentifier: Pegoles.PegolesAgent
+PackageVersion: VERSION
+MinimumOSVersion: 10.0.22000.0
+InstallerType: nullsoft
+Scope: machine
+ElevationRequirement: elevationRequired
+InstallModes:
+  - interactive
+  - silent
+UpgradeBehavior: install
+Dependencies:
+  # WebView2 is part of Windows 11; the installer also fetches it if missing.
+  PackageDependencies: []
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/zezortdx/Pegoles-Agent/releases/download/vVERSION/Pegoles-Setup-x64.exe
+    InstallerSha256: INSTALLER_SHA256
+ManifestType: installer
+ManifestVersion: 1.12.0

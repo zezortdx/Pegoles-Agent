@@ -5,10 +5,11 @@ import { canSetUp, installActive, progressText, sentence, setupAction, type Loca
 import { formatBytes, formatMemory, quantizationLabel } from "../lib/format";
 import { LocalProgress } from "../intelligence/LocalProgress";
 import { Row } from "./settingsParts";
+import { CLOUD_AVAILABLE, HOST } from "../lib/host";
 
 const STATUS: Record<Exclude<LocalStage, "ready">, { readonly label: string; readonly tone?: "attention" | "error" }> = {
   checking: { label: "Checking…" },
-  unsupported: { label: "Not available on this Mac" },
+  unsupported: { label: `Not available on this ${HOST}` },
   "not-set-up": { label: "Not set up" },
   preparing: { label: "Setting up…" },
   paused: { label: "Paused" },
@@ -55,7 +56,7 @@ export function LocalStateRow({ view, pending, onSetUp, onCancel }: LocalStateRo
   const size = view.model ? formatBytes(view.model.size_bytes) : null;
   let text: string;
   switch (view.stage) {
-    case "unsupported": text = `${view.problem ?? "Pegoles Local needs a Mac with Apple silicon."} You can still use a cloud model.`; break;
+    case "unsupported": text = `${view.problem ?? "Pegoles Local can’t run on this computer."}${CLOUD_AVAILABLE ? " You can still use a cloud model." : ""}`; break;
     case "downloaded": text = `Downloaded, but it can’t run here yet. ${view.problem ?? ""}`.trim(); break;
     case "paused": text = `Paused at ${progressText(view.doneBytes ?? 0, view.totalBytes ?? 0)}. It picks up where it stopped.`; break;
     case "failed": text = sentence(view.error ?? "The setup didn’t finish."); break;
@@ -144,7 +145,7 @@ function RemoveModel({ model, disabled, onRemove }: { model: LocalModelInfo; dis
       <div className="manage manage--confirm local-remove" role="group" aria-labelledby={titleId} onKeyDown={onKeyDown}>
         <p id={titleId} className="manage__question">{partial ? "Discard the partial download?" : `Remove ${model.display_name}?`}</p>
         <p className="manage__body">
-          {partial ? "What was downloaded so far is deleted." : `Its ${formatBytes(model.size_bytes)} are deleted from this Mac.`} Tasks can’t use Pegoles Local until you set it up again.
+          {partial ? "What was downloaded so far is deleted." : `Its ${formatBytes(model.size_bytes)} are deleted from this ${HOST}.`} Tasks can’t use Pegoles Local until you set it up again.
         </p>
         <div className="manage__actions">
           <button ref={cancelRef} type="button" className="btn btn--quiet btn--small" onClick={dismiss}>Cancel</button>
@@ -165,7 +166,7 @@ function RemoveModel({ model, disabled, onRemove }: { model: LocalModelInfo; dis
 
 function macLabel(intelligence: Intelligence): string {
   const { chip, memory_bytes, apple_silicon } = intelligence.local;
-  const name = chip ?? (apple_silicon ? "Apple silicon" : "Not Apple silicon");
+  const name = chip ?? (apple_silicon ? "Apple silicon" : "This computer");
   return memory_bytes > 0 ? `${name} · ${formatMemory(memory_bytes)} memory` : name;
 }
 
@@ -198,7 +199,7 @@ export function LocalAdvanced({ intelligence, view, pending, onChooseModel, onRe
           <Row label={model.state === "installed" ? "Size on disk" : "Download size"}><span className="mono">{formatBytes(model.size_bytes)}</span></Row>
           <Row label="License"><span className="mono">{model.license}</span></Row>
           <Row label="Source" wrap><span className="mono selectable">{model.source}</span></Row>
-          <Row label="This Mac"><span>{macLabel(intelligence)}</span></Row>
+          <Row label={`This ${HOST}`}><span>{macLabel(intelligence)}</span></Row>
           {model.recommended_min_ram_gb !== null && (
             <Row label="Recommended memory"><span>{model.recommended_min_ram_gb} GB or more</span></Row>
           )}

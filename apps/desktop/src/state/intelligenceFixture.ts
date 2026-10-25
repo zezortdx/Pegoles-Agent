@@ -38,7 +38,7 @@ export function intelligenceOf(patch: IntelligencePatch = {}): Intelligence {
     anthropic: { ...NO_KEY, ...patch.anthropic },
     local: {
       runtime_ready: true, runtime_problem: null, loaded_model: null, worker_footprint_bytes: null,
-      default_model: MAI.id, models, install: null, chip: "Apple M3 Pro", memory_bytes: 18 * 2 ** 30, apple_silicon: true,
+      default_model: MAI.id, models, install: null, chip: "Apple M3 Pro", memory_bytes: 18 * 2 ** 30, apple_silicon: true, host_supported: true,
       ...patch.local,
     },
   };

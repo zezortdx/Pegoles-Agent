@@ -137,3 +137,9 @@ export const ModelIcon = (p: IconProps) => (
     <path d="M6.5 2v2M9.5 2v2M6.5 12v2M9.5 12v2M2 6.5h2M2 9.5h2M12 6.5h2M12 9.5h2" vectorEffect="non-scaling-stroke" />
   </Icon>
 );
+export const PersonIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="8" cy="5.25" r="2.5" vectorEffect="non-scaling-stroke" />
+    <path d="M3 13.25c.6-2.4 2.6-3.75 5-3.75s4.4 1.35 5 3.75" vectorEffect="non-scaling-stroke" />
+  </Icon>
+);

@@ -71,8 +71,9 @@ state/computerModel.ts     activity, recent actions, transcript items,
 state/errors.ts            computer phase + copy, humanized errors
         │
         ├──► presence/      <PegolesPresence mode size look pulse />
-        │                    SVG first paint + fallback; lazy WebGL2 SDF
-        │                    renderer (one shared canvas); thought contours
+        │                    the official artwork (PresenceArt) + eye
+        │                    sprites; thought contours (WebGL removed
+        │                    2026-09-28, see DESIGN_SYSTEM.md §0)
         ├──► thought/       SVG overlay: ephemeral Presence → Computer thread
         └──► DOM product UI shell/ home/ composer/ task/ artifacts/
                              computer/ activity/ settings/
@@ -130,7 +131,8 @@ Reduced motion keeps every state legible through light, opacity and text.
 
 ## 6. Performance budget
 
-Entry JS ≤ 150 kB gz; the WebGL presence chunk loads after first paint (target
+(History: the WebGL presence was removed on 2026-09-28; the budget below
+applied to it.) Entry JS ≤ 150 kB gz; the WebGL presence chunk loads after first paint (target
 ≤ 10 kB gz, no three.js). One WebGL context for the app; canvas sized to the
 presence (never full screen), DPR ≤ 2 (1.5 while the computer is in use);
 0 fps when hidden, blurred, idle or settled; ≤ 30 fps idle life, ≤ 60 fps while
@@ -197,6 +199,11 @@ The window stays **opaque**; there is no `macOSPrivateApi`.
   notes; it is not shipped.
 
 ### Presence renderer decision
+
+> **Superseded (2026-09-28).** The 3D body drew a reinterpretation of the
+> logo (a white ceramic shell). The presence now shows the official
+> artwork's own pixels (DESIGN_SYSTEM.md §0 *Mark*) and the WebGL renderer
+> was removed. The notes below are kept as history.
 
 Keep and upgrade the custom WebGL2 SDF raymarcher (≈ 9 kB gz) instead of
 adding three.js/R3F (133–189 kB gz). `MeshPhysicalMaterial` transmission

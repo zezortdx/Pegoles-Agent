@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+# DRAFT — not submitted (see ../README.md).
+PackageIdentifier: Pegoles.PegolesAgent
+PackageVersion: VERSION
+PackageLocale: en-US
+Publisher: Pegoles
+PublisherUrl: https://github.com/zezortdx/Pegoles-Agent
+PublisherSupportUrl: https://github.com/zezortdx/Pegoles-Agent/issues
+PrivacyUrl: https://github.com/zezortdx/Pegoles-Agent/blob/main/docs/PRIVACY.md
+PackageName: Pegoles Agent
+PackageUrl: https://github.com/zezortdx/Pegoles-Agent
+License: MIT
+LicenseUrl: https://github.com/zezortdx/Pegoles-Agent/blob/main/LICENSE
+ShortDescription: AI gets its own computer, not yours. A computer-use agent that works inside an isolated, offline virtual machine.
+Description: |-
+  Pegoles gives an AI model its own isolated Linux computer (a virtual
+  machine with no network, no shared folders and no clipboard) and lets it
+  operate that computer through typed actions checked by a deterministic
+  policy. The default model runs on your PC; no account or API key is
+  needed. Requires hardware virtualization and the Virtual Machine
+  Platform feature, which Pegoles helps you turn on.
+Tags:
+  - ai
+  - agent
+  - computer-use
+  - virtual-machine
+  - privacy
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

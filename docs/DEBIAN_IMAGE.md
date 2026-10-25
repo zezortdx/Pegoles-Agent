@@ -68,6 +68,73 @@ Expected: create artifacts -> Apple validation passes -> Debian boots
 readiness (`PEGOLES_GUEST_READY`) is explicitly a later phase — see §16
 of the Phase 2 brief and `docs/PEGOLES_COMPUTER.md`.
 
+## 0.4 / x64-0.2: browser
+
+Files only so far; the images are not built yet (`images.json` pins are
+unchanged, package manifests `manifests/pegoles-base-0.4.packages.txt` and
+`pegoles-base-x64-0.2.packages.txt` come from the build's dpkg status).
+Contract: `docs/EGRESS.md`.
+
+- **Packages** (`build-deb-bundle.sh`, exact pins): `chromium`
+  150.0.7871.181-1~deb13u1 (trixie-security), `fonts-liberation`,
+  `ca-certificates`. `chromium-sandbox` (setuid) is not installed and the
+  build fails if it appears: the browser uses the user-namespace sandbox,
+  under `NoNewPrivileges`. Debs can only be installed by the cloud-init
+  provisioning boot; `patch-image.sh` (debugfs) cannot, so it refuses a
+  source disk without `/usr/bin/chromium` or the `pegoles-egress` user.
+- **Launcher**: `weston.ini` (now `seed/weston/weston.ini`, installed by both
+  paths) has a thin top panel with one launcher. It runs
+  `/usr/local/bin/pegoles-open-browser`, which touches
+  `/run/pegoles/launch-browser`; `pegoles-browser.path` starts the hardened
+  `pegoles-browser.service` (tmpfs profile/downloads in
+  `/run/pegoles-browser`, wiped on close, no AF_VSOCK, loopback-only IP).
+  Earlier images had `panel-location=none`.
+- **Users and files**: system user `pegoles-egress` (nologin, no home, no
+  groups) runs `pegoles-egress-forwarder.service` (binary
+  `/usr/local/lib/pegoles/pegoles-egress-forwarder`, built by
+  `build-runtime.sh`). `/etc/chromium`, `policies`, `managed` are
+  `root:root 0755`; `pegoles.json` is `root:root 0644`;
+  `pegoles-egress-ca.json` is `pegoles-egress 0644` (pre-created with
+  `{"CACertificates": []}`) and the only file the forwarder unit may write
+  (`ReadWritePaths` on that file). The agent's user can write nothing there;
+  `patch-image.sh` asserts modes/owners and that the dir holds only those
+  two files. Chromium merges the files by name and the CA file sorts before
+  `pegoles.json`, so `pegoles.json` wins any key both define; the
+  forwarder could still add keys `pegoles.json` does not set, so the list
+  below sets everything that matters.
+- **CA**: policy `CACertificates` (list of base64 DER; `chrome.*` 132+, so
+  Linux; trixie ships 150). Fallback if the hardware test shows the Debian
+  build ignores it: NSS database of the browser user (`certutil -A -t "C,,"`
+  into `sql:$HOME/.pki/nssdb`, where `HOME` is the unit's tmpfs, so the
+  forwarder would hand the DER to a root helper; not built).
+- **Policy names** were checked against Chromium's policy definitions; the
+  deprecated top-level `ProxyMode`/`ProxyServer`/`ProxyBypassList` are
+  replaced by the `ProxySettings` dict; `PrivacySandbox*Enabled`,
+  `PromotionalTabsEnabled`, `WelcomePageOnOSUpgradeEnabled` are deprecated
+  or not on Linux and are not used. `AutofillAddressEnabled` and
+  `AutofillCreditCardEnabled` are deprecated (M156) but are what Chromium
+  150 understands; `AutofillSettings` (`*`, `all`) is set too for later
+  versions.
+- **Decisions**: `SafeBrowsingProtectionLevel` 0 because Safe Browsing needs
+  Google endpoints (unreachable in allowlist mode, a leak of visited URL
+  hash prefixes in open_web) and the host already enforces its own signed
+  threat snapshot and response inspection. `DownloadRestrictions` 1 (the
+  host allows only PDF/images/text anyway). `AllowFileSelectionDialogs`
+  false: no reading guest files into pages, downloads go to the fixed
+  directory without a prompt. `chrome://*`, `file://*`, `devtools://*`,
+  `view-source:` are blocked, no `chrome://` exception (new tab, home and
+  startup are `about:blank`; there is no Google NTP or search provider).
+  `chrome-extension:`/`chrome-untrusted:` are not blocked: the built-in PDF
+  viewer needs them. `SSLErrorOverrideAllowed` false (a bad certificate is a
+  deny, as on the host). Loopback is sent to the proxy (`<-loopback>`),
+  which denies it.
+- **To check on hardware**: PDF opens; typing in pages works through
+  uinput; Chromium starts with `/run/pegoles` read-only (else add it to
+  `ReadWritePaths` of the browser unit); the `CACertificates` policy is
+  live-reloaded and trusted (`https://` page through the proxy);
+  `systemd-analyze security pegoles-egress-forwarder pegoles-browser`;
+  the top panel does not break the input fixture or screenshot mapping.
+
 ## Measured on real hardware (2026-09-20, MacBook Pro Apple Silicon, macOS 26.5)
 
 - Artifact: `debian-13-nocloud-arm64.tar.xz`, 283,733,116 bytes

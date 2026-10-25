@@ -62,8 +62,14 @@ describe("localView: Pegoles Local from what Core reports", () => {
     expect(setupAction(damaged)).toBe("Set up again");
   });
 
+  it("offers setup on a Windows PC (not Apple silicon, but supported)", () => {
+    const pc = intelligenceOf({ local: { apple_silicon: false, host_supported: true, chip: "AMD Ryzen 7 7840U", runtime_ready: true, runtime_problem: null } });
+    expect(localView(pc).stage).not.toBe("unsupported");
+    expect(canSetUp(localView(pc))).toBe(true);
+  });
+
   it("says plainly when this Mac can't run it", () => {
-    const intel = intelligenceOf({ local: { apple_silicon: false, runtime_ready: false, runtime_problem: "Pegoles Local needs a Mac with Apple silicon." } });
+    const intel = intelligenceOf({ local: { apple_silicon: false, host_supported: false, runtime_ready: false, runtime_problem: "Pegoles Local needs a Mac with Apple silicon." } });
     expect(localView(intel)).toMatchObject({ stage: "unsupported", problem: "Pegoles Local needs a Mac with Apple silicon." });
     expect(canSetUp(localView(intel))).toBe(false);
     const missing = intelligenceOf({

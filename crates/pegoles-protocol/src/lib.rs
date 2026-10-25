@@ -25,12 +25,12 @@ pub use display::{
     ControlOwner, DisplayConfig, DisplayConfigError, DisplayProfile, FrameEncoding,
     GraphicalSessionState, ObservedFrameMeta, ViewportState,
 };
-pub use events::{AgentEvent, AgentMessageKind, MAX_AGENT_MESSAGE_CHARS};
+pub use events::{AgentEvent, AgentMessageKind, EgressDecision, MAX_AGENT_MESSAGE_CHARS};
 pub use guest::GuestRuntimeState;
 pub use ids::{ActionId, AgentId, ComputerId, FrameId, SessionId, TaskId};
 pub use keys::{is_modifier, normalize_key_name, validate_chord};
 pub use policy::{Decision, PolicyVerdict, RiskLevel};
-pub use tasks::{AgentTask, TaskStatus};
+pub use tasks::{AgentTask, InternetAccess, InternetMode, TaskStatus};
 pub use text::is_invisible_format;
 
 /// Architecture tripwire (Phase 3.5): the shared-vocabulary crates

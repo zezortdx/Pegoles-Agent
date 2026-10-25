@@ -1,0 +1,35 @@
+# Pegoles Local's llama.cpp worker (Windows default; also runs on macOS for
+# parity tests). Its own workspace: llama.cpp is a large C++ build that the
+# main gates don't need, and its lockfile stays separate.
+[workspace]
+
+[package]
+name = "pegoles-llm-worker"
+version = "0.2.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Persistent, sandboxed llama.cpp worker for Pegoles Local: JSON lines on stdio, text out only"
+
+[[bin]]
+name = "pegoles-llm-worker"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1.0"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+encoding_rs = "0.8"
+libc = "0.2"
+llama-cpp-2 = { version = "=0.1.157", default-features = false, features = ["mtmd", "sampler"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "=0.1.157", default-features = false, features = ["mtmd", "sampler", "metal"] }
+
+[target.'cfg(windows)'.dependencies]
+llama-cpp-2 = { version = "=0.1.157", default-features = false, features = ["mtmd", "sampler", "dynamic-backends", "vulkan"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

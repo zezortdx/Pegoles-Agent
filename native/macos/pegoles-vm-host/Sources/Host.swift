@@ -210,6 +210,20 @@ struct PegolesVmHost {
                 }
                 try manager.guestDisconnect(computerId: id)
                 return .ok(id: req.id)
+            case "egress_open":
+                guard let id = req.computer_id, let endpoint = req.endpoint else {
+                    return .fail(id: req.id, code: "invalid_params",
+                                 message: "egress_open needs computer_id + endpoint")
+                }
+                try manager.egressOpen(computerId: id, endpoint: endpoint)
+                return .ok(id: req.id)
+            case "egress_close":
+                guard let id = req.computer_id else {
+                    return .fail(id: req.id, code: "invalid_params",
+                                 message: "egress_close needs computer_id")
+                }
+                try manager.egressClose(computerId: id)
+                return .ok(id: req.id)
             default:
                 // Closed command set: anything else is rejected, never executed.
                 return .fail(id: req.id, code: "unknown_command",

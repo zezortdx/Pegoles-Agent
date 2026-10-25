@@ -7,10 +7,12 @@
  * reachable from production code paths.
  */
 import {
-  MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type AgentTask, type Intelligence, type LocalModelInfo, type ModelInstallStatus,
-  type ModelSettings, type Provider, type StatusPayload,
+  MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type AgentTask, type EgressDecision, type InternetAccess, type InternetStatus,
+  type Intelligence, type LocalModelInfo, type ModelInstallStatus,
+  type ModelSettings, type OnboardingStep, type Provider, type StatusPayload, type SystemCheck,
 } from "../lib/tauri";
 import { installActive } from "../state/localModel";
+import { NO_INTERNET } from "../internet/model";
 
 export const SHELL_LAB_MARKER = "__PEGOLES_SHELL_LAB__";
 
@@ -19,9 +21,14 @@ type IntelligenceScenario =
   | "local-setup" | "local-downloading" | "local-verifying" | "local-ready" | "local-running" | "local-failed"
   | "local-paused" | "local-damaged" | "local-unsupported" | "cloud";
 
+/** First run (`#/dev/shell/onboarding[-variant][/step]`). */
+type OnboardingScenario =
+  | "onboarding" | "onboarding-windows" | "onboarding-firmware" | "onboarding-restart" | "onboarding-lowdisk" | "onboarding-cpu" | "onboarding-failure";
+
 type Scenario =
-  | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
-  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "image-setup" | "paused" | IntelligenceScenario;
+  | OnboardingScenario | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
+  | "done" | "cancelled" | "failure" | "long" | "booting" | "offline-setup" | "image-setup" | "paused" | "online" | "online-open"
+  | IntelligenceScenario;
 
 const now = Date.now();
 const iso = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
@@ -31,7 +38,7 @@ const baseStatus: StatusPayload = {
   image_status: "ready", spec_os: "Debian 13", spec_arch: "arm64", spec_vcpus: 2, spec_ram_mb: 1536, guest_state: "unavailable",
   guest_ready_ms: null, viewport_state: "off", viewport_issue: null, display_available: false, display_attached: false,
   display_config: { width_px: 1440, height_px: 900 }, display_error: null, display_setup_error: null, control_owner: "none",
-  input_available: false, agent_busy: false, active_task: null,
+  input_available: false, agent_busy: false, active_task: null, internet: NO_INTERNET,
 };
 const running: Partial<StatusPayload> = {
   model: "configured", computer_created: true, computer_state: "running", computer_id: "vm-1", guest_state: "ready", guest_ready_ms: 4200,
@@ -65,6 +72,33 @@ const history: AgentTask[] = [
 
 interface World { status: StatusPayload; tasks: AgentTask[]; events: AgentEvent[]; failComputer?: string }
 
+/** The online scenarios: what Core's status carries while a task has internet. */
+const SITES = ["rust-lang.org", "doc.rust-lang.org", "crates.io"];
+function onlineAccess(scenario: Scenario): InternetAccess {
+  return scenario === "online-open" ? { mode: "open_web", domains: [] } : { mode: "allowlist", domains: SITES };
+}
+function onlineInternet(scenario: Scenario): InternetStatus {
+  const decision = (host: string, allowed: boolean, reason: string, bytes: number, ago: number): EgressDecision =>
+    ({ task_id: "t1", host, allowed, reason, bytes, dropped_before: 0, at: iso(ago) });
+  const recent = scenario === "online-open"
+    ? [
+        decision("www.rust-lang.org", true, "allowed", 48_200, 40),
+        decision("static.rust-lang.org", true, "allowed", 1_250_000, 34),
+        decision("ads.tracker-example.net", false, "threat_malware", 0, 28),
+        decision("downloads.example.org", false, "inspect_blocked_signature", 0, 20),
+        decision("files.example.org", false, "inspect_download_not_safe", 0, 12),
+        decision("blog.rust-lang.org", true, "allowed", 91_000, 4),
+      ]
+    : [
+        decision("www.rust-lang.org", true, "allowed", 48_200, 40),
+        decision("doc.rust-lang.org", true, "allowed", 310_400, 30),
+        decision("www.example.com", false, "mode_not_in_allowlist", 0, 18),
+        decision("crates.io", true, "allowed", 22_900, 6),
+      ];
+  const allowed = recent.filter((entry) => entry.allowed).length;
+  return { active: true, task_id: "t1", ...onlineAccess(scenario), allowed, blocked: recent.length - allowed, dropped: 0, recent };
+}
+
 function world(scenario: Scenario): World {
   const current = (status: AgentTask["status"], title = "Find duplicate files in Downloads and clean them up") => task("t1", title, status, 95);
   switch (scenario) {
@@ -82,6 +116,18 @@ function world(scenario: Scenario): World {
         ...action("t1", "observe_screen", {}, 50), ...action("t1", "scroll", { x: 0.5, y: 0.5, delta_x: 0, delta_y: 5 }, 46),
         note("t1", "progress", "Notion Plus is $10 per seat a month. Opening Obsidian’s pricing next.", 20),
         ...action("t1", "click", { x: 0.5, y: 0.08 }, 2, "running"),
+      ],
+    };
+    case "online":
+    case "online-open": return {
+      status: { ...baseStatus, ...running, viewport_state: "agent_active", control_owner: "agent", active_task: "t1", agent_busy: true, internet: onlineInternet(scenario) },
+      tasks: [...history, { ...current("running", "Find the current stable version of Rust and note what changed"), internet: onlineAccess(scenario) }],
+      events: [
+        note("t1", "progress", "Internet is on for this task. Opening the browser from the top panel.", 70),
+        ...action("t1", "click", { x: 0.06, y: 0.03 }, 66), ...action("t1", "observe_screen", {}, 60),
+        ...action("t1", "type_text", { text: "releases", sensitive: false }, 40), ...action("t1", "key_press", { key: "Return" }, 38),
+        ...action("t1", "observe_screen", {}, 30), ...action("t1", "scroll", { x: 0.5, y: 0.5, delta_x: 0, delta_y: 5 }, 20),
+        ...action("t1", "click", { x: 0.4, y: 0.3 }, 2, "running"),
       ],
     };
     case "thinking": return { status: { ...baseStatus, ...running, model: "configured" }, tasks: [...history, current("running")], events: [] };
@@ -151,6 +197,12 @@ function world(scenario: Scenario): World {
     };
     case "local-ready": case "local-running":
       return { status: { ...baseStatus, ...running }, tasks: history, events: [] };
+    case "onboarding": case "onboarding-windows": case "onboarding-firmware": case "onboarding-restart":
+    case "onboarding-lowdisk": case "onboarding-cpu": case "onboarding-failure":
+      return {
+        status: { ...baseStatus, image_status: "missing", image_setup: { available: true, installing: false, stage: null, done: 0, total: 0, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 } },
+        tasks: [], events: [],
+      };
     case "cloud":
       return { status: { ...baseStatus, provider: "anthropic" }, tasks: [...history, current("pending")], events: [{ type: "task_created", task_id: "t1", title: "Find duplicate files in Downloads and clean them up", at: iso(95) }] };
     default:
@@ -267,10 +319,44 @@ function fakeScreen(): string {
   return canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
 }
 
+const GIB = 2 ** 30;
+/** What Core's system check would report in each onboarding scenario. */
+function systemCheckOf(name: Scenario, fixed: { virtualization: boolean }): SystemCheck {
+  const mac: SystemCheck = {
+    platform: "macos", os_name: "macOS 15.5", os_supported: true, os_minimum: "macOS 14", architecture: "arm64", architecture_supported: true,
+    virtualization: { state: "ready", fixable: false, technical: "Apple Virtualization framework (built into macOS)" },
+    memory_bytes: 16 * GIB, memory_minimum_bytes: 8 * GIB, memory_recommended_bytes: 16 * GIB,
+    disk_free_bytes: 118e9, disk_needed_bytes: 5_900_000_000,
+    acceleration: { kind: "metal", device: "Apple M3 Pro", technical: "Metal (Apple silicon GPU), MLX runtime" },
+    runtime_ready: true, runtime_problem: null, model_ready: false, image_ready: false,
+  };
+  const win: SystemCheck = {
+    ...mac, platform: "windows", os_name: "Windows 11 Home (24H2)", os_minimum: "Windows 11", architecture: "x86_64",
+    virtualization: fixed.virtualization
+      ? { state: "restart_pending", fixable: false, technical: "VirtualMachinePlatform: Enabled (restart pending); hypervisor not running yet" }
+      : { state: "needs_enable", fixable: true, technical: "VirtualMachinePlatform: Disabled; vmcompute service: missing; firmware virtualization: enabled" },
+    acceleration: { kind: "vulkan", device: "NVIDIA GeForce RTX 4060 Laptop GPU", technical: "Vulkan 1.3 (driver 581.29), 8 GB dedicated; llama.cpp Vulkan backend" },
+    memory_bytes: 16 * GIB,
+  };
+  switch (name) {
+    case "onboarding-windows": return win;
+    case "onboarding-restart": return { ...win, virtualization: { state: "restart_pending", fixable: false, technical: "VirtualMachinePlatform: Enabled (restart pending)" } };
+    case "onboarding-firmware": return { ...win, virtualization: { state: "firmware_disabled", fixable: false, technical: "PF_VIRT_FIRMWARE_ENABLED=0; hypervisor present: no" } };
+    case "onboarding-lowdisk": return { ...mac, memory_bytes: 8 * GIB, disk_free_bytes: 3_400_000_000 };
+    case "onboarding-cpu": return { ...win, virtualization: { state: "ready", fixable: false, technical: "vmcompute running; hypervisor present" }, acceleration: { kind: "cpu", device: null, technical: "no Vulkan driver; AVX2 CPU backend" } };
+    default: return mac;
+  }
+}
+
 export function installShellLab(hash: string): void {
   const [, , , scenario, place] = hash.split("/");
   const name = (scenario || "home") as Scenario;
   const state = world(name);
+  const onboardingLab = name.startsWith("onboarding");
+  const labStep = (onboardingLab && place ? place : "welcome") as OnboardingStep;
+  let onboarding = { version: 1, step: labStep, completed: !onboardingLab, restart_requested: name === "onboarding-restart" };
+  const fixed = { virtualization: false };
+  if (onboardingLab) Object.defineProperty(window, "__PEGOLES_BOOT__", { value: Object.freeze({ onboarding }), configurable: true });
   // As in Core: a running task is the one agent run.
   const live = state.tasks.find((candidate) => candidate.status === "running");
   if (live && !state.status.active_task) state.status = { ...state.status, active_task: live.id };
@@ -301,7 +387,7 @@ export function installShellLab(hash: string): void {
       runtime_problem: lw.appleSilicon ? (lw.runtimeReady ? null : "local model runtime is not installed: the Pegoles Local runtime is not set up on this Mac") : "Pegoles Local needs a Mac with Apple silicon.",
       loaded_model: lw.loaded, worker_footprint_bytes: lw.footprint, default_model: DEFAULT_MODEL,
       models: lw.models.map((candidate) => ({ ...candidate })), install: lw.install,
-      chip: lw.appleSilicon ? "Apple M3 Pro" : "Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz", memory_bytes: 18 * 2 ** 30, apple_silicon: lw.appleSilicon,
+      chip: lw.appleSilicon ? "Apple M3 Pro" : "Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz", memory_bytes: 18 * 2 ** 30, apple_silicon: lw.appleSilicon, host_supported: lw.appleSilicon,
     },
   });
   const emit = (payload: ModelInstallStatus) => {
@@ -365,7 +451,57 @@ export function installShellLab(hash: string): void {
   };
   const say = (taskId: string, kind: AgentMessageKind, text: string) => { state.events = [...state.events, note(taskId, kind, text, 0)]; };
 
+  // Simulated computer image setup (like Core's install_computer_image).
+  let imageTimer: number | null = null;
+  const imageProgress = () => {
+    for (const [id, listener] of listeners) {
+      if (listener.event === "pegoles://image-progress") callbacks.get(listener.handler)?.({ event: "pegoles://image-progress", id, payload: null });
+    }
+  };
+  const setImage = (patch: Partial<NonNullable<StatusPayload["image_setup"]>>, status?: StatusPayload["image_status"]) => {
+    const current = state.status.image_setup ?? { available: true, installing: false, stage: null, done: 0, total: 0, error: null, download_bytes: 561_846_260, disk_bytes: 3_221_225_472 };
+    state.status = { ...state.status, image_setup: { ...current, ...patch }, ...(status ? { image_status: status } : {}) };
+    imageProgress();
+  };
+
   const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
+    get_onboarding: () => onboarding,
+    set_onboarding_step: (args) => { onboarding = { ...onboarding, step: args.step as OnboardingStep }; return onboarding; },
+    finish_onboarding: () => { onboarding = { ...onboarding, completed: true, step: "ready" }; return onboarding; },
+    system_check: () => new Promise((resolve) => window.setTimeout(() => resolve({
+      ...systemCheckOf(name, fixed),
+      model_ready: chosen().state === "installed", image_ready: state.status.image_status === "ready",
+    }), 500)),
+    fix_virtualization: () => new Promise((resolve) => window.setTimeout(() => { fixed.virtualization = true; resolve("restart_required"); }, 1600)),
+    restart_to_finish_setup: () => { throw "shell lab: a real restart would happen here"; },
+    save_diagnostic_report: () => ({
+      file_name: "Pegoles-report-20260928-130405.json",
+      location: "~/Downloads",
+      text: JSON.stringify({ report: { format: 1, about: "shell lab sample" }, app: { version: "0.1.0" } }, null, 2),
+    }),
+    install_computer_image: () => {
+      if (name === "onboarding-failure") {
+        window.setTimeout(() => setImage({ installing: false, stage: null, error: "network error: connection reset by peer (os error 54) while downloading pegoles-base-0.3-arm64.raw.gz" }), 2500);
+        setImage({ installing: true, stage: "downloading", done: 0, total: 561_846_260, error: null });
+        return state.status.image_setup;
+      }
+      let done = 0;
+      setImage({ installing: true, stage: "downloading", done: 0, total: 561_846_260, error: null });
+      imageTimer = window.setInterval(() => {
+        done = Math.min(561_846_260, done + 561_846_260 / 28);
+        if (done < 561_846_260) { setImage({ done: Math.round(done) }); return; }
+        if (imageTimer) window.clearInterval(imageTimer);
+        setImage({ stage: "verifying", done: 0, total: 3_221_225_472 });
+        window.setTimeout(() => setImage({ stage: "unpacking" }), 1400);
+        window.setTimeout(() => setImage({ installing: false, stage: null }, "ready"), 2800);
+      }, TICK_MS);
+      return state.status.image_setup;
+    },
+    cancel_computer_image_install: () => {
+      if (imageTimer) window.clearInterval(imageTimer);
+      window.setTimeout(() => setImage({ installing: false, stage: null, error: "cancelled" }), 200);
+      return state.status.image_setup;
+    },
     get_status: () => state.status,
     list_events: () => state.events,
     list_tasks: () => state.tasks,
@@ -444,7 +580,7 @@ export function installShellLab(hash: string): void {
     get_host_capabilities: () => ({ platform: "macos", architecture: "arm64", backend: "real", backend_available: true, backend_detail: "", guest_transport: "virtio_socket", guest_transport_available: true, required_setup: [], supported: true }),
     suggested_effects: () => ({ tier: "full" }),
     create_task: (args) => {
-      const created = task(`n${nextId++}`, String(args.title), "pending", 0);
+      const created = { ...task(`n${nextId++}`, String(args.title), "pending", 0), internet: (args.internet as InternetAccess | null) ?? undefined };
       state.tasks = [...state.tasks, created];
       state.events = [...state.events, { type: "task_created", task_id: created.id, title: created.title, at: created.created_at }];
       return created;
@@ -473,6 +609,14 @@ export function installShellLab(hash: string): void {
   };
 
   const target = window as unknown as Record<string, unknown>;
+  // Visual QA of event-driven UI (the agent cursor): inject Core events with real shapes.
+  target.__pegolesShellLab = {
+    emitAgentEvent: (payload: AgentEvent) => {
+      for (const [id, listener] of listeners) {
+        if (listener.event === "pegoles://event") callbacks.get(listener.handler)?.({ event: "pegoles://event", id, payload });
+      }
+    },
+  };
   target.isTauri = true;
   target.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => undefined };
   target.__TAURI_INTERNALS__ = {

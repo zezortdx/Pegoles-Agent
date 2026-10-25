@@ -1,5 +1,7 @@
 # Windows Setup (one-time privileged steps)
 
+> **Superseded (2026-09-27).** This describes the Phase 3.6 setup tool (privileged steps the person ran by hand). The current design is in `docs/WINDOWS_ARCHITECTURE.md` (Host Compute System with only the Virtual Machine Platform, a small broker service, the guest runtime listening on vsock 850, an image provisioned at build time by `scripts/build-guest-image/build-x64.sh`). Kept for history.
+
 Pegoles on Windows separates **one-time privileged setup** from the
 **unprivileged runtime**. Nothing here runs silently during normal use:
 each step is explicit, checkable via the capability probe

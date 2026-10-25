@@ -1,10 +1,20 @@
 {
   "schema": 1,
-  "default_model": "mai-ui-2b-6bit",
-  "offered": [
-    "mai-ui-2b-6bit",
-    "qwen3-vl-2b-6bit"
-  ],
+  "hosts": {
+    "macos": {
+      "default_model": "mai-ui-2b-6bit",
+      "offered": [
+        "mai-ui-2b-6bit",
+        "qwen3-vl-2b-6bit"
+      ]
+    },
+    "windows": {
+      "default_model": "mai-ui-2b-q8-gguf",
+      "offered": [
+        "mai-ui-2b-q8-gguf"
+      ]
+    }
+  },
   "models": [
     {
       "id": "mai-ui-2b-6bit",
@@ -350,6 +360,40 @@
           "path": "vocab.json",
           "size": 2776833,
           "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+        }
+      ]
+    },
+    {
+      "id": "mai-ui-2b-q8-gguf",
+      "display_name": "MAI-UI 2B",
+      "family": "mai_ui",
+      "architecture": "qwen3_vl",
+      "parameters": "2B",
+      "quantization": "Q8_0",
+      "source": {
+        "kind": "huggingface",
+        "repo": "mradermacher/MAI-UI-2B-GGUF",
+        "revision": "27dd582456b538b378e2574704623577d481b19f"
+      },
+      "license": "apache-2.0",
+      "pegoles_min_version": "0.2.0",
+      "recommended_min_ram_gb": null,
+      "published": "2025-12-29",
+      "format": "gguf",
+      "gguf": {
+        "model": "MAI-UI-2B.Q8_0.gguf",
+        "projector": "MAI-UI-2B.mmproj-f16.gguf"
+      },
+      "files": [
+        {
+          "path": "MAI-UI-2B.Q8_0.gguf",
+          "size": 1834427872,
+          "sha256": "957cdf72613d43fe3a4d38daca566ac54a019cb17535bc0ad39beda5f17b9e9e"
+        },
+        {
+          "path": "MAI-UI-2B.mmproj-f16.gguf",
+          "size": 819394848,
+          "sha256": "8a6951c3f7708402c6a939e69293a1cf6769c80cb88b92a1f3f1de22bda6adce"
         }
       ]
     }

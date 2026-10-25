@@ -10,7 +10,7 @@ import { formatBytes } from "../lib/format";
 export type LocalStage =
   /** No answer from Core yet. */
   | "checking"
-  /** This Mac can't run it (not Apple silicon). */
+  /** This computer can't run it (e.g. an Intel Mac). */
   | "unsupported"
   | "not-set-up"
   /** Downloading, verifying or finishing. */
@@ -102,11 +102,11 @@ export function localView(intelligence: Intelligence | null): LocalView {
     return { ...base, stage: "preparing", step: stepOf(job), doneBytes: job.done_bytes, totalBytes: job.total_bytes || model.size_bytes };
   }
   if (model.state === "installed" || job?.phase === "ready") {
-    if (!local.runtime_ready) return { ...base, stage: local.apple_silicon ? "downloaded" : "unsupported" };
+    if (!local.runtime_ready) return { ...base, stage: local.host_supported ? "downloaded" : "unsupported" };
     const running = local.loaded_model === model.id;
     return { ...base, stage: "ready", running, footprintBytes: running ? local.worker_footprint_bytes : null };
   }
-  if (!local.apple_silicon) return { ...base, stage: "unsupported" };
+  if (!local.host_supported) return { ...base, stage: "unsupported" };
   if (model.state === "invalid") return { ...base, stage: "damaged", reason: model.invalid_reason ?? undefined };
   const partial = model.state === "partial" ? model.partial_bytes ?? 0 : 0;
   if (job?.phase === "failed") {

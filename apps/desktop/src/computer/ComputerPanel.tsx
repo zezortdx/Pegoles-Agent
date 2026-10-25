@@ -1,9 +1,8 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import { AgentCursorOverlay } from "@pegoles/ui";
 import type { ComputerCommand, ComputerModel } from "../state/computerModel";
 import type { ActionStep } from "../state/agentState";
 import type { HumanError } from "../state/errors";
-import { actionCursorSource } from "../lib/agentCursorFeed";
 import type { BootLogPayload, StatusPayload } from "../lib/tauri";
 import { timeOf } from "../artifacts/format";
 import { CapabilityGlyph } from "../artifacts/glyphs";
@@ -14,6 +13,7 @@ import { ControlStrip } from "./ControlStrip";
 import { Details, Facts } from "./ComputerInfo";
 import { machineLight } from "./MachineScreen";
 import { NativeSlot } from "./NativeSlot";
+import { useCursorSource, useFrameSize } from "./useAgentCursor";
 import type { ComputerLevel } from "./layout";
 import type { Snapshot } from "./useScreenSnapshot";
 import { useNow } from "../shell/useNow";
@@ -129,6 +129,12 @@ export function ComputerPanel(props: ComputerPanelProps) {
   const showSnapshot = screenUp && !props.slotEnabled && !!snapshot?.src;
   const style = { ...props.style, "--screen-ar": aspect } as CSSProperties;
   const now = useNow(showSnapshot, 5000);
+  const displayWidth = display?.width_px;
+  const displayHeight = display?.height_px;
+  const displaySize = useMemo(() => (displayWidth && displayHeight ? { width: displayWidth, height: displayHeight } : null), [displayWidth, displayHeight]);
+  const { frameSize, onLoad } = useFrameSize(displaySize);
+  const computerId = status?.computer_id ?? null;
+  const cursorSource = useCursorSource(computerId);
 
   return (
     <aside id={COMPUTER_PANEL_ID} className="computer" data-level={level} data-phase={model.phase} data-owner={model.owner}
@@ -173,10 +179,11 @@ export function ComputerPanel(props: ComputerPanelProps) {
                   <>
                     <NativeSlot enabled={props.slotEnabled} obscured={props.obscured || props.moving} onError={props.onSlotError} display={display}>
                       {showSnapshot
-                        ? <img className="screen-snapshot" src={snapshot?.src ?? undefined} alt="Latest snapshot of Pegoles’ computer screen" draggable={false} />
+                        ? <img className="screen-snapshot" src={snapshot?.src ?? undefined} alt="Latest snapshot of Pegoles’ computer screen" draggable={false} onLoad={onLoad} />
                         : <ScreenPlaceholder model={model} snapshot={snapshot} />}
                     </NativeSlot>
-                    <AgentCursorOverlay source={actionCursorSource} />
+                    {/* The agent's cursor, over the picture only (never baked into it): real actions, mapped into the drawn frame. */}
+                    {showSnapshot && cursorSource && <AgentCursorOverlay key={computerId} source={cursorSource} frameSize={frameSize} />}
                   </>
                 ) : (
                   <ComputerStatus model={model} busy={busy} error={error} onCommand={onCommand} onDismissError={props.onDismissError} />

@@ -91,7 +91,6 @@ export function tierCssVariables(tier: EffectsTier): CssVariables {
   vars["--pg-specular"] = String(params.specular);
   vars["--pg-ambient-period"] = `${params.ambient.periodMs}ms`;
   vars["--pg-ambient-amplitude"] = String(params.ambient.amplitude);
-  vars["--pg-cursor-trail"] = String(params.cursorTrailLength);
   return vars;
 }
 

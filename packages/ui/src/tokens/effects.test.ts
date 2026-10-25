@@ -93,14 +93,12 @@ describe("tier parameters", () => {
     }
     expect(full.glowIntensity).toBeGreaterThan(reduced.glowIntensity);
     expect(reduced.glowIntensity).toBeGreaterThan(minimal.glowIntensity);
-    expect(full.cursorTrailLength).toBeGreaterThan(reduced.cursorTrailLength);
     expect(full.maxBackdropSurfaces).toBeGreaterThan(reduced.maxBackdropSurfaces);
   });
 
-  it("low-end Reduced stays premium but cheap: limited blur, short trail, calm ambient", () => {
+  it("low-end Reduced stays premium but cheap: limited blur, calm ambient", () => {
     const reduced = effectsTiers[LOW_END.recommended];
     for (const m of GLASS_MATERIALS) expect(reduced.glass[m].blurPx).toBeLessThanOrEqual(16);
-    expect(reduced.cursorTrailLength).toBeLessThanOrEqual(4);
     expect(reduced.ambient.amplitude).toBeLessThanOrEqual(0.5);
     expect(reduced.ambient.periodMs).toBeGreaterThanOrEqual(effectsTiers.full.ambient.periodMs);
     expect(reduced.maxBackdropSurfaces).toBeLessThanOrEqual(3);
@@ -110,11 +108,10 @@ describe("tier parameters", () => {
     expect(reduced.glowIntensity).toBeGreaterThan(0.5);
   });
 
-  it("Minimal has no backdrop blur, no ambient motion, no trail — but keeps strokes and glow", () => {
+  it("Minimal has no backdrop blur, no ambient motion — but keeps strokes and glow", () => {
     const minimal = effectsTiers.minimal;
     for (const m of GLASS_MATERIALS) expect(minimal.glass[m].blurPx).toBe(0);
     expect(minimal.ambient.enabled).toBe(false);
-    expect(minimal.cursorTrailLength).toBe(0);
     expect(minimal.maxBackdropSurfaces).toBe(0);
     expect(minimal.transition).toBe("simple");
     expect(minimal.specular).toBeGreaterThan(0);

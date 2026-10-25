@@ -105,6 +105,28 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 | Verification | `worker::tests::sandbox_blocks_escapes` (16 escape probes, unsandboxed control first), supervisor tests (crash, garbage, oversized, hang, closed stdout, stalled stdin), real inference under the profile |
 | Residual | `sandbox-exec` is deprecated by Apple (still present on macOS 26). A compromised worker can read system files outside `$HOME` and file metadata under `$HOME`, and can lie to the planner, which is already untrusted. |
 
+### Local model worker on Windows (llama.cpp)
+
+Implemented, not yet run on a Windows PC (see `docs/WINDOWS_ARCHITECTURE.md`).
+
+| | |
+|---|---|
+| Surface | `pegoles-llm-worker.exe`: llama.cpp parsing GGUF files and screenshots |
+| Mitigation | `pegoles-inference/src/sandbox_windows.rs`: an AppContainer with **no capabilities** (no network, no user files or registry beyond what AppContainers may read; read/execute granted only on the model store), a child-process-restricted policy, a job object (killed with Pegoles, one process, committed-memory cap, no desktop/clipboard/global atoms/system parameters, no error-reporting dialog), exactly the three pipe handles inherited, and an environment rebuilt from scratch (implicit Vulkan layers such as overlays disabled). Backend DLLs load only from the admin-only install folder. Same supervisor, protocol bounds, pre-load re-hash and text-only output as the MLX worker; the prompt is rebuilt from a strict subset with special-token text neutralized. |
+| Verification | Unit tests (protocol, prompt template, prep bounds); the worker runs under `sandbox-exec` on macOS against the real VM (`local_bench`); on Windows CI, `a_confined_worker_cannot_read_files_reach_the_network_or_start_processes` (each probe succeeds unconfined and fails confined) |
+| Residual | GPU drivers run inside the worker (a driver bug is reachable from model input). The Windows escape probes cover files, network and processes; registry and named-object probes are not written yet. |
+
+### Windows VM broker (privileged)
+
+Implemented, exercised only on CI runners (Windows Server, administrator).
+
+| | |
+|---|---|
+| Surface | `PegolesVmBroker`, a LocalSystem service reachable over `\\.\pipe\pegoles-vm-broker` |
+| Mitigation | Eight fixed verbs (`hello`, `create`, `start`, `pause`, `resume`, `shutdown`, `terminate`, `state`), one bounded JSON line each, typed with `deny_unknown_fields`. Pipe: local clients only, DACL SYSTEM/Administrators/interactive users; the client's image must be `pegoles-vm-host.exe` in the broker's own admin-only folder; the client is impersonated to learn its SID and to open its files. The disk path is checked as the user and again as the service: every folder from `Pegoles` down and the disk must be the same file object in both views (defeating per-user drive-letter remapping), none may be a reparse point, and the folders stay open without delete sharing for as long as the VM exists, so they cannot be swapped for junctions between the check and HCS's use. The broker and its install step refuse to run outside Program Files (their trust in the neighbouring helper and the SYSTEM service binary assumes an admin-only folder). The broker writes the HCS document itself from validated values (UUID ids, 1–8 vCPUs, 1–8 GB, the user's own `…\Pegoles\computers\<id>\disk.vhdx`, no reparse points): no network adapter, no shared folders, no keyboard or mouse (only Hyper-V's synthetic video, the guest's own screen, which the host never shows), HvSocket limited to SYSTEM and that user. VMs are leased to the pipe connection (terminated when it closes) and to the broker (`ShouldTerminateOnLastHandleClosed`); at most two per user. Demand-start, stops when idle. Installed per machine; the installer registers it, the uninstaller removes it. |
+| Verification | `pegoles-broker-proto` tests (request parsing, path and value validation, the HCS document has no network/share/video/input devices); CI installs it, starts it, boots a VM through it and uninstalls it |
+| Residual | A bug in the broker is a local privilege-escalation surface for any interactive user (the verbs are few and typed, but it is still SYSTEM code parsing input). The client image check is a speed bump against same-user malware, which already owns the account; a signature check on the peer comes with code signing. Whether HCS or the VM worker ever opens the disk with more than the VM's own identity is not documented; the access grant is made as the user, so a file the user cannot change cannot be granted. An independent review (2026-09-27) found the check-then-use race described above; fixed as described, not yet exercised by a hostile test on Windows. |
+
 ### Model weights (supply chain)
 
 | | |
@@ -131,6 +153,15 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 | Mitigation | Swift helper (`GuestSocket.swift`): reserved-source-port peer authentication, 64 KiB frames, UTF-8 and control-byte checks, token bucket per guest link, bounded write backlog. Rust (`native_backend.rs`, `guest.rs`, `pegoles-guest-proto`): typed allow-listed messages with per-field caps, bounded line and byte budgets per pump, non-reentrant outbound flushing with a capped queue, overall deadlines on helper calls, a fresh handshake on every connection, bounded frame reassembly. The helper is killed on hangs or garbage (its VM dies with it) and exits with its parent. Serial log capped at 8 MiB; the UI gets a sanitized tail. |
 | Verification | `pegoles-computer` hostile-frame tests incl. the hello-flood regression on a 2 MiB stack, bounded-line tests, handshake tests; hardware E2E (runtime killed inside the guest → recovered) |
 | Residual | A guest can deny service to its own agent (kill or starve the runtime). Hypervisor escape is Apple's boundary. |
+
+### Internet for a task (egress)
+
+| | |
+|---|---|
+| Surface | The one byte stream the host opens to the guest's forwarder (vsock 4051 / HvSocket) and everything on it: guest-crafted mux frames, proxy requests (CONNECT and absolute-form HTTP), TLS interception, upstream responses from the public web, names the guest asks to resolve; the per-task setting (mode and domains) typed into the composer; the native confirmation |
+| Mitigation | The VM still has no network device. Internet is off by default and chosen per task; `allowlist` (max 32 validated domains) and `open_web` each need a native confirmation the webview cannot answer (Cancel is the default; declines back off). The host opens the stream, never the guest, only while the agent controls a running computer, and closes it on stop, pause, reset, destroy, human takeover, task end, failure and exit (the Stop path cuts it without the app lock; a pump also closes it if control is lost). If it cannot open, the task runs offline and says so. `pegoles-egress`: mux decoder bounded to one frame with credit windows and 64 streams, any violation drops the connection; immutable host policy (transport rules, host resolves names and every address must be global unicast, compiled-in threat snapshot verified against a SHA-256, mode rule, response inspection by magic bytes, limits and a 1 GiB per-task cap); per-session in-memory CA with the key never on disk; upstream TLS against `webpki-roots` only and a failed verification is a deny. Every decision is an audit event (time, mode, host, path without query, verdict and reason, bytes: no headers, bodies, cookies or queries) passed through a bounded drop-oldest queue so a slow UI cannot stall the proxy; the UI gets host, verdict, reason, bytes and time only. The IPC takes a mode and domain strings, no URLs, paths or endpoints. The planners are told only that a browser exists and which sites work; the action set is unchanged (no host URL action). |
+| Verification | `pegoles-egress` unit, mux fuzz/proptest and policy tests; Core tests with the Mock backend (off never opens, invalid settings refused, every control-loss path closes the session, guest-closed and silent-guest cases, lock-free kill handle, audit events without paths or queries, drop-oldest counter); agent tests (declined or unanswerable consent leaves the task offline and says so, a failed or finished task loses the internet); frontend tests for the composer control, limits and the indicator (hosts rendered as text). Not yet verified on hardware: the sealed images that contain the browser and forwarder (0.4 arm64, x64-0.2) and the real macOS/Windows bridges end to end. |
+| Residual | In `open_web` a site not yet in the threat snapshot can be malicious, and the snapshot ages until the next release. Text the agent types into pages can leave the VM; the key-material tripwire is a heuristic, so do not give the agent secrets. Allowed domains can host untrusted content (user uploads, redirects). Chromium bugs reachable from web content run inside the VM, which stays disposable and has no host access. A compromised webview can start a task that asks for internet but cannot confirm it. |
 
 ### Webview → Tauri backend
 
@@ -160,7 +191,7 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 
 ## Residual risks (accepted for 0.1, tracked)
 
-1. Anything a planner can do inside the offline VM (by design).
+1. Anything a planner can do inside the VM (by design). With internet enabled for a task, also what it can do on the allowed or open web (see the egress section).
 2. Guest denial of service against its own agent.
 3. `sandbox-exec` deprecation; worker can read non-home system files.
 4. Weston runs with `--debug` for `weston_capture_v1`: any guest client of the same user can capture the guest screen (the guest is hostile anyway).
@@ -168,12 +199,12 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 6. Hypervisor escape (Apple Virtualization.framework).
 7. The image keeps `openssh-server` and `cloud-init` installed but masked/disabled; the VM has no network device.
 8. Same-user host malware is out of scope as an attacker.
-9. Windows/Linux host backends are not part of this release and unverified.
+9. Windows/Linux host backends are not part of this release and unverified. (Windows, 2026-09-27: implemented on the `phase/windows-0.2` branch and exercised only in CI; see `docs/WINDOWS_ARCHITECTURE.md`.)
 10. The release `sign` job trusts the unsigned bundle built by the `build` job of the same commit: a dependency compromised at its locked version could alter what gets signed (it cannot use the identity; the sign job checks the worker, lock and manifest against the checkout, and notarization scans the result).
 11. Swift helper: a closed-then-reused descriptor race around superseded guest connections remains possible in a nanosecond window (same VM only today).
 12. After Stop, releasing a held mouse button waits up to about 5 s on a guest that withholds acknowledgements.
 13. The published image keeps cloud-init's provisioning logs and state and one `machine-id` shared by every copy (no secrets; the VM has no network).
 14. Same-user host software can change an installed image between the once-per-session hash and a clone, or modify a resumed computer's disk (it already owns the account).
 15. The 2B local model is imperfect: it can fail or stop tasks (budgets and brakes bound what it can do).
-16. One guest kernel panic was observed in the first installed-app run, with the host under severe memory pressure (swap nearly full, about 2 GB of disk free): code pages of the guest's ext4 module read as zeros in guest memory. The image and both copies of the module were verified intact, the memory balloon negotiates no free-page reporting and gets no target, and about 19 minutes of targeted stress (file-heavy work, captures, concurrent model inference) did not reproduce it. Root cause unknown. The app now reports a guest that stops responding (after 60 s) instead of showing "Starting", and Stop or Reset recovers the computer.
+16. One guest kernel panic was observed in the first installed-app run, with the host under severe memory pressure (swap nearly full, about 2 GB of disk free): code pages of the guest's ext4 module read as zeros in guest memory. The image and both copies of the module were verified intact, the memory balloon negotiates no free-page reporting and gets no target, and about 19 minutes of targeted stress (file-heavy work, captures, concurrent model inference) did not reproduce it. Root cause unknown. The app now reports a guest that stops responding (after 60 s) instead of showing "Starting", and Stop or Reset recovers the computer. Seen a second time on 2026-09-27 in a `local_bench` run on the development Mac (about 20 GB of 24 GB in use when it started): the guest's `vsock` module code read as zeros (`Code: 00000000…`, "undefined instruction" in `__vsock_create`), after which the runtime could not open its socket. Three later runs on the same image (MLX and llama.cpp workers, 34 tasks in all) did not show it. Same signature, still unexplained.
 17. A source install runs the project's and its dependencies' build steps (for example Rust `build.rs`) on the user's Mac, like any build from source; the inputs are the checkout plus digest- or lockfile-pinned downloads.
