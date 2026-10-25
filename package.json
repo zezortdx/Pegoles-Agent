@@ -13,5 +13,10 @@
     "test:rust": "cargo test",
     "lint:rust": "cargo clippy --all-targets -- -D warnings",
     "fmt:rust": "cargo fmt --check"
+  },
+  "pnpm": {
+    "overrides": {
+      "eslint-plugin-react-hooks@7>zod": "^4.6.6"
+    }
   }
 }
