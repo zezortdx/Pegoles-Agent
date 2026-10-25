@@ -47,7 +47,7 @@ describe("PresenceMark", () => {
     const mark = container.querySelector<HTMLElement>(".presence");
     expect(mark?.getAttribute("aria-hidden")).toBe("true");
     expect(mark?.hasAttribute("data-small")).toBe(true);
-    expect(mark?.style.getPropertyValue("--p-lid")).toBe("0.46");
+    expect(mark?.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("exclaim");
     expect(container.querySelector(".presence__gl")).toBeNull();
   });
 });

@@ -6,20 +6,20 @@ import { PegolesPresence, pointerPose } from "./PegolesPresence";
 afterEach(cleanup);
 
 describe("PegolesPresence", () => {
-  it("paints the official artwork, not a redrawn body, and names the state", () => {
+  it("renders the animated SVG and names the real state", () => {
     render(<FluxGlassRoot tier="full"><PegolesPresence mode="thinking" size={152} /></FluxGlassRoot>);
     const presence = screen.getByRole("img", { name: "Pegoles is thinking" });
     expect(presence.getAttribute("data-mode")).toBe("thinking");
-    const art = presence.querySelector<HTMLImageElement>("img.presence__art");
-    expect(art?.getAttribute("src")).toMatch(/body-512\.webp/);
-    expect(presence.querySelectorAll(".presence__eye-lid")).toHaveLength(2);
-    expect(presence.querySelector<HTMLElement>(".presence__eye-lid")?.style.backgroundImage).toMatch(/eye-left\.webp/);
+    const avatar = presence.querySelector("svg.presence-avatar");
+    expect(avatar?.getAttribute("data-engine-state")).toBe("thinking");
+    expect(avatar?.querySelector(".presence-avatar__body")).toBeTruthy();
+    expect(presence.querySelector("img")).toBeNull();
     expect(presence.querySelector("canvas")).toBeNull();
   });
 
-  it("uses the small artwork for small marks", () => {
+  it("uses the SVG renderer for small marks", () => {
     const { container } = render(<PegolesPresence mode="idle" size={36} decorative />);
-    expect(container.querySelector("img.presence__art")?.getAttribute("src")).toMatch(/body-128\.webp/);
+    expect(container.querySelector("svg.presence-avatar")?.getAttribute("width")).toBe("36");
   });
 
   it("keeps an exact layout box and accepts a custom label", () => {
@@ -38,25 +38,23 @@ describe("PegolesPresence", () => {
 
   it("ripples on new events only, not on the count it mounted with", () => {
     const view = render(<PegolesPresence mode="working" size={64} pulse={4} />);
-    expect(view.container.querySelector(".presence__pulse")).toBeNull();
+    expect(view.container.querySelector(".presence-avatar__pulse")).toBeNull();
     view.rerender(<PegolesPresence mode="working" size={64} pulse={5} />);
-    expect(view.container.querySelector(".presence__pulse")).toBeTruthy();
+    expect(view.container.querySelector(".presence-avatar__pulse")).toBeTruthy();
   });
 
-  it("gates continuous loops by kind: real work versus decorative life", () => {
-    const view = render(<PegolesPresence mode="working" size={64} />);
-    expect(view.container.querySelector(".presence__object")?.classList.contains("pg-work-anim")).toBe(true);
-    view.rerender(<PegolesPresence mode="idle" size={64} />);
-    expect(view.container.querySelector(".presence__object")?.classList.contains("pg-ambient")).toBe(true);
-    view.rerender(<PegolesPresence mode="done" size={64} />);
-    const object = view.container.querySelector(".presence__object");
-    expect(object?.classList.contains("pg-ambient") || object?.classList.contains("pg-work-anim")).toBe(false);
+  it("preserves the real mode while using a legible engine pose at small sizes", () => {
+    const view = render(<PegolesPresence mode="using-computer" size={40} />);
+    expect(view.container.querySelector(".presence")?.getAttribute("data-mode")).toBe("using-computer");
+    expect(view.container.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("thinking");
+    view.rerender(<PegolesPresence mode="waiting" size={40} />);
+    expect(view.container.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("notify");
   });
 
   it("is a real button when pressable: keyboard and pointer both press", () => {
     const onPress = vi.fn();
     render(<PegolesPresence mode="idle" size={152} pressable onPress={onPress} />);
-    const button = screen.getByRole("button", { name: "Pegoles" });
+    const button = screen.getByRole("button", { name: "Pegoles is idle" });
     expect(button.tabIndex).toBe(0);
     fireEvent.keyDown(button, { key: "Enter" });
     fireEvent.keyDown(button, { key: " " });
@@ -66,17 +64,18 @@ describe("PegolesPresence", () => {
     expect(onPress).toHaveBeenCalledTimes(3);
   });
 
-  it("reacts to keystrokes without re-rendering, throttled", () => {
+  it("reacts to a new keystroke through the avatar controller", () => {
     const view = render(<PegolesPresence mode="attentive" size={152} nudge={0} />);
     const root = view.container.querySelector<HTMLElement>(".presence");
+    expect(root?.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("idle");
     view.rerender(<PegolesPresence mode="attentive" size={152} nudge={1} />);
-    expect(root?.style.getPropertyValue("--p-kick")).toBe("1");
+    expect(root?.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("wide");
   });
 
-  it("writes the pose from the targets table", () => {
+  it("renders a stopped pose for a safety block", () => {
     const { container } = render(<PegolesPresence mode="blocked" size={64} />);
     const root = container.querySelector<HTMLElement>(".presence");
-    expect(root?.style.getPropertyValue("--p-lid")).toBe("0.46");
+    expect(root?.querySelector(".presence-avatar")?.getAttribute("data-engine-state")).toBe("exclaim");
   });
 });
 

@@ -1,67 +1,18 @@
-/*
- * Pegoles Presence — the official mark (PresenceArt: the source artwork's
- * own pixels) with state in light and in the eyes. Pose values arrive as
- * custom properties from the targets table (targets.ts → poseVariables); life,
- * pointer, nudges and boops write a few more from JS without re-rendering.
- * Continuous loops carry the ambient gate classes (pg-ambient / pg-work-anim)
- * and never run while the window is hidden, blurred or idle. Only transform,
- * opacity and clip-path move.
- */
-/* Registered so a squint can ease: the mask below reads it every frame. */
-@property --p-squint {
-  syntax: "<number>";
-  inherits: true;
-  initial-value: 0;
-}
-
+/* The shell keeps its layout box; the local SVG engine owns every pose. */
 .presence {
-  /* Pose (targets.ts); numbers are fractions of the mark size unless noted */
-  --p-eye-sx: 1;
-  --p-eye-sy: 1;
-  --p-lid: 0;
-  --p-eye-glow: 1;
-  --p-dim: 1;
-  --p-halo: 0.5;
-  --p-shell-sep: 0;
-  --p-field: 0;
-  --p-filament: 0;
-  --p-warn: 0;
-  --p-gaze: 1;
-  --p-breath-amp: 0.008;
-  --p-breath-period: 7s;
-  --p-flow-period: 4.2s;
-  --p-sweep-period: 5.5s;
-  /* Written from JS: look, pointer, idle glances, reactions */
-  --p-look-x: 0;
-  --p-look-y: 0;
-  --p-point-x: 0;
-  --p-point-y: 0;
-  --p-glance-x: 0;
-  --p-glance-y: 0;
-  --p-tilt-x: 0deg;
-  --p-tilt-y: 0deg;
-  --p-lean-x: 0;
-  --p-lean-y: 0;
-  --p-kick: 0;
-  --p-blink: 0;
-  --p-squint: 0;
-  --p-lid-dur: var(--dur-agent);
-  --p-aware: 0;
-  --p-lift: 0;
-
   position: relative;
   flex: none;
   width: var(--presence-size, 40px);
   height: var(--presence-size, 40px);
   isolation: isolate;
   outline: none;
-  transition: --p-squint var(--p-lid-dur) var(--ease-out);
 }
 
-.presence[data-aware] { --p-aware: 1; }
+.presence[data-pressable] {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
 
-.presence[data-pressable] { cursor: pointer; -webkit-tap-highlight-color: transparent; }
-.presence[data-pressable]:hover { --p-lift: 0.14; }
 .presence[data-pressable]:focus-visible::after {
   content: "";
   position: absolute;
@@ -71,291 +22,47 @@
   pointer-events: none;
 }
 
-.presence__stage {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-/* ── Light around the body ──────────────────────────────────────── */
-.presence__halo,
-.presence__halo::after,
-.presence__flash {
-  position: absolute;
-  inset: -34%;
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.presence__halo {
-  background: radial-gradient(closest-side, rgb(245 245 243 / 0.1), rgb(245 245 243 / 0.03) 58%, transparent);
-  opacity: calc(var(--p-halo) + var(--p-lift) + var(--p-aware) * 0.1);
-  transition: opacity var(--dur-agent) var(--ease-light);
-}
-
-.presence__halo::after {
-  content: "";
-  inset: 0;
-  background: radial-gradient(closest-side, rgb(245 181 69 / 0.14), rgb(245 181 69 / 0.04) 55%, transparent);
-  opacity: var(--p-warn);
-}
-
-.presence__flash {
-  background: radial-gradient(closest-side, rgb(255 255 255 / 0.2), rgb(255 255 255 / 0.05) 60%, transparent);
-  opacity: 0;
-}
-
-/* ── Body ───────────────────────────────────────────────────────── */
-.presence__tilt {
-  position: absolute;
-  inset: 0;
-  transform:
-    perspective(calc(var(--presence-size, 40px) * 5))
-    translate(calc(var(--p-lean-x) * var(--presence-size, 40px) * 0.014), calc(var(--p-lean-y) * var(--presence-size, 40px) * 0.014))
-    rotateX(var(--p-tilt-x)) rotateY(var(--p-tilt-y));
-  transition: transform 380ms var(--ease-out);
-}
-
-.presence__react {
-  position: absolute;
-  inset: 0;
-  transform-origin: 50% 92%;
-}
-
-.presence__object {
-  position: absolute;
-  inset: 0;
-  opacity: var(--p-dim);
-  transform-origin: 50% 56%;
-  transition: opacity var(--dur-agent) var(--ease-light);
-}
-
-.presence__contour,
-.presence__pulse,
-.presence__shimmer,
-.presence__shell-layer,
-.presence__filaments,
-.presence__warn-rim,
-.presence__bloom {
-  position: absolute;
-  inset: 0;
+.presence-avatar {
   display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-/* The artwork spans the artboard plus a quarter on every side (its glow). */
-.presence__art {
-  position: absolute;
-  inset: -25%;
-  display: block;
-  width: 150%;
-  height: 150%;
+  flex: none;
   max-width: none;
+  overflow: visible;
   user-select: none;
-  -webkit-user-drag: none;
-}
-
-.presence__shell-layer {
-  fill: none;
-  stroke: rgb(245 245 243 / 0.6);
-  stroke-width: 1px;
-  opacity: calc(var(--p-shell-sep) * 0.9);
-  transform: scale(calc(1 + var(--p-shell-sep) * 0.035));
-  transition: opacity var(--dur-agent) var(--ease-light), transform var(--dur-agent-slow) var(--ease-out);
-}
-
-.presence__filaments {
-  fill: none;
-  stroke: rgb(240 242 245 / 0.9);
-  stroke-width: 1px;
-  opacity: calc(var(--p-filament) * 0.6);
-  transition: opacity var(--dur-agent) var(--ease-light);
-}
-
-.presence__sweep {
-  position: absolute;
-  inset: 0;
-  -webkit-mask: var(--p-ring-mask) center / 100% 100% no-repeat;
-  mask: var(--p-ring-mask) center / 100% 100% no-repeat;
-  overflow: hidden;
-  opacity: var(--p-filament);
-  mix-blend-mode: screen;
-  transition: opacity var(--dur-agent) var(--ease-light);
-}
-
-.presence__sweep-band {
-  position: absolute;
-  inset: -30%;
-  background: conic-gradient(from 210deg, transparent 0 58%, rgb(243 246 250 / 0) 63%, rgb(250 251 252 / 0.9) 71%, rgb(243 246 250 / 0) 79%, transparent 100%);
-}
-
-/* 16–27 px: one calm object. No hairline layers, a tight eye glow. */
-.presence[data-small] .presence__filaments,
-.presence[data-small] .presence__shell-layer { display: none; }
-.presence[data-small] .presence__eye {
-  filter: drop-shadow(0 0 calc(var(--presence-size, 18px) * 0.045) rgb(243 249 255 / 0.55));
-}
-
-.presence__warn-rim {
-  fill: none;
-  stroke: var(--warn);
-  stroke-width: 2px;
-  opacity: 0;
-  transition: opacity var(--dur-agent) var(--ease-light);
-}
-
-.presence[data-mode="needs-user"] .presence__warn-rim { opacity: 0.85; }
-
-.presence__bloom {
-  fill: none;
-  stroke: #ffffff;
-  stroke-width: 1.5px;
-  opacity: 0;
-  filter: drop-shadow(0 0 calc(var(--presence-size, 40px) * 0.035) rgb(255 255 255 / 0.9));
-}
-
-/* ── Eyes ───────────────────────────────────────────────────────── */
-.presence__eye {
-  position: absolute;
-  transform:
-    translate(
-      calc((var(--p-look-x) * 0.03 + var(--p-point-x) + var(--p-glance-x)) * var(--p-gaze) * var(--presence-size, 40px)),
-      calc((var(--p-look-y) * 0.025 + var(--p-point-y) + var(--p-glance-y)) * var(--p-gaze) * var(--presence-size, 40px))
-    )
-    scale(
-      calc(var(--p-eye-sx) * (1 + var(--p-kick) * 0.04 + var(--p-aware) * 0.03)),
-      calc(var(--p-eye-sy) * (1 + var(--p-kick) * 0.04 + var(--p-aware) * 0.03))
-    );
-  /* The source's eye halo (look.json eye_glow_std), recreated here so it
-   * follows the visible (lidded) eye: the filter applies after the clip. */
-  filter:
-    drop-shadow(0 0 calc(var(--presence-size, 40px) * 0.04) rgb(243 249 255 / 0.5))
-    drop-shadow(0 0 calc(var(--presence-size, 40px) * 0.008) rgb(255 255 255 / 0.55));
-  transition: transform 260ms var(--ease-out);
-}
-
-.presence__eye-lid {
-  position: absolute;
-  inset: 0;
-  /* Upper lid: the mode's pose or a blink, from the top. */
-  clip-path: inset(calc(max(var(--p-lid), var(--p-blink)) * 100%) 0 0 0 round var(--radius-pill, 999px));
-  /* Happy squint: a rounded lower lid rises, so each eye becomes an arch.
-   * A mask, not a cover, so the glow follows the arch too. */
-  -webkit-mask-image: radial-gradient(ellipse 75% 60% at 50% calc(160% - var(--p-squint) * 87%), transparent 97%, #000 100%);
-  mask-image: radial-gradient(ellipse 75% 60% at 50% calc(160% - var(--p-squint) * 87%), transparent 97%, #000 100%);
-  border-radius: var(--radius-pill, 999px);
-  /* The eye's own pixels (PresenceArt sets the image). */
-  background-color: #f4f5f6;
-  background-size: 100% 100%;
-  opacity: min(1, var(--p-eye-glow));
-  transition: opacity var(--dur-agent) var(--ease-light), clip-path var(--p-lid-dur) var(--ease-out);
-}
-
-.presence__eye-lid::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(ellipse at 50% 30%, #fff8ec, #ffd79a);
-  opacity: calc(var(--p-warn) * 0.32);
-  transition: opacity var(--dur-agent) var(--ease-light);
-}
-
-/* ── Thought field ──────────────────────────────────────────────── */
-.presence__field {
-  position: absolute;
-  inset: 0;
   pointer-events: none;
 }
 
-.presence__contour,
-.presence__pulse,
-.presence__shimmer {
-  fill: none;
-  stroke: rgb(245 245 243 / 0.75);
-  stroke-width: 1px;
+.presence-avatar[data-mode="offline"] { opacity: 0.45; }
+
+.presence-avatar__body {
+  stroke: var(--presence-white, #f5f5f3);
+  stroke-width: 0.6;
+}
+
+.presence-avatar__halo {
+  fill: var(--presence-halo, rgb(245 245 243 / 0.08));
+  transform: scale(1.18);
   opacity: 0;
-  transform-origin: 50% 55%;
 }
 
-.presence__pulse { animation: presence-pulse 760ms var(--ease-out) 1 both; }
-
-/* Breathing: one animation for every living pose, so switching between them
- * never restarts it. Waiting keeps it but holds still: suspended mid-motion. */
-.presence:is([data-mode="idle"], [data-mode="attentive"], [data-mode="thinking"], [data-mode="planning"], [data-mode="working"], [data-mode="using-computer"], [data-mode="needs-user"], [data-mode="waiting"]) .presence__object {
-  animation: presence-breathe var(--p-breath-period) var(--ease-light) infinite alternate;
+.presence-avatar:is([data-mode="thinking"], [data-mode="planning"], [data-mode="working"], [data-mode="using-computer"]) .presence-avatar__halo {
+  opacity: 1;
 }
 
-.presence[data-mode="waiting"] .presence__object,
-.presence[data-mode="waiting"] .presence__contour { animation-play-state: paused !important; }
-
-.presence:is([data-mode="thinking"], [data-mode="planning"], [data-mode="working"], [data-mode="using-computer"], [data-mode="waiting"]) .presence__contour {
-  animation: presence-propagate var(--p-flow-period) linear infinite;
+.presence-avatar[data-mode="needs-user"] .presence-avatar__halo {
+  fill: var(--warn-soft, rgb(242 177 76 / 0.11));
+  opacity: 1;
 }
 
-.presence__contour:nth-child(2) { animation-delay: calc(var(--p-flow-period) * -0.333); }
-.presence__contour:nth-child(3) { animation-delay: calc(var(--p-flow-period) * -0.667); }
-
-.presence:is([data-mode="thinking"], [data-mode="planning"], [data-mode="working"], [data-mode="using-computer"]) .presence__sweep-band {
-  animation: presence-sweep var(--p-sweep-period) linear infinite;
+/* One pulse answers a new real event; it is omitted for every static pose. */
+.presence-avatar__pulse {
+  fill: none;
+  stroke: var(--presence-silver, #a7abb0);
+  stroke-width: 1;
+  transform-origin: center;
+  animation: presence-event 600ms var(--ease-out, ease-out) 1 both;
 }
 
-.presence:is([data-mode="thinking"], [data-mode="planning"], [data-mode="working"], [data-mode="using-computer"]) .presence__filaments {
-  animation: presence-filament calc(var(--p-flow-period) * 1.5) var(--ease-light) infinite alternate;
-}
-
-@keyframes presence-breathe {
-  from { transform: scale(1); }
-  to { transform: scale(calc(1 + var(--p-breath-amp))); }
-}
-
-@keyframes presence-propagate {
-  0% { transform: scale(1.02); opacity: 0; }
-  20% { opacity: calc(var(--p-field) * 0.62); }
-  70% { opacity: calc(var(--p-field) * 0.12); }
-  100% { transform: scale(1.3); opacity: 0; }
-}
-
-@keyframes presence-pulse {
-  0% { transform: scale(1.01); opacity: 0.6; }
-  100% { transform: scale(1.5); opacity: 0; }
-}
-
-@keyframes presence-sweep {
-  to { transform: rotate(1turn); }
-}
-
-@keyframes presence-filament {
-  from { opacity: calc(var(--p-filament) * 0.3); }
-  to { opacity: calc(var(--p-filament) * 0.7); }
-}
-
-/* Reduced motion: poses snap; only light and opacity ease, briefly. */
-[data-reduced-motion="true"] .presence *,
-[data-reduced-motion="true"] .presence *::after {
-  animation: none !important;
-  transition-property: opacity !important;
-  transition-duration: var(--dur-micro-slow) !important;
-}
-
-[data-reduced-motion="true"] .presence .presence__pulse {
-  transform: scale(1.12);
-  animation: presence-flash 600ms var(--ease-light) 1 both !important;
-}
-
-[data-reduced-motion="true"] .presence:is([data-mode="thinking"], [data-mode="planning"], [data-mode="working"], [data-mode="using-computer"]) .presence__contour:nth-child(1) {
-  transform: scale(1.12);
-  opacity: calc(var(--p-field) * 0.5);
-}
-
-[data-reduced-motion="true"] .presence:is([data-mode="thinking"], [data-mode="planning"], [data-mode="working"], [data-mode="using-computer"]) .presence__contour:nth-child(2) {
-  transform: scale(1.26);
-  opacity: calc(var(--p-field) * 0.25);
-}
-
-@keyframes presence-flash {
-  0% { opacity: 0.5; }
-  100% { opacity: 0; }
+@keyframes presence-event {
+  from { opacity: 0.5; transform: scale(1); }
+  to { opacity: 0; transform: scale(1.4); }
 }

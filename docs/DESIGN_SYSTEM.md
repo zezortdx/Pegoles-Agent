@@ -131,6 +131,21 @@ generated from it (`scripts/brand/`). Tiny sizes (16–32 px) use the flat
 glyph variant of the same traced geometry. Blue is not part of the logo:
 in the product it stays the activity/focus signal described below.
 
+**Desktop live presence.** `apps/desktop/src/presence/PresenceAvatar.tsx`
+renders local SVG geometry from the vendored bloub engine (MIT; see
+`THIRD_PARTY_NOTICES.md`). The existing Core visual adapter still owns the
+mode: the avatar adds no task, progress or speech signals. Its body and
+orbits use the silver/white presence tokens, with dark eyes and an amber
+notification only while waiting for the user. Below 56 CSS px, active work
+uses the thinking pose so a ringless orbit cannot resemble a play button.
+
+One shared frame clock pauses while hidden and caps elapsed time at 64 ms.
+Idle and small avatars update at most 30 fps; larger work avatars at most
+60 fps. Offscreen and ambient gates still apply, while visible real work
+continues when unfocused. OS reduced motion, Minimal effects, offline,
+blocked and error use a static state pose. A new Core mode replaces old
+geometry on the first paint, including while motion is paused.
+
 Raw colors live in `packages/ui/src/tokens/palette.ts` (brand) and
 `tokens/signal.ts` (status hues). They are referenced **only** by semantic
 tokens; component code/CSS never contains a raw color (enforced by

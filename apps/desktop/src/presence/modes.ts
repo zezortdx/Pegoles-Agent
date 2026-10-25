@@ -37,7 +37,7 @@ export const PRESENCE_MODES: readonly PresenceMode[] = [
 /** Accessible sentence for each mode (the canvas is never the only cue). */
 export const PRESENCE_LABEL: Record<PresenceMode, string> = {
   offline: "Pegoles is offline",
-  idle: "Pegoles",
+  idle: "Pegoles is idle",
   attentive: "Pegoles is listening",
   acknowledging: "Pegoles got it",
   thinking: "Pegoles is thinking",
