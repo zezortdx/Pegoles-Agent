@@ -453,7 +453,7 @@ export default function App() {
             {sidebarMode === "drawer" && <button type="button" className="scrim" aria-label="Close sidebar" onClick={() => setDrawerOpen(false)} />}
 
             <main id="main-content" className="work" tabIndex={-1} aria-hidden={level === "full" || undefined}
-              {...(sidebarMode === "drawer" || level === "full" ? { inert: "" } : {})}>
+              {...(sidebarMode === "drawer" || level === "full" ? { inert: true } : {})}>
               <Toolbar
                 sidebarHidden={sidebarMode !== "shown"}
                 context={view.kind === "task" && selected && pill && !headingVisible ? { title: selected.title, tone: pill.tone, live: pill.live } satisfies ToolbarContext : null}
