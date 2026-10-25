@@ -322,3 +322,58 @@ describe("Intelligence settings: choosing the cloud", () => {
     expect(screen.queryByRole("radio")).toBeNull();
   });
 });
+
+describe("Intelligence settings: experimental team mode", () => {
+  const teamSwitch = () => screen.getByRole("switch", { name: "Team mode" }) as HTMLInputElement;
+
+  it("is off by default, disabled on Pegoles Local, and says why", async () => {
+    render(<Harness />);
+    await loaded();
+    expect(teamSwitch().checked).toBe(false);
+    expect(teamSwitch().disabled).toBe(true);
+    expect(screen.getByText("Needs a cloud model")).toBeTruthy();
+    expect(screen.getByText("Experimental")).toBeTruthy();
+  });
+
+  it("discloses the cloud use in words and only asks Core: the page never holds the consent", async () => {
+    vi.mocked(api.getIntelligence).mockResolvedValue(cloud);
+    const set = vi.spyOn(api, "setTeamMode").mockResolvedValue(intelligenceOf({ provider: "anthropic", team: true }));
+    render(<Harness />);
+    await waitFor(() => expect(teamSwitch().disabled).toBe(false));
+    expect(teamSwitch().getAttribute("aria-describedby")?.split(" ").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/sends the task text, screenshots of Pegoles’ computer and the team’s own notes to Anthropic/)).toBeTruthy();
+    expect(screen.getByText(/never runs on Pegoles Local/)).toBeTruthy();
+
+    fireEvent.click(teamSwitch());
+    await waitFor(() => expect(set).toHaveBeenCalledExactlyOnceWith(true));
+    await waitFor(() => expect(teamSwitch().checked).toBe(true));
+    noKeyField();
+  });
+
+  it("stays off, with Core's words, when the macOS confirmation is declined", async () => {
+    vi.mocked(api.getIntelligence).mockResolvedValue(cloud);
+    vi.spyOn(api, "setTeamMode").mockRejectedValue("Team mode is still off: it wasn't confirmed in the macOS dialog.");
+    render(<Harness />);
+    await waitFor(() => expect(teamSwitch().disabled).toBe(false));
+    fireEvent.click(teamSwitch());
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Couldn’t change team mode.");
+    expect(alert.textContent).toContain("wasn't confirmed in the macOS dialog");
+    expect(teamSwitch().checked).toBe(false);
+  });
+
+  it("disables the switch while the confirmation is open and turns it off without a prompt", async () => {
+    vi.mocked(api.getIntelligence).mockResolvedValue(intelligenceOf({ provider: "anthropic", team: true }));
+    let finish: (value: ReturnType<typeof intelligenceOf>) => void = () => undefined;
+    const off = vi.spyOn(api, "setTeamMode").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<Harness />);
+    await waitFor(() => expect(teamSwitch().checked).toBe(true));
+    fireEvent.click(teamSwitch());
+    await waitFor(() => expect(off).toHaveBeenCalledExactlyOnceWith(false));
+    expect(teamSwitch().disabled).toBe(true);
+    expect(screen.getByRole("status", { name: "" }).textContent).toContain("Waiting for confirmation");
+    await act(async () => { finish(cloud); });
+    await waitFor(() => expect(teamSwitch().disabled).toBe(false));
+    expect(teamSwitch().checked).toBe(false);
+  });
+});

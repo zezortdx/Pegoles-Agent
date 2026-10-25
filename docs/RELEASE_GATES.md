@@ -203,3 +203,33 @@ on Stop or when the preparation deadline passes; its result must not be persiste
 Record actual device/build, observed native behavior and remaining failures.
 No native embed, hardware, cloud or installed-app acceptance is implied by unit
 checks. The native VZ embed remains a contract stub.
+
+### Agent 2.0 experimental team planner — offline evidence, cloud UNRUN
+
+Offline requirements (no network, no key, fakes only): ordered captain plan →
+researcher → executor → critic → captain synthesis, with the final summary and
+task status after the last team event; per-step and total timeouts and the
+executor turn budget; Stop mid-step reported as cancelled with later steps
+skipped; role errors, refusals and empty replies propagated as the run's
+failure; executor failure passed through without running critic/captain; roles
+cannot add or alter actions and a policy block still reaches the executor;
+role requests have no `tools`/`thinking`, only visible text blocks are used;
+disabled by default, consent separate from the flag, local executor or role
+model refused (including the real `LocalPlanner`); native confirmation, decline
+and unanswerable paths through injected consent, provider change to Local turning
+it off, settings parse/validate refusing team mode on Local; event bridge,
+sanitization and 400-character bound; human intervention after an answer
+returning to the executor; exact IPC/ACL for `set_team_mode`; UI strip with four
+distinct silhouettes, collapsible panel, prominent result shown once, hostile
+text inert, keyboard and en/pt-BR copy, switch disabled while pending.
+Run `RUST_TEST_THREADS=1 bash scripts/check.sh` after a frozen script-free
+install; ignored `target/review/team-planner/` records the evidence.
+
+Manual acceptance (UNRUN by the implementation agent; needs a real Anthropic
+key, so it spends API quota): with Anthropic chosen turn team mode on, read the
+native disclosure in English and pt-BR (Return/Escape must decline), decline
+once and confirm nothing changes, accept; run a simple task and watch the strip,
+status panel and result; confirm Stop mid-team, a long hung request timing out,
+a takeover after the answer, and approvals still appearing for gated input;
+switch to Pegoles Local and confirm the setting turns off. Cloud inference, native
+dialogs and VM behavior were not exercised during implementation.

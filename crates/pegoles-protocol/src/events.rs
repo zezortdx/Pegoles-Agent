@@ -25,6 +25,44 @@ pub enum AgentMessageKind {
 /// Longest `AgentMessage.text` published (characters).
 pub const MAX_AGENT_MESSAGE_CHARS: usize = 4_000;
 
+/// Longest `TeamProgress.summary` published (characters).
+pub const MAX_TEAM_SUMMARY_CHARS: usize = 400;
+
+/// The fixed, ordered steps of an experimental team run. The captain owns
+/// two of them; a step never carries permissions, it only names who
+/// produced a piece of text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamStep {
+    CaptainPlan,
+    Research,
+    Execute,
+    Critique,
+    Synthesis,
+}
+
+impl TeamStep {
+    /// Steps in the order a run goes through them.
+    pub const ORDER: [TeamStep; 5] = [
+        TeamStep::CaptainPlan,
+        TeamStep::Research,
+        TeamStep::Execute,
+        TeamStep::Critique,
+        TeamStep::Synthesis,
+    ];
+}
+
+/// Where a team step stands. Only real planner progress produces these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamStepStatus {
+    Working,
+    Done,
+    Failed,
+    /// Not run because an earlier step ended the team run.
+    Skipped,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -46,6 +84,16 @@ pub enum AgentEvent {
         task_id: TaskId,
         kind: AgentMessageKind,
         text: String,
+        at: DateTime<Utc>,
+    },
+    /// Experimental team mode: one step of the team changed state.
+    /// `summary` is a short, bounded, sanitized piece of the role's visible
+    /// output (never hidden reasoning); UIs render it as plain text.
+    TeamProgress {
+        task_id: TaskId,
+        step: TeamStep,
+        status: TeamStepStatus,
+        summary: String,
         at: DateTime<Utc>,
     },
     ComputerCreated {

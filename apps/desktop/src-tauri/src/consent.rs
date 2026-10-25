@@ -8,12 +8,19 @@
 
 use std::sync::Arc;
 
-use crate::agent::{IntelligenceSettings, Provider};
+use crate::agent::{IntelligenceSettings, Provider, TeamSettings};
 
 /// The user kept the local planner (also returned when the question could
 /// not be asked).
 pub const CLOUD_DECLINED: &str =
     "Pegoles Local still plans your tasks: switching to Anthropic wasn't confirmed in the macOS dialog.";
+
+/// Team mode stays off: the confirmation wasn't given in the macOS dialog.
+pub const TEAM_DECLINED: &str = "Team mode is still off: it wasn't confirmed in the macOS dialog.";
+
+/// Team mode only exists on a cloud planner.
+pub const TEAM_NEEDS_CLOUD: &str =
+    "Team mode needs a cloud model. Choose Anthropic first; it never runs on Pegoles Local.";
 
 /// The key window was cancelled.
 pub const KEY_CANCELLED: &str = "the macOS key window was cancelled, so nothing was stored.";
@@ -28,6 +35,14 @@ pub trait Consent: Send + Sync {
         Ok(false)
     }
     fn change_input_policy(&self, _enabled: bool) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// Ask before experimental team mode is turned on: it sends more of
+    /// each task (several requests, screenshots, the team's own notes) to
+    /// the cloud. `Ok(true)` only when the user chose to continue; the
+    /// default answer is no.
+    fn allow_team_planner(&self) -> Result<bool, String> {
         Ok(false)
     }
 
@@ -102,9 +117,47 @@ pub fn change_provider(
     }
     let mut settings = load();
     settings.provider = provider;
+    if provider == Provider::Local {
+        // Team mode only exists on a cloud planner, and its confirmation
+        // does not survive leaving it.
+        settings.team = TeamSettings::default();
+    }
     if let Some(m) = local_model {
         settings.local_model = m;
     }
+    save(&settings)
+}
+
+/// Turn experimental team mode on or off. Turning it on needs a cloud
+/// planner and the user's native confirmation, and records the disclosure
+/// version they confirmed; nothing is saved without it. Turning it off
+/// asks nothing. Settings are re-read after the (possibly long) prompt.
+pub fn change_team_mode(
+    consent: &dyn Consent,
+    enabled: bool,
+    load: impl Fn() -> IntelligenceSettings,
+    save: impl FnOnce(&IntelligenceSettings) -> Result<(), String>,
+) -> Result<(), String> {
+    if !enabled {
+        let mut settings = load();
+        settings.team = TeamSettings::default();
+        return save(&settings);
+    }
+    let current = load();
+    if current.provider == Provider::Local {
+        return Err(TEAM_NEEDS_CLOUD.to_string());
+    }
+    if current.team.active(current.provider) {
+        return Ok(());
+    }
+    if !consent.allow_team_planner()? {
+        return Err(TEAM_DECLINED.to_string());
+    }
+    let mut settings = load();
+    if settings.provider == Provider::Local {
+        return Err(TEAM_NEEDS_CLOUD.to_string());
+    }
+    settings.team = TeamSettings::confirmed();
     save(&settings)
 }
 
@@ -146,6 +199,7 @@ mod native {
         cloud_backoff: Mutex<DeclineBackoff>,
         key_backoff: Mutex<DeclineBackoff>,
         input_backoff: Mutex<DeclineBackoff>,
+        team_backoff: Mutex<DeclineBackoff>,
     }
 
     struct Reopen<'a>(&'a AtomicBool);
@@ -164,6 +218,7 @@ mod native {
                 cloud_backoff: Mutex::new(DeclineBackoff::default()),
                 key_backoff: Mutex::new(DeclineBackoff::default()),
                 input_backoff: Mutex::new(DeclineBackoff::default()),
+                team_backoff: Mutex::new(DeclineBackoff::default()),
             }
         }
 
@@ -249,6 +304,40 @@ mod native {
         }
         fn change_input_policy(&self, enabled: bool) -> Result<bool, String> {
             self.confirm_saved_input(crate::input_consent::InputQuestion::Policy(enabled))
+        }
+
+        fn allow_team_planner(&self) -> Result<bool, String> {
+            if lock(&self.team_backoff).closed(Instant::now()) {
+                return Err(PROMPT_PAUSED.to_string());
+            }
+            let store = crate::preferences::PreferenceStore::new(
+                pegoles_computer::pegoles_data_dir().join("preferences"),
+            );
+            let allowed = crate::team_consent::confirm_with_store(&store, |prompt| {
+                self.ask(move |mtm| {
+                    let alert = alert(mtm, prompt.title, &prompt.message, prompt.confirm);
+                    if let Some(cancel) = alert.buttons().lastObject() {
+                        cancel.setTitle(&NSString::from_str(prompt.cancel));
+                    }
+                    // Return and Escape both keep team mode off: it takes a
+                    // deliberate click, never a keystroke a page prompted.
+                    let buttons = alert.buttons();
+                    if let (Some(confirm), Some(cancel)) =
+                        (buttons.firstObject(), buttons.lastObject())
+                    {
+                        confirm.setKeyEquivalent(&NSString::from_str(""));
+                        cancel.setKeyEquivalent(&NSString::from_str("\r"));
+                    }
+                    alert.runModal() == NSAlertFirstButtonReturn
+                })
+            })?;
+            let mut backoff = lock(&self.team_backoff);
+            if allowed {
+                backoff.accepted();
+            } else {
+                backoff.declined(Instant::now());
+            }
+            Ok(allowed)
         }
 
         fn allow_cloud_planner(&self, provider: Provider) -> Result<bool, String> {
@@ -345,6 +434,9 @@ impl NativeConsent {
 
 #[cfg(not(target_os = "macos"))]
 impl Consent for NativeConsent {
+    fn allow_team_planner(&self) -> Result<bool, String> {
+        Err("team mode needs the macOS confirmation dialog.".into())
+    }
     fn allow_cloud_planner(&self, _provider: Provider) -> Result<bool, String> {
         Err("cloud planners need the macOS confirmation dialog.".into())
     }
@@ -364,6 +456,7 @@ mod tests {
     struct Scripted {
         cloud: Result<bool, String>,
         key: Result<Option<String>, String>,
+        team: Result<bool, String>,
         asked: Mutex<Vec<&'static str>>,
     }
 
@@ -372,8 +465,13 @@ mod tests {
             Self {
                 cloud,
                 key,
+                team: Ok(false),
                 asked: Mutex::new(Vec::new()),
             }
+        }
+        fn team(mut self, answer: Result<bool, String>) -> Self {
+            self.team = answer;
+            self
         }
         fn asked(&self) -> Vec<&'static str> {
             self.asked.lock().unwrap().clone()
@@ -381,6 +479,10 @@ mod tests {
     }
 
     impl Consent for Scripted {
+        fn allow_team_planner(&self) -> Result<bool, String> {
+            self.asked.lock().unwrap().push("team");
+            self.team.clone()
+        }
         fn allow_cloud_planner(&self, _provider: Provider) -> Result<bool, String> {
             self.asked.lock().unwrap().push("cloud");
             self.cloud.clone()
@@ -504,6 +606,100 @@ mod tests {
         let busy = Scripted::new(Ok(false), Err("another one is open".into()));
         let result = enter_api_key(&busy, true, |_| panic!("nothing to store"));
         assert_eq!(result, Err("another one is open".to_string()));
+    }
+
+    fn team_on() -> IntelligenceSettings {
+        IntelligenceSettings {
+            team: TeamSettings::confirmed(),
+            ..cloud()
+        }
+    }
+
+    /// Runs `change_team_mode` from `current` and returns what was saved.
+    fn team_switch(
+        consent: &Scripted,
+        current: IntelligenceSettings,
+        enabled: bool,
+    ) -> (Result<(), String>, Option<IntelligenceSettings>) {
+        let saved = RefCell::new(None);
+        let result = change_team_mode(
+            consent,
+            enabled,
+            || current.clone(),
+            |s| {
+                *saved.borrow_mut() = Some(s.clone());
+                Ok(())
+            },
+        );
+        (result, saved.into_inner())
+    }
+
+    #[test]
+    fn team_mode_is_saved_only_after_native_confirmation_with_the_disclosure_version() {
+        let yes = Scripted::new(Ok(false), Ok(None)).team(Ok(true));
+        let (result, saved) = team_switch(&yes, cloud(), true);
+        assert_eq!(result, Ok(()));
+        assert_eq!(saved.unwrap().team, TeamSettings::confirmed());
+        assert_eq!(yes.asked(), ["team"]);
+    }
+
+    #[test]
+    fn declined_unanswerable_or_local_team_mode_saves_nothing() {
+        let no = Scripted::new(Ok(false), Ok(None)).team(Ok(false));
+        let (result, saved) = team_switch(&no, cloud(), true);
+        assert_eq!(result, Err(TEAM_DECLINED.to_string()));
+        assert!(saved.is_none());
+
+        let busy = Scripted::new(Ok(false), Ok(None)).team(Err("another one is open".into()));
+        let (result, saved) = team_switch(&busy, cloud(), true);
+        assert_eq!(result, Err("another one is open".to_string()));
+        assert!(saved.is_none());
+
+        let never = Scripted::new(Ok(true), Ok(None)).team(Ok(true));
+        let (result, saved) = team_switch(&never, local(), true);
+        assert_eq!(result, Err(TEAM_NEEDS_CLOUD.to_string()));
+        assert!(saved.is_none());
+        assert!(never.asked().is_empty(), "no question on the local model");
+    }
+
+    #[test]
+    fn team_mode_already_on_is_not_asked_again_and_off_asks_nothing() {
+        let never = Scripted::new(Ok(false), Ok(None)).team(Ok(false));
+        let (result, saved) = team_switch(&never, team_on(), true);
+        assert_eq!(result, Ok(()));
+        assert!(saved.is_none(), "nothing to change");
+
+        let (result, saved) = team_switch(&never, team_on(), false);
+        assert_eq!(result, Ok(()));
+        assert_eq!(saved.unwrap().team, TeamSettings::default());
+        assert!(never.asked().is_empty());
+    }
+
+    #[test]
+    fn an_old_disclosure_asks_again() {
+        let stale = IntelligenceSettings {
+            team: TeamSettings {
+                enabled: true,
+                consent_version: 0,
+            },
+            ..cloud()
+        };
+        let yes = Scripted::new(Ok(false), Ok(None)).team(Ok(true));
+        let (result, saved) = team_switch(&yes, stale, true);
+        assert_eq!(result, Ok(()));
+        assert_eq!(saved.unwrap().team, TeamSettings::confirmed());
+        assert_eq!(yes.asked(), ["team"]);
+    }
+
+    #[test]
+    fn going_back_to_the_local_planner_turns_team_mode_off() {
+        let never = Scripted::new(Ok(false), Ok(None));
+        let (result, saved) = switch(&never, team_on(), Provider::Local);
+        assert_eq!(result, Ok(()));
+        let saved = saved.unwrap();
+        assert_eq!(saved.provider, Provider::Local);
+        assert_eq!(saved.team, TeamSettings::default());
+        assert!(saved.validate().is_ok());
     }
 
     #[test]

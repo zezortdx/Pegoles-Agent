@@ -12,6 +12,7 @@ import { buildTranscript } from "./state/transcript";
 import { computerModel, withCommandError, type ComputerCommand } from "./state/computerModel";
 import { taskSections } from "./state/taskSections";
 import { eventsForTask } from "./lib/execution";
+import { teamRunOf } from "./state/teamRun";
 import { api, type AgentTask } from "./lib/tauri";
 import { duration, ease } from "./lib/motion";
 import { formatElapsed, modelLabel, shortcutModifier } from "./lib/format";
@@ -132,6 +133,7 @@ function AppContent() {
     task: selected, events: selectedEvents, status, connected, acknowledging: ackTask === selected.id, starting,
   });
   const transcript = selected ? buildTranscript({ task: selected, events: selectedEvents }) : [];
+  const team = useMemo(() => teamRunOf(selectedEvents), [selectedEvents]);
 
   const computer = withCommandError(computerModel({ connected, native: core.native, status, events }), !!core.errors.computer);
   const presence = globalPresence({
@@ -376,6 +378,7 @@ function AppContent() {
         key={selected.id}
         task={selected}
         items={transcript}
+        team={team}
         approvalCards={core.approvals?.pending.filter((p) => p.task_id === selected.id).map((p) => <ApprovalCard key={p.id} approval={p} resolve={resolveApproval} />)}
         historyEnabled={core.native && connected}
         historyRevision={`${selected.updated_at}:${events.length}`}

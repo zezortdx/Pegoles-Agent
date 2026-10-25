@@ -45,6 +45,7 @@
     "allow-set-model-settings",
     "allow-get-intelligence",
     "allow-set-provider",
+    "allow-set-team-mode",
     "allow-install-local-model",
     "allow-cancel-local-model-install",
     "allow-remove-local-model",

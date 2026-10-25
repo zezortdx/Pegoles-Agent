@@ -25,7 +25,10 @@ pub use display::{
     ControlOwner, DisplayConfig, DisplayConfigError, DisplayProfile, FrameEncoding,
     GraphicalSessionState, ObservedFrameMeta, ViewportState,
 };
-pub use events::{AgentEvent, AgentMessageKind, MAX_AGENT_MESSAGE_CHARS};
+pub use events::{
+    AgentEvent, AgentMessageKind, TeamStep, TeamStepStatus, MAX_AGENT_MESSAGE_CHARS,
+    MAX_TEAM_SUMMARY_CHARS,
+};
 pub use guest::GuestRuntimeState;
 pub use ids::{ActionId, AgentId, ComputerId, FrameId, SessionId, TaskId};
 pub use keys::{is_modifier, normalize_key_name, validate_chord};

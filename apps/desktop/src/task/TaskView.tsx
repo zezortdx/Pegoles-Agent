@@ -12,6 +12,8 @@ import { plural, timeOf } from "../artifacts/format";
 import { LocalProgress } from "../intelligence/LocalProgress";
 import { TaskArtifacts } from "../artifacts/TaskArtifacts";
 import { Narrative } from "./Narrative";
+import { TeamPanel } from "../team/TeamPanel";
+import type { TeamRun } from "../state/teamRun";
 
 export interface TaskViewProps {
   readonly task: AgentTask;
@@ -21,6 +23,8 @@ export interface TaskViewProps {
   readonly state: ActivityPill;
   readonly elapsed?: string;
   readonly animated: boolean;
+  /** Experimental team mode on this task, derived from its real events; null when one model ran it. */
+  readonly team?: TeamRun | null;
   /** Just handed over from Home. */
   readonly arriving: boolean;
   readonly historyEnabled?: boolean;
@@ -49,6 +53,15 @@ export interface LocalSetup {
   readonly problem?: string | null;
   readonly onSetUp: () => void;
   readonly onCancel: () => void;
+}
+
+/** The run's final summary, if it has one: with a team it is the prominent result, not a second note. */
+function finalSummary(items: readonly TranscriptItem[]): Extract<TranscriptItem, { kind: "message" }> | null {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind === "message" && item.variant === "summary") return item;
+  }
+  return null;
 }
 
 function actionCount(items: readonly TranscriptItem[]): number {
@@ -144,6 +157,8 @@ export function TaskView(props: TaskViewProps) {
   }, [onHeadingVisible]);
 
   const actions = actionCount(items);
+  const summary = props.team ? finalSummary(items) : null;
+  const narrative = summary ? items.filter((item) => item !== summary) : items;
   const notStarted = task.status === "pending" && !!activity.start;
   const waitingFirst = activity.live && !notStarted && activity.mode !== "needs-user" && items.length <= 1;
   const facts = [
@@ -174,8 +189,9 @@ export function TaskView(props: TaskViewProps) {
             <NotStarted activity={activity} onOpenComputer={props.onOpenComputer} onModelSettings={props.onModelSettings}
               onStart={props.onStart} starting={props.starting} startError={props.startError} local={props.local} />
           )}
+          {props.team && <TeamPanel run={props.team} result={summary?.text} />}
           {props.approvalCards}
-          <Narrative items={items} animated={props.animated} live={activity.live} failedAt={task.status === "failed" ? activity.detail : undefined} />
+          <Narrative items={narrative} animated={props.animated} live={activity.live} failedAt={task.status === "failed" ? activity.detail : undefined} />
           <TaskArtifacts taskId={task.id} revision={props.historyRevision ?? task.updated_at} enabled={props.historyEnabled ?? false} />
           {waitingFirst && <p className="narrative__waiting"><span className="narrative__pulse pg-work-anim" aria-hidden="true" />{t("Waiting for the first action")}</p>}
         </div>

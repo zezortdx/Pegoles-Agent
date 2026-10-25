@@ -9,8 +9,13 @@ import type { TranscriptItem, TranscriptStep } from "../state/transcript";
 import { activityPill } from "../lib/taskState";
 import type { AgentTask } from "../lib/tauri";
 import type { HumanError } from "../state/errors";
+import { teamRunOf, type TeamRun } from "../state/teamRun";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+function must<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) throw new Error("expected a value");
+  return value;
+}
 const at = "2026-09-24T10:00:00Z";
 const task: AgentTask = { id: "t", title: "Research competitors", status: "pending", created_at: at, updated_at: at };
 const request: TranscriptItem = { kind: "request", id: "r", text: task.title, at };
@@ -29,6 +34,7 @@ interface Extra {
   startError?: HumanError | null;
   onModelSettings?: () => void;
   local?: LocalSetup;
+  team?: TeamRun | null;
 }
 
 const view = (activity: TaskActivity, items: readonly TranscriptItem[] = [request], patch: Partial<AgentTask> = {}, handlers: Extra = {}) => {
@@ -48,6 +54,7 @@ const view = (activity: TaskActivity, items: readonly TranscriptItem[] = [reques
       starting={handlers.starting}
       startError={handlers.startError}
       local={handlers.local}
+      team={handlers.team}
     />,
   );
 };
@@ -295,5 +302,37 @@ describe("StatusDock", () => {
     dock({ mode: "done", headline: "Done", recent: [], pulse: 4, live: false, at });
     expect(screen.getByRole("region", { name: "Now" }).textContent).toMatch(/Finished/);
     expect(screen.getByRole("button", { name: /New task/ })).toBeTruthy();
+  });
+
+  describe("with the experimental team", () => {
+    const teamEvent = (step: "captain_plan" | "research" | "execute" | "critique" | "synthesis", status: "working" | "done", summary = "") =>
+      ({ type: "team_progress", task_id: "t", step, status, summary, at }) as const;
+    const done = must(teamRunOf([
+      teamEvent("captain_plan", "done", "plan"), teamEvent("research", "done", "notes"), teamEvent("execute", "done", "typed"),
+      teamEvent("critique", "done", "PASS"), teamEvent("synthesis", "done", "All set."),
+    ]));
+    const summary: TranscriptItem = { kind: "message", id: "m", variant: "summary", text: "All set.", at };
+
+    it("shows the strip and the final answer once, as the prominent result", () => {
+      view(working, [request, summary], { status: "completed" }, { team: done });
+      expect(screen.getByRole("list", { name: "Team" })).toBeTruthy();
+      expect(screen.getByRole("region", { name: "Team result" }).textContent).toContain("All set.");
+      expect(screen.queryByLabelText("Pegoles’ summary")).toBeNull();
+      expect(document.querySelectorAll(".note__text").length).toBe(0);
+    });
+
+    it("keeps the usual summary note, and shows no team, for a single-model run", () => {
+      view(working, [request, summary], { status: "completed" }, { team: null });
+      expect(screen.queryByRole("list", { name: "Team" })).toBeNull();
+      expect(screen.getByLabelText("Pegoles’ summary").textContent).toContain("All set.");
+    });
+
+    it("still shows why a team run stopped", () => {
+      const error: TranscriptItem = { kind: "message", id: "e", variant: "error", text: "The model could not continue.", at };
+      const stopped = must(teamRunOf([teamEvent("captain_plan", "working")]));
+      view(working, [request, error], { status: "failed" }, { team: stopped });
+      expect(screen.getByLabelText("Why Pegoles stopped").textContent).toContain("could not continue");
+      expect(screen.queryByRole("region", { name: "Team result" })).toBeNull();
+    });
   });
 });

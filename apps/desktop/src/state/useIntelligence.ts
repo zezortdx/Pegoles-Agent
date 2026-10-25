@@ -9,7 +9,7 @@ import { errorText } from "./errors";
 import { installActive, sentence } from "./localModel";
 
 /** What the Intelligence settings are doing: reading, choosing who plans, setting up, cancelling or removing a local model. */
-export type IntelligenceOp = "load" | "provider" | "install" | "cancel" | "remove";
+export type IntelligenceOp = "load" | "provider" | "install" | "cancel" | "remove" | "team";
 
 export interface IntelligenceError {
   readonly op: IntelligenceOp;
@@ -28,6 +28,8 @@ export interface IntelligenceState {
   readonly install: (model?: string) => Promise<boolean>;
   readonly cancelInstall: () => Promise<boolean>;
   readonly remove: (model: string) => Promise<boolean>;
+  /** Experimental team mode on or off. Turning it on waits for the macOS confirmation. */
+  readonly setTeamMode: (enabled: boolean) => Promise<boolean>;
   /** Remove files that failed the store's check, then set the model up again. */
   readonly repair: (model: string) => Promise<boolean>;
 }
@@ -38,6 +40,7 @@ const FAILED: Record<IntelligenceOp, CopyKey> = {
   install: "Couldn’t set up Pegoles Local.",
   cancel: "Couldn’t cancel the setup.",
   remove: "Couldn’t remove the model.",
+  team: "Couldn’t change team mode.",
 };
 
 /** A failed operation as one sentence: ours, then Core's own words. */
@@ -173,6 +176,7 @@ export function useIntelligence(enabled: boolean, onChanged?: () => void): Intel
   const refresh = useCallback(() => { void reload(false); }, [reload]);
   const setProvider = useCallback((provider: Provider, localModel?: string) =>
     perform("provider", () => api.setProvider(provider, localModel)), [perform]);
+  const setTeamMode = useCallback((enabled: boolean) => perform("team", () => api.setTeamMode(enabled)), [perform]);
   const install = useCallback((model?: string) => perform("install", () => api.installLocalModel(model)), [perform]);
   const cancelInstall = useCallback(() => perform("cancel", api.cancelLocalModelInstall), [perform]);
   const remove = useCallback((model: string) => perform("remove", () => api.removeLocalModel(model)), [perform]);
@@ -181,5 +185,5 @@ export function useIntelligence(enabled: boolean, onChanged?: () => void): Intel
     return api.installLocalModel(model);
   }), [perform]);
 
-  return { intelligence, pending, error, refresh, setProvider, install, cancelInstall, remove, repair };
+  return { intelligence, pending, error, refresh, setProvider, setTeamMode, install, cancelInstall, remove, repair };
 }

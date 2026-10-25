@@ -1,0 +1,33 @@
+/* Experimental team mode: strip, result and status panel. Silver/neutral,
+ * state carried by words and shape as well as tone. */
+.team { display: grid; gap: 12px; padding: 16px; border-radius: var(--radius-card); background: var(--raised); box-shadow: inset 0 0 0 0.5px var(--hairline); }
+.team[data-failed] { box-shadow: inset 0 0 0 0.5px var(--danger); }
+.team__title { display: flex; align-items: center; gap: 8px; font: var(--type-heading); color: var(--text-1); }
+.team__status { color: var(--text-2); font: var(--type-small); }
+.team-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.team-role { display: grid; justify-items: center; gap: 2px; min-width: 0; padding: 8px 4px; border-radius: var(--radius-md); color: var(--text-3); text-align: center; }
+.team-role[data-state="working"] { background: var(--fill-selected); color: var(--text-1); }
+.team-role[data-state="failed"] { color: var(--danger-text); }
+.team-role__name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-2); }
+.team-role[data-state="working"] .team-role__name { color: var(--text-1); }
+.team-role__state { font: var(--type-small); }
+.team-result { display: grid; gap: 4px; padding: 14px 16px; border-radius: var(--radius-md); background: var(--surface); box-shadow: inset 0 0 0 0.5px var(--hairline-strong); }
+.team-result__title { color: var(--text-3); font: var(--type-small); text-transform: none; }
+.team-result__text { max-width: 68ch; color: var(--text-1); font: var(--type-read); letter-spacing: var(--track-read); white-space: pre-wrap; overflow-wrap: anywhere; }
+.team__toggle { display: inline-flex; align-items: center; gap: 6px; justify-self: start; min-height: 28px; padding: 0 8px; margin-left: -8px; border-radius: var(--radius-row); color: var(--text-3); font: var(--type-ui); }
+.team__toggle:hover { background: var(--fill-quiet); color: var(--text-1); }
+.team__chevron { color: var(--icon-3); transition: transform var(--dur-surface) var(--ease-expand); }
+.team__toggle[aria-expanded="true"] .team__chevron { transform: rotate(90deg); }
+.team__steps { display: grid; gap: 8px; }
+.team__steps[hidden] { display: none; }
+.team__note { color: var(--text-3); font: var(--type-small); }
+.team-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.team-step { display: grid; gap: 2px; padding-left: 12px; box-shadow: inset 1px 0 0 var(--hairline); }
+.team-step[data-state="failed"] { box-shadow: inset 2px 0 0 var(--danger); }
+.team-step__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.team-step__title { color: var(--text-2); font-weight: 500; }
+.team-step__state { color: var(--text-3); font: var(--type-small); white-space: nowrap; }
+.team-step__summary { max-width: 68ch; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 420px) { .team-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .team__chevron { transition: none; } }
+:root[data-reduced-motion="true"] .team__chevron { transition: none; }
