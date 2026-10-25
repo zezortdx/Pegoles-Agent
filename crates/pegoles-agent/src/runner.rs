@@ -313,18 +313,31 @@ impl Run<'_> {
                 .cancelled()
                 .unwrap_or((RunEnd::Failed, format!("The computer is not ready: {e}")));
         }
-        let mut generation = match self.computer.await_control(self.cancel) {
-            Ok(g) => g,
-            Err(e) => return self.cancelled().unwrap_or((RunEnd::Failed, e)),
-        };
-        self.computer.bind_control(generation);
-        let first = match self.computer.observe(self.task, self.cancel) {
-            Ok(shot) => shot,
-            Err(e) => {
-                return self
-                    .cancelled()
-                    .unwrap_or((RunEnd::Failed, format!("Could not see the screen: {e}")))
+        let (mut generation, first) = loop {
+            if let Some(end) = self.cancelled() {
+                return end;
             }
+            if self.started.elapsed() > self.limits.max_duration {
+                return self.time_budget_spent();
+            }
+            let generation = match self.computer.await_control(self.cancel) {
+                Ok(g) => g,
+                Err(e) => return self.cancelled().unwrap_or((RunEnd::Failed, e)),
+            };
+            self.computer.bind_control(generation);
+            let first = match self.computer.observe(self.task, self.cancel) {
+                Ok(shot) => shot,
+                Err(_) if self.computer.control_generation() != generation => continue,
+                Err(e) => {
+                    return self
+                        .cancelled()
+                        .unwrap_or((RunEnd::Failed, format!("Could not see the screen: {e}")))
+                }
+            };
+            if self.computer.control_generation() != generation {
+                continue;
+            }
+            break (generation, first);
         };
         if let Err(e) = planner.start(objective, &first) {
             return (RunEnd::Failed, planner_failure(&e));
@@ -609,6 +622,8 @@ mod tests {
         observed: Mutex<u32>,
         epoch: std::sync::atomic::AtomicU64,
         intervene_on_observation: Option<u32>,
+        return_stale_observation: bool,
+        observation_error: Option<String>,
         prepare_error: Option<String>,
         deny_clicks: bool,
         cancel_on_act: Option<CancellationToken>,
@@ -636,8 +651,14 @@ mod tests {
         fn observe(&self, _t: TaskId, _c: &CancellationToken) -> Result<Screenshot, String> {
             let mut observed = self.observed.lock().unwrap();
             *observed += 1;
+            if let Some(error) = &self.observation_error {
+                return Err(error.clone());
+            }
             if self.intervene_on_observation == Some(*observed) {
                 self.epoch.fetch_add(2, Ordering::SeqCst);
+                if self.return_stale_observation {
+                    return Ok(Screenshot { width: 1, ..shot() });
+                }
                 return Err("human took and returned control before capture".into());
             }
             Ok(shot())
@@ -823,6 +844,91 @@ mod tests {
             assert_eq!(report.summary, "fresh");
             assert!(c.inner.acted.lock().unwrap().is_empty());
         }
+    }
+
+    #[derive(Default)]
+    struct StartupPlanner {
+        start_widths: Vec<u32>,
+        refreshes: usize,
+    }
+    impl Planner for StartupPlanner {
+        fn name(&self) -> String {
+            "startup probe".into()
+        }
+        fn start(&mut self, objective: &str, screen: &Screenshot) -> Result<(), PlannerError> {
+            assert_eq!(objective, "original startup objective");
+            self.start_widths.push(screen.width);
+            Ok(())
+        }
+        fn refresh(&mut self, _: Vec<CallOutcome>, _: &Screenshot) -> Result<(), PlannerError> {
+            self.refreshes += 1;
+            Ok(())
+        }
+        fn next(
+            &mut self,
+            _: Vec<CallOutcome>,
+            _: &CancellationToken,
+        ) -> Result<PlannerTurn, PlannerError> {
+            Ok(PlannerTurn::Done {
+                notes: vec![],
+                summary: "fresh startup".into(),
+            })
+        }
+    }
+    fn check_initial_observation_intervention(stale: bool) {
+        let computer = FakeComputer {
+            intervene_on_observation: Some(1),
+            return_stale_observation: stale,
+            ..Default::default()
+        };
+        let mut planner = StartupPlanner::default();
+        let cancel = CancellationToken::new();
+        let report = run_task(
+            TaskId::new(),
+            "original startup objective",
+            &mut planner,
+            &computer,
+            &RunLimits::default(),
+            &cancel,
+        );
+        assert_eq!(report.end, RunEnd::Completed);
+        assert_eq!(
+            planner.start_widths,
+            vec![100],
+            "start only once with the fresh observation"
+        );
+        assert_eq!(planner.refreshes, 0, "no premature start on a stale frame");
+        assert_eq!(*computer.observed.lock().unwrap(), 3);
+        assert!(!cancel.is_cancelled());
+        assert!(computer.acted.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn initial_observation_epoch_rejection_retries_before_planner_start() {
+        check_initial_observation_intervention(false);
+    }
+    #[test]
+    fn initial_observation_stale_success_is_discarded_before_planner_start() {
+        check_initial_observation_intervention(true);
+    }
+    #[test]
+    fn initial_observation_real_failure_does_not_retry_or_start_the_planner() {
+        let computer = FakeComputer {
+            observation_error: Some("guest unavailable".into()),
+            ..Default::default()
+        };
+        let mut planner = StartupPlanner::default();
+        let report = run_task(
+            TaskId::new(),
+            "original startup objective",
+            &mut planner,
+            &computer,
+            &RunLimits::default(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(report.end, RunEnd::Failed);
+        assert!(report.summary.contains("guest unavailable"));
+        assert!(planner.start_widths.is_empty());
+        assert_eq!(*computer.observed.lock().unwrap(), 1);
     }
 
     #[test]
