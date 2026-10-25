@@ -20,6 +20,7 @@ pub mod local;
 pub mod planner;
 pub mod runner;
 pub mod scripted;
+pub mod team;
 
 pub use core_computer::{CoreAccess, CoreComputer};
 pub use planner::{
@@ -27,3 +28,4 @@ pub use planner::{
 };
 pub use runner::{run_task, AgentComputer, RunEnd, RunLimits, RunReport};
 pub use scripted::ScriptedPlanner;
+pub use team::{TeamConfig, TeamLimits, TeamPlanner, TeamRefusal};

@@ -108,6 +108,13 @@ pub trait Planner: Send {
     /// Human-readable planner name for logs ("claude-opus-5", "script").
     fn name(&self) -> String;
 
+    /// Whether this planner sends task text and screenshots to a cloud
+    /// API. Fails closed: a planner is local unless it says otherwise.
+    /// Experimental team mode refuses planners that answer `false`.
+    fn is_cloud(&self) -> bool {
+        false
+    }
+
     /// Begin a task: the user's objective (the only authoritative
     /// instruction) and the first observation of the screen.
     fn start(&mut self, objective: &str, screen: &Screenshot) -> Result<(), PlannerError>;

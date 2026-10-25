@@ -290,6 +290,10 @@ impl Planner for AnthropicPlanner {
         self.cfg.model.clone()
     }
 
+    fn is_cloud(&self) -> bool {
+        true
+    }
+
     fn start(&mut self, objective: &str, screen: &Screenshot) -> Result<(), PlannerError> {
         self.objective = objective.to_string();
         self.screen = (screen.width.max(1), screen.height.max(1));

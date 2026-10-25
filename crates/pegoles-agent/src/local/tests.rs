@@ -542,3 +542,20 @@ fn intervention_refresh_preserves_local_objective_and_successful_prefix() {
     assert!(planner.pending.is_none());
     assert!(!planner.need_observe);
 }
+
+#[test]
+fn pegoles_local_is_never_a_cloud_planner() {
+    // Team mode refuses planners that do not answer `is_cloud() == true`;
+    // the local model must never be one.
+    let model = ScriptedModel {
+        replies: Default::default(),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        loads: Arc::new(Mutex::new(0)),
+        cancel_on_generate: None,
+    };
+    let planner = LocalPlanner::new(
+        LocalConfig::for_model(model_spec(ModelFamily::Qwen3Vl)),
+        Arc::new(Mutex::new(Box::new(model))),
+    );
+    assert!(!planner.is_cloud());
+}
