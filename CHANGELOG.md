@@ -8,7 +8,36 @@ the tag (the release workflow refuses a mismatch).
 
 ## [Unreleased]
 
-Nothing yet.
+Pegoles Agent 2.0 series (six stacked branches, see
+`docs/superpowers/plans/2026-10-23-agent-2.0-series.md`).
+
+### Added
+
+- **Living avatar.** The presence mark is an animated SVG avatar ported
+  from bloub (MIT, credited in `THIRD_PARTY_NOTICES.md`). It only shows
+  states the Core really emits, pauses when hidden and is static under
+  reduced motion.
+- **Make your agent.** Shape, neutral colour, expression and name, saved
+  through a validated Core preference store; desktop copy is localized
+  (English default, Brazilian Portuguese).
+- **Task history and artifacts.** Bounded, content-minimized task history
+  persisted in the app data directory, interrupted-run recovery, and safe
+  text/table previews of task artifacts.
+- **Human approvals.** `RequireApproval` actions wait for an app-only
+  Approve once / Deny decision with a finite deadline; expiry, replay and
+  model or guest self-approval fail closed.
+- **Human takeover.** Take control of the computer: bounded frames through
+  the Core, typed human input only as `ControlOwner::User`, agent planning
+  suspended while you hold control, and the task preserved for resume.
+- **Team mode (experimental, off by default).** A `TeamPlanner` runs
+  captain, researcher, executor, critic and captain synthesis in order,
+  with the same policy and executor authority. Cloud only, behind explicit
+  native consent; it refuses the local planner.
+
+### Not yet verified
+
+- Apple silicon hardware acceptance, native prompts and cloud inference
+  for approvals, takeover and team mode (see `docs/RELEASE_GATES.md`).
 
 ## [0.1.0] - 2026-09-27
 
