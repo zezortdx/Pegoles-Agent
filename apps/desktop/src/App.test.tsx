@@ -96,6 +96,8 @@ describe("desktop shell", () => {
     fireEvent.change(composer(), { target: { value: "Keep my <draft> original" } });
     fireEvent.click(await within(sidebar()).findByRole("button", { name: /Original <task> text/ }));
     expect(await screen.findByRole("heading", { level: 1, name: working.title })).toBeTruthy();
+    // Let the outgoing home composer finish its exit before opening settings.
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "New task" })).toBeNull());
     fireEvent.click(within(sidebar()).getByRole("button", { name: "Settings" }));
     fireEvent.click(await screen.findByRole("button", { name: "Make your agent" }));
     const dialog = await screen.findByRole("dialog", { name: "Make your agent" });
@@ -113,11 +115,13 @@ describe("desktop shell", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Inteligência" })).toBeTruthy();
     expect(screen.getByText("Recomendado")).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Principal" })).toBeTruthy();
-    expect((screen.getByRole("textbox", { name: "Nova tarefa" }) as HTMLTextAreaElement).value).toBe("Keep my <draft> original");
     fireEvent.click(within(screen.getByRole("complementary", { name: "Barra lateral" })).getByRole("button", { name: /Original <task> text/ }));
     expect(await screen.findByRole("heading", { level: 1, name: working.title })).toBeTruthy();
     expect(document.body.textContent).toContain("Keep this model <text> original");
     expect(document.body.textContent).toContain("Clicando");
+    // The composer belongs to Home, not Settings or a task's exiting view.
+    fireEvent.keyDown(window, { key: "n", metaKey: true });
+    expect((await screen.findByRole("textbox", { name: "Nova tarefa" }) as HTMLTextAreaElement).value).toBe("Keep my <draft> original");
     expect(api.cancelTask).not.toHaveBeenCalled();
     expect(api.runTask).not.toHaveBeenCalled();
   });
