@@ -28,6 +28,7 @@ export interface IntelligencePatch {
   readonly models?: readonly LocalModelInfo[];
   readonly local?: Partial<LocalRuntime>;
   readonly anthropic?: Partial<ModelSettings>;
+  readonly team?: boolean;
 }
 
 export function intelligenceOf(patch: IntelligencePatch = {}): Intelligence {
@@ -36,6 +37,7 @@ export function intelligenceOf(patch: IntelligencePatch = {}): Intelligence {
     provider: patch.provider ?? "local",
     local_model: patch.local_model ?? models[0].id,
     anthropic: { ...NO_KEY, ...patch.anthropic },
+    team: { enabled: patch.team ?? false },
     local: {
       runtime_ready: true, runtime_problem: null, loaded_model: null, worker_footprint_bytes: null,
       default_model: MAI.id, models, install: null, chip: "Apple M3 Pro", memory_bytes: 18 * 2 ** 30, apple_silicon: true,

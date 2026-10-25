@@ -6,6 +6,7 @@ import { intelligenceProblem, type IntelligenceState } from "../state/useIntelli
 import { localView } from "../state/localModel";
 import { AnthropicControls, anthropicProblem, PRIVACY_NOTE } from "./AnthropicControls";
 import { LocalAdvanced, LocalStateRow, LocalStatus } from "./LocalModel";
+import { TeamModeRow } from "./TeamModeRow";
 import { Row } from "./settingsParts";
 
 const LOCAL_HINT = "Free · Private · Runs on this Mac";
@@ -95,7 +96,8 @@ export function IntelligenceSection({ id, native, intelligence, model }: Intelli
   const provider = current?.provider ?? null;
   const locked = !current || intelligence.pending !== null;
   const cloud = model.settings ?? current?.anthropic ?? null;
-  const problem = intelligenceProblem(intelligence.error);
+  const problem = intelligenceProblem(intelligence.error, ["load", "provider", "install", "cancel", "remove"]);
+  const teamProblem = intelligenceProblem(intelligence.error, ["team"]);
   const cloudProblem = provider === "anthropic" ? anthropicProblem(model) : null;
 
   const choose = (next: Provider) => {
@@ -135,7 +137,10 @@ export function IntelligenceSection({ id, native, intelligence, model }: Intelli
           title="Anthropic" hint={t(ANTHROPIC_HINT)}
           status={(statusId) => <span id={statusId} className="setting__muted">{cloud?.configured ? t("Key connected") : t("No key")}</span>} />
         {provider === "anthropic" && <AnthropicControls model={model} onSaved={setKeySaved} />}
+        <TeamModeRow enabled={current?.team.enabled ?? false} available={provider === "anthropic"}
+          busy={locked} waiting={intelligence.pending === "team"} onChange={(next) => void intelligence.setTeamMode(next)} />
       </div>
+      {teamProblem && <p className="settings__problem" role="alert">{teamProblem}</p>}
       {cloudProblem
         ? <p className="settings__problem" role="alert">{cloudProblem}</p>
         : keySaved && provider === "anthropic" && <p className="settings__ok" role="status">{t("Key saved to your Keychain.")}</p>}

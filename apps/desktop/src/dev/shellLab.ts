@@ -8,7 +8,7 @@ import { DEFAULT_PREFERENCES, type Preferences } from "../preferences/types";
  * reachable from production code paths.
  */
 import {
-  MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type AgentTask, type Intelligence, type LocalModelInfo, type ModelInstallStatus,
+  MODEL_INSTALL_EVENT, type AgentEvent, type AgentMessageKind, type TeamStatus, type TeamStepId, type AgentTask, type Intelligence, type LocalModelInfo, type ModelInstallStatus,
   type ModelSettings, type Provider, type StatusPayload,
 } from "../lib/tauri";
 import { installActive } from "../state/localModel";
@@ -18,7 +18,7 @@ export const SHELL_LAB_MARKER = "__PEGOLES_SHELL_LAB__";
 /** Pegoles Local's states (append `/settings` to land on Settings, e.g. `#/dev/shell/local-downloading/settings`). */
 type IntelligenceScenario =
   | "local-setup" | "local-downloading" | "local-verifying" | "local-ready" | "local-running" | "local-failed"
-  | "local-paused" | "local-damaged" | "local-unsupported" | "cloud";
+  | "local-paused" | "local-damaged" | "local-unsupported" | "cloud" | "team" | "team-done";
 
 type Scenario =
   | "home" | "pending" | "ready" | "thinking" | "running" | "files" | "computer" | "user" | "approval"
@@ -53,6 +53,10 @@ function action(taskId: string, type: string, extra: Record<string, unknown>, ag
     type: "action_completed", request,
     result: { action_id: request.action_id, success: outcome === "executed", outcome, message: "", duration_ms: 40 + (actionSeq % 7) * 23 },
   } as AgentEvent];
+}
+
+function teamStep(taskId: string, step: TeamStepId, status: TeamStatus, summary: string, ago: number): AgentEvent {
+  return { type: "team_progress", task_id: taskId, step, status, summary, at: iso(ago) };
 }
 
 function note(taskId: string, kind: AgentMessageKind, text: string, ago: number): AgentEvent {
@@ -152,6 +156,28 @@ function world(scenario: Scenario): World {
     };
     case "local-ready": case "local-running":
       return { status: { ...baseStatus, ...running }, tasks: history, events: [] };
+    case "team": return {
+      status: { ...baseStatus, ...running, provider: "anthropic", viewport_state: "agent_active", control_owner: "agent", agent_busy: true, active_task: "t1" },
+      tasks: [...history, current("running", "Compare the pricing of the three most popular note-taking apps")],
+      events: [
+        teamStep("t1", "captain_plan", "working", "", 80), teamStep("t1", "captain_plan", "done", "1. Open Firefox\n2. Search each app’s pricing\n3. Write the comparison", 76),
+        teamStep("t1", "research", "working", "", 75), teamStep("t1", "research", "done", "Firefox is on the desktop; no other windows are open.", 70),
+        teamStep("t1", "execute", "working", "", 69), ...action("t1", "observe_screen", {}, 66), ...action("t1", "click", { x: 0.5, y: 0.08 }, 2, "running"),
+      ],
+    };
+    case "team-done": return {
+      status: { ...baseStatus, ...running, provider: "anthropic" },
+      tasks: [...history, { ...current("completed", "Compare the pricing of the three most popular note-taking apps"), updated_at: iso(5) }],
+      events: [
+        teamStep("t1", "captain_plan", "working", "", 90), teamStep("t1", "captain_plan", "done", "1. Open Firefox\n2. Search each app’s pricing\n3. Write the comparison", 86),
+        teamStep("t1", "research", "working", "", 85), teamStep("t1", "research", "done", "Firefox is on the desktop; no other windows are open.", 80),
+        teamStep("t1", "execute", "working", "", 79), ...action("t1", "observe_screen", {}, 70), ...action("t1", "write_file", { path: "/home/pegoles/workspace/pricing.md", content: "…" }, 30),
+        teamStep("t1", "execute", "done", "Wrote pricing.md with the three plans.", 20),
+        teamStep("t1", "critique", "working", "", 19), teamStep("t1", "critique", "done", "PASS: the file lists all three apps with monthly prices.", 14),
+        teamStep("t1", "synthesis", "working", "", 13), teamStep("t1", "synthesis", "done", "Notion Plus is $10, Obsidian Sync is $4 and Evernote Personal is $15 a month; the comparison is in pricing.md.", 7),
+        note("t1", "summary", "Notion Plus is $10, Obsidian Sync is $4 and Evernote Personal is $15 a month; the comparison is in pricing.md.", 6),
+      ],
+    };
     case "cloud":
       return { status: { ...baseStatus, provider: "anthropic" }, tasks: [...history, current("pending")], events: [{ type: "task_created", task_id: "t1", title: "Find duplicate files in Downloads and clean them up", at: iso(95) }] };
     default:
@@ -184,6 +210,8 @@ interface LocalWorld {
   runtimeReady: boolean;
   loaded: string | null;
   footprint: number | null;
+  /** Experimental team mode, as a person would have switched it on. */
+  team?: boolean;
   /** Bytes per tick of the scenario's own download (a new setup runs at DOWNLOAD_TICKS). */
   rate: number;
 }
@@ -210,7 +238,7 @@ function localWorld(scenario: Scenario, ready: boolean): LocalWorld {
     case "local-paused": return { ...lw, models: models({ state: "partial", partial_bytes: Math.round(size * 0.37) }), install: job("cancelled", 0) };
     case "local-damaged": return { ...lw, models: models({ state: "invalid", invalid_reason: "model.safetensors has the wrong size" }) };
     case "local-unsupported": return { ...lw, appleSilicon: false, runtimeReady: false };
-    case "cloud": return { ...lw, provider: "anthropic" };
+    case "cloud": case "team": case "team-done": return { ...lw, provider: "anthropic", team: scenario !== "cloud" };
     default: return lw;
   }
 }
@@ -296,7 +324,7 @@ export function installShellLab(hash: string): void {
   };
   readiness();
   const intelligence = (): Intelligence => ({
-    provider: lw.provider, local_model: lw.localModel, anthropic: model,
+    provider: lw.provider, local_model: lw.localModel, anthropic: model, team: { enabled: !!lw.team && lw.provider === "anthropic" },
     local: {
       runtime_ready: lw.runtimeReady && lw.appleSilicon,
       runtime_problem: lw.appleSilicon ? (lw.runtimeReady ? null : "local model runtime is not installed: the Pegoles Local runtime is not set up on this Mac") : "Pegoles Local needs a Mac with Apple silicon.",
@@ -369,6 +397,7 @@ export function installShellLab(hash: string): void {
   let preferences: Preferences = structuredClone(DEFAULT_PREFERENCES);
   const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
     get_status: () => state.status,
+    get_approvals: () => ({ ask_before_input: false, pending: [] }),
     get_preferences: () => structuredClone(preferences),
     set_preferences: (args) => { preferences = structuredClone(args.preferences as Preferences); return structuredClone(preferences); },
     list_events: () => state.events,
@@ -384,8 +413,15 @@ export function installShellLab(hash: string): void {
     get_intelligence: () => { readiness(); return intelligence(); },
     set_provider: (args) => {
       lw.provider = args.provider === "anthropic" ? "anthropic" : "local";
+      if (lw.provider === "local") lw.team = false;
       if (typeof args.localModel === "string") lw.localModel = args.localModel;
       readiness();
+      return intelligence();
+    },
+    // Core confirms in a macOS dialog; the lab stands in for a person who says yes.
+    set_team_mode: (args) => {
+      if (args.enabled === true && lw.provider !== "anthropic") throw "Team mode needs a cloud model. Choose Anthropic first; it never runs on Pegoles Local.";
+      lw.team = args.enabled === true;
       return intelligence();
     },
     install_local_model: (args) => {
