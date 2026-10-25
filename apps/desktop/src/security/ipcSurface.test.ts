@@ -17,6 +17,11 @@ const product = import.meta.glob<string>(
 );
 
 describe("IPC surface of the product", () => {
+  it("history reads accept only a task identifier with no host path or URL", async () => {
+    vi.mocked(invoke).mockClear(); await api.getHistoryStatus(); await api.getTaskHistory("task-id");
+    expect(vi.mocked(invoke).mock.calls).toEqual([["get_history_status"],["get_task_history", {taskId:"task-id"}]]);
+  });
+
   it("preferences expose only fixed get/set payloads, without paths or styling parameters", async () => {
     vi.mocked(invoke).mockClear();
     await api.getPreferences();

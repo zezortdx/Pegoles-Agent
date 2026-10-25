@@ -31,8 +31,8 @@ export type StartState = "needs-model" | "ready" | "busy";
 export type ModelNeed = "local-model" | "cloud-key";
 
 export const NEEDS_MODEL_DETAIL: Record<ModelNeed, CopyKey> = {
-  "local-model": "Pegoles needs its local model to work on tasks. Set up Pegoles Local (free, runs on this Mac), or connect a cloud model in Settings. The task is kept while the app is open, and its computer still works.",
-  "cloud-key": "Cloud mode needs an Anthropic API key. Add one in Settings, or switch back to Pegoles Local (free, runs on this Mac). The task is kept while the app is open, and its computer still works.",
+  "local-model": "Pegoles needs its local model to work on tasks. Set up Pegoles Local (free, runs on this Mac), or connect a cloud model in Settings. Task history is stored locally when available, and its computer still works.",
+  "cloud-key": "Cloud mode needs an Anthropic API key. Add one in Settings, or switch back to Pegoles Local (free, runs on this Mac). Task history is stored locally when available, and its computer still works.",
 };
 
 export interface TaskActivity {

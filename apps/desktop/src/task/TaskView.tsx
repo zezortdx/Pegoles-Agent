@@ -10,6 +10,7 @@ import { canSetUp, progressText, sentence, setupAction, type LocalView } from ".
 import { duration, ease } from "../lib/motion";
 import { plural, timeOf } from "../artifacts/format";
 import { LocalProgress } from "../intelligence/LocalProgress";
+import { TaskArtifacts } from "../artifacts/TaskArtifacts";
 import { Narrative } from "./Narrative";
 
 export interface TaskViewProps {
@@ -21,6 +22,8 @@ export interface TaskViewProps {
   readonly animated: boolean;
   /** Just handed over from Home. */
   readonly arriving: boolean;
+  readonly historyEnabled?: boolean;
+  readonly historyRevision?: string;
   readonly headingRef?: Ref<HTMLHeadingElement>;
   /** The objective is on screen (the toolbar shows the title only once it isn't). */
   readonly onHeadingVisible: (visible: boolean) => void;
@@ -58,7 +61,7 @@ const NOT_STARTED_BODY = {
   ready: "Pegoles will do this on its own computer once you start it.",
   busy: "Pegoles is working on another task. It works on one at a time, so start this one when that one ends.",
 } as const;
-const PREPARING_BODY = "Pegoles is getting its local model ready on this Mac. Start this task once it’s ready; it’s kept while the app is open.";
+const PREPARING_BODY = "Pegoles is getting its local model ready on this Mac. Start this task once it’s ready. Tasks closed before completion return as cancelled.";
 
 /** The set-up button's words on a task: the product's name first, since the task doesn't say where it is. */
 function setupLabel(view: LocalView): string {
@@ -171,6 +174,7 @@ export function TaskView(props: TaskViewProps) {
               onStart={props.onStart} starting={props.starting} startError={props.startError} local={props.local} />
           )}
           <Narrative items={items} animated={props.animated} live={activity.live} failedAt={task.status === "failed" ? activity.detail : undefined} />
+          <TaskArtifacts taskId={task.id} revision={props.historyRevision ?? task.updated_at} enabled={props.historyEnabled ?? false} />
           {waitingFirst && <p className="narrative__waiting"><span className="narrative__pulse pg-work-anim" aria-hidden="true" />{t("Waiting for the first action")}</p>}
         </div>
       </div>

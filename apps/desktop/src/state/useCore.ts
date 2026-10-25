@@ -3,7 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isEffectsTier, type EffectsTier } from "@pegoles/ui";
 import { humanizeError, type ErrorScope, type HumanError } from "./errors";
-import { api, type AgentEvent, type AgentTask, type HostCapabilities, type StatusPayload } from "../lib/tauri";
+import { api, type AgentEvent, type AgentTask, type HostCapabilities, type StatusPayload, type HistoryStatus } from "../lib/tauri";
 
 const POLL_MS = 2500;
 const CORE_EVENTS = ["pegoles://event", "pegoles://display-activity", "pegoles://image-progress"] as const;
@@ -22,6 +22,7 @@ export interface Core {
   readonly events: AgentEvent[];
   readonly tasks: AgentTask[];
   readonly host: HostCapabilities | null;
+  readonly historyStatus?: HistoryStatus | null;
   /** Effects tier Core recommends for this machine. */
   readonly recommendedTier: EffectsTier;
   readonly busy: Busy;
@@ -44,6 +45,7 @@ export function useCore(): Core {
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus | null>(null);
   const [host, setHost] = useState<HostCapabilities | null>(null);
   const [connected, setConnected] = useState(false);
   const [recommendedTier, setRecommendedTier] = useState<EffectsTier>("reduced");
@@ -66,9 +68,9 @@ export function useCore(): Core {
     if (flight.current) { again.current = true; return flight.current; }
     const pending = (async () => {
       try {
-        const [nextStatus, nextEvents, nextTasks] = await Promise.all([api.getStatus(), api.listEvents(), api.listTasks()]);
+        const [nextStatus, nextEvents, nextTasks, nextHistory] = await Promise.all([api.getStatus(), api.listEvents(), api.listTasks(), api.getHistoryStatus()]);
         if (!mounted.current) return;
-        setStatus(nextStatus); setEvents(nextEvents); setTasks(nextTasks); setConnected(true);
+        setStatus(nextStatus); setEvents(nextEvents); setTasks(nextTasks); setHistoryStatus(nextHistory); setConnected(true);
         if (!hostRead.current) {
           hostRead.current = true;
           void api.getHostCapabilities().then((value) => { if (mounted.current) setHost(value); })
@@ -134,5 +136,5 @@ export function useCore(): Core {
     setErrors((previous) => (previous[scope] ? { ...previous, [scope]: null } : previous));
   }, []);
 
-  return { native, connected, status, events, tasks, host, recommendedTier, busy, errors, refresh, run, dismiss, report };
+  return { native, connected, status, events, tasks, host, historyStatus, recommendedTier, busy, errors, refresh, run, dismiss, report };
 }

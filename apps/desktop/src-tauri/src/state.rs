@@ -15,6 +15,12 @@ use pegoles_protocol::AgentEvent;
 use std::collections::VecDeque;
 use tokio::sync::broadcast::{self, error::TryRecvError};
 
+#[derive(serde::Serialize)]
+pub struct HistoryStatus {
+    pub read_only: bool,
+    pub previous_task_ids: Vec<pegoles_protocol::TaskId>,
+}
+
 pub const EVENT_LOG_CAP: usize = 200;
 
 pub struct AppState {
@@ -23,6 +29,10 @@ pub struct AppState {
     pub bus: EventBus,
     history_rx: broadcast::Receiver<AgentEvent>,
     pub event_log: VecDeque<AgentEvent>,
+    history: pegoles_core::history::History,
+    history_store: Option<pegoles_core::history::HistoryStore>,
+    history_read_only: bool,
+    previous_task_ids: Vec<pegoles_protocol::TaskId>,
     /// Events the history subscriber missed because more than the bus
     /// capacity were published between two commands (diagnostics; the
     /// live stream still delivered them).
@@ -49,9 +59,12 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        Self::with_registry(|bus| {
-            ComputerRegistry::with_backend_kind(bus.clone(), default_backend_kind())
-        })
+        Self::with_history_store(
+            |bus| ComputerRegistry::with_backend_kind(bus.clone(), default_backend_kind()),
+            pegoles_core::history::HistoryStore::new(
+                pegoles_computer::pegoles_data_dir().join("history"),
+            ),
+        )
     }
 
     /// Build around a caller-made registry (tests: Mock + temp dirs).
@@ -65,6 +78,10 @@ impl AppState {
             bus,
             history_rx,
             event_log: VecDeque::new(),
+            history: pegoles_core::history::History::default(),
+            history_store: None,
+            history_read_only: false,
+            previous_task_ids: Vec::new(),
             history_dropped: 0,
             preparing_image: false,
             image_stage: None,
@@ -78,18 +95,76 @@ impl AppState {
         }
     }
 
+    /// Explicit test injection. `with_registry` alone never opens app data.
+    pub fn with_history_store(
+        make: impl FnOnce(&EventBus) -> ComputerRegistry,
+        store: pegoles_core::history::HistoryStore,
+    ) -> Self {
+        let mut state = Self::with_registry(make);
+        match store.read(chrono::Utc::now()) {
+            Ok(history) => {
+                if state.tasks.restore_history(&history.tasks()).is_ok() {
+                    state.previous_task_ids = history.tasks().iter().map(|t| t.id).collect();
+                    // Persist recovery and retention at startup as well: expired
+                    // private data must leave disk even if no new task is made.
+                    if std::fs::symlink_metadata(store.path()).is_ok()
+                        && store.write(&history, chrono::Utc::now()).is_err()
+                    {
+                        state.history_read_only = true;
+                    }
+                    state.history = history;
+                } else {
+                    state.history_read_only = true;
+                }
+            }
+            Err(_) => state.history_read_only = true,
+        }
+        state.history_store = Some(store);
+        state
+    }
+    pub fn history_status(&self) -> HistoryStatus {
+        HistoryStatus {
+            read_only: self.history_read_only,
+            previous_task_ids: self.previous_task_ids.clone(),
+        }
+    }
+    pub fn task_history(
+        &self,
+        id: pegoles_protocol::TaskId,
+    ) -> Option<pegoles_core::history::TaskHistory> {
+        self.history.detail(id).cloned()
+    }
+
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<AgentEvent> {
         self.bus.subscribe()
     }
 
     /// Move everything published since the last call into history.
-    /// Never blocks.
+    /// Called under the app lock on a blocking worker; bounded disk I/O only.
     pub fn sync_history(&mut self) {
+        let before = self.history.clone();
+        self.history.update_tasks(&self.tasks.list());
         loop {
             match self.history_rx.try_recv() {
-                Ok(event) => self.log(event),
-                Err(TryRecvError::Lagged(missed)) => self.history_dropped += missed,
+                Ok(event) => {
+                    self.history.record(&event);
+                    self.log(event);
+                }
+                Err(TryRecvError::Lagged(missed)) => {
+                    self.history_dropped += missed;
+                    self.history.block_outputs();
+                }
                 Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => break,
+            }
+        }
+        if self.history.retain(chrono::Utc::now()).is_err() {
+            self.history_read_only = true;
+        }
+        if self.history != before && !self.history_read_only {
+            if let Some(store) = &self.history_store {
+                if store.write(&self.history, chrono::Utc::now()).is_err() {
+                    self.history_read_only = true;
+                }
             }
         }
     }
@@ -119,6 +194,179 @@ mod tests {
         AppState::with_registry(|bus| {
             ComputerRegistry::with_dirs(bus.clone(), BackendKind::Mock, data)
         })
+    }
+
+    #[test]
+    fn staging_recovery_failure_exposes_read_only_without_replacing_canonical() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "pegoles-history-stage-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = pegoles_core::history::HistoryStore::new(dir.clone());
+        store
+            .write(
+                &pegoles_core::history::History::default(),
+                chrono::Utc::now(),
+            )
+            .unwrap();
+        let canonical = std::fs::read(store.path()).unwrap();
+        std::fs::create_dir(dir.join(".tasks.tmp")).unwrap();
+        let mut state = AppState::with_history_store(
+            |bus| {
+                ComputerRegistry::with_dirs(bus.clone(), BackendKind::Mock, dir.join("computers"))
+            },
+            store,
+        );
+        assert!(state.history_status().read_only);
+        state.tasks.submit_task("New task in memory").unwrap();
+        state.sync_history();
+        assert_eq!(std::fs::read(dir.join("tasks.json")).unwrap(), canonical);
+        assert!(dir.join(".tasks.tmp").is_dir());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_removes_expired_records_from_disk_not_just_the_view() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "pegoles-history-age-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = pegoles_core::history::HistoryStore::new(dir.clone());
+        let mut history = pegoles_core::history::History::default();
+        let mut task = pegoles_protocol::AgentTask::new("expired private objective");
+        let old = chrono::Utc::now() - chrono::Duration::days(31);
+        task.created_at = old;
+        task.updated_at = old;
+        history.update_tasks(&[task]);
+        store.write(&history, old).unwrap();
+        let state = AppState::with_history_store(
+            |bus| {
+                ComputerRegistry::with_dirs(bus.clone(), BackendKind::Mock, dir.join("computers"))
+            },
+            store,
+        );
+        assert!(state.tasks.list().is_empty());
+        assert!(!std::fs::read_to_string(dir.join("tasks.json"))
+            .unwrap()
+            .contains("expired private objective"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_restart_recovers_without_live_events_and_with_associated_result() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "pegoles-history-app-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let build = || {
+            AppState::with_history_store(
+                |bus| {
+                    ComputerRegistry::with_dirs(
+                        bus.clone(),
+                        BackendKind::Mock,
+                        dir.join("computers"),
+                    )
+                },
+                pegoles_core::history::HistoryStore::new(dir.join("history")),
+            )
+        };
+        let mut first = build();
+        let a = first.tasks.submit_task("Make a report").unwrap();
+        first.tasks.start_task(&a.id).unwrap();
+        first.bus.publish(AgentEvent::AgentMessage {
+            task_id: a.id,
+            kind: pegoles_protocol::AgentMessageKind::Summary,
+            text: "<script>inert result</script>".into(),
+            at: chrono::Utc::now(),
+        });
+        first.sync_history();
+        let mut second = build();
+        assert_eq!(
+            second.tasks.get(&a.id).unwrap().status,
+            pegoles_protocol::TaskStatus::Cancelled
+        );
+        assert!(second.task_history(a.id).unwrap().artifact.is_some());
+        assert!(second.history_status().previous_task_ids.contains(&a.id));
+        second.sync_history();
+        assert!(second.event_log.is_empty());
+        assert!(!second.history_status().read_only);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_or_unwritable_store_is_read_only_and_never_overwritten() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "pegoles-history-bad-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tasks.json"), "original corrupt bytes").unwrap();
+        let mut state = AppState::with_history_store(
+            |bus| {
+                ComputerRegistry::with_dirs(bus.clone(), BackendKind::Mock, dir.join("computers"))
+            },
+            pegoles_core::history::HistoryStore::new(dir.clone()),
+        );
+        assert!(state.history_status().read_only);
+        state.tasks.submit_task("new task").unwrap();
+        state.sync_history();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("tasks.json")).unwrap(),
+            "original corrupt bytes"
+        );
+        std::fs::remove_file(dir.join("tasks.json")).unwrap();
+        let mut state = AppState::with_history_store(
+            |bus| {
+                ComputerRegistry::with_dirs(bus.clone(), BackendKind::Mock, dir.join("computers"))
+            },
+            pegoles_core::history::HistoryStore::new(dir.clone()),
+        );
+        std::fs::create_dir(dir.join("tasks.json")).unwrap();
+        state.tasks.submit_task("new task").unwrap();
+        state.sync_history();
+        assert!(state.history_status().read_only);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lost_sensitive_events_discard_outputs_even_when_summary_survives() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "pegoles-history-lag-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut state = mock_state(&dir);
+        let task = state.tasks.submit_task("Form task").unwrap();
+        for _ in 0..300 {
+            state.bus.publish(AgentEvent::TaskCreated {
+                task_id: task.id,
+                title: "discarded".into(),
+                at: chrono::Utc::now(),
+            });
+        }
+        state.bus.publish(AgentEvent::AgentMessage {
+            task_id: task.id,
+            kind: pegoles_protocol::AgentMessageKind::Summary,
+            text: "potential sensitive echo".into(),
+            at: chrono::Utc::now(),
+        });
+        state.sync_history();
+        assert!(state.history_dropped > 0);
+        assert!(state.task_history(task.id).unwrap().artifact.is_none());
     }
 
     #[test]

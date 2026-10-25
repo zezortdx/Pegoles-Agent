@@ -18,6 +18,7 @@ pub enum TaskStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentTask {
     pub id: TaskId,
     pub title: String,

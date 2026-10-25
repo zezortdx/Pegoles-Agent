@@ -73,13 +73,13 @@ export function SettingsView(props: SettingsViewProps) {
         </div>
       </header>
 
-      <Section id="settings-general" title={t("General")} note={t("Tasks are kept while Pegoles is open and cleared when you quit.")}>
+      <Section id="settings-general" title={t("General")} note={t("Local history keeps up to 100 tasks for 30 days when storage is available. Typed input and screenshots are excluded.")}>
         <Row label={t("New task")}><kbd className="kbd">{modifier} N</kbd></Row>
         <Row label={t("Search tasks and actions")}><kbd className="kbd">{modifier} K</kbd></Row>
         <Row label={t("Show or hide the sidebar")}><kbd className="kbd">{modifier} \</kbd></Row>
         <Row label={t("Show or hide its computer")}><kbd className="kbd">{modifier} J</kbd></Row>
         <Row label={t("Step its computer back (Full → Focus → Side → closed)")}><kbd className="kbd">Esc</kbd></Row>
-        <Row label={t("Task history")}><span className="setting__muted">{t("This session")}</span></Row>
+        <Row label={t("Task history")}><span className="setting__muted">{t("Up to 100 tasks · 30 days")}</span></Row>
         <Row label={t("Pegoles Core")}>
           <span className="setting__status"><span className="dot" data-tone={props.connected ? "done" : undefined} aria-hidden="true" />{props.connected ? t("Connected") : props.native ? t("Connecting…") : t("Desktop app required")}</span>
         </Row>

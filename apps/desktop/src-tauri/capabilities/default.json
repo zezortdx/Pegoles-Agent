@@ -31,6 +31,8 @@
     "allow-return-control",
     "allow-create-task",
     "allow-list-tasks",
+    "allow-get-history-status",
+    "allow-get-task-history",
     "allow-run-task",
     "allow-cancel-task",
     "allow-get-model-settings",

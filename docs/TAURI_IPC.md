@@ -30,14 +30,16 @@ Argument names: Tauri maps top-level JS keys from camelCase
 | `pause_computer` / `stop_computer` | — | `{ info }` — cancels any agent run first |
 | `reset_computer` | — | `{ info }` — fresh disk + EFI store from the sealed image; refused during a run |
 | `destroy_computer` | — | `{ info: null }` — removes the computer; refused during a run |
-| `list_events` | — | `AgentEvent[]` (history, oldest first, capped at 200) |
+| `list_events` | — | `AgentEvent[]` (session-only live history, oldest first, capped at 200) |
 | `read_boot_log` | — | `{ available, total_lines, tail }` |
 | `guest_info` / `guest_ping` | — | diagnostics (not used by the product UI) |
 | `get_host_capabilities`, `suggested_config`, `suggested_effects`, `accessibility_display` | … | host facts |
 | `display_set_geometry` / `display_detach` | … | native view (stub on macOS today) |
 | `take_control` / `return_control` | — | `ComputerView`; take_control cancels any agent run first |
 | `create_task` | `title` | `AgentTask` (pending) |
-| `list_tasks` | — | `AgentTask[]` |
+| `list_tasks` | — | `AgentTask[]` including retained previous tasks; recovered open tasks are cancelled |
+| `get_history_status` | — | `{ read_only: boolean, previous_task_ids: TaskId[] }`; true means disk history could not load/save and new changes are not saved |
+| `get_task_history` | `taskId` (UUID) | `TaskHistory \| null`; fixed identifier lookup, no path/URL/action arguments |
 | `run_task` | `taskId` | starts the agent on a pending task (one run at a time) |
 | `cancel_task` | `taskId` | stops the run, or cancels a pending task |
 | `get_model_settings` / `set_api_key` / `clear_api_key` / `set_model_settings` | … (Anthropic, optional) | `{ configured, key_source, model, effort, models, efforts }` — the key is never returned |
@@ -305,3 +307,40 @@ interpolated/rendered as original text, never used as a translation key or HTML.
 The named preview is a UI simulation; it never changes Core state. Saved
 expression decorates resting poses; work, blocked, offline and error states
 retain their real-state precedence and existing motion guards.
+
+
+## Bounded task history and result artifacts (Agent 2.0)
+
+Core `history.rs` projects task metadata and status transitions explicitly;
+it never serializes `AgentEvent` or `ActionRequest`. AppState syncs this
+projection after commands and agent calls on blocking workers. Production
+opens fixed `<pegoles_data_dir>/history/tasks.json`; `with_registry` is fully
+in-memory and tests inject only temporary stores with `with_history_store`.
+
+```ts
+type TaskHistory = {
+  task: AgentTask;
+  audit: { status: TaskStatus; at: string }[]; // up to 32; no diagnostic text
+  artifact: { task_id: TaskId; data:
+    | { kind: "text"; text: string }
+    | { kind: "table"; columns: string[]; rows: string[][] }
+  } | null;
+  recovered: boolean;
+  output_blocked: boolean; // privacy marker only, never approval authority
+};
+```
+
+Only the existing final `Summary` message can become the one result artifact.
+The UI labels its source as an agent summary and renders plain text/HTML table
+cells; this is neither a guest-file extraction nor a host-file viewer.
+No artifact contains a host path to open, remote URL to load, HTML renderer,
+Markdown interpreter or executor permission. Unknown task IDs return null;
+malformed UUIDs reject before the lookup. The main-window ACL grants only
+these reads; there is no webview/model history write command.
+
+The canonical JSON cap is 512 KiB. One fixed ≤512 KiB stage bounds aggregate
+snapshot bytes to 1 MiB during/interrupted replacement, plus an empty permanent
+OS-lock file. Reads/writes hold the same nonblocking OS lock before bounded,
+no-follow recovery of reserved abandoned stages; busy/invalid/unrecoverable
+stores report read-only, never cleanup an active writer. Exact item/scan limits,
+taint suppression and recovery semantics are in [PRIVACY.md](PRIVACY.md). Raw live events are not replayed on restart.

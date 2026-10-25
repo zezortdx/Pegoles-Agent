@@ -914,7 +914,31 @@ pub async fn create_task(
     .await
 }
 
-/// All tasks, oldest first.
+/// Storage health and identities recovered from a prior app session.
+#[tauri::command]
+pub async fn get_history_status(
+    state: tauri::State<'_, SharedState>,
+) -> Result<crate::state::HistoryStatus, String> {
+    with_state(state.inner().clone(), |s| {
+        s.sync_history();
+        Ok(s.history_status())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_task_history(
+    state: tauri::State<'_, SharedState>,
+    task_id: pegoles_protocol::TaskId,
+) -> Result<Option<pegoles_core::history::TaskHistory>, String> {
+    with_state(state.inner().clone(), move |s| {
+        s.sync_history();
+        Ok(s.task_history(task_id))
+    })
+    .await
+}
+
+/// All current and retained previous tasks, oldest first.
 #[tauri::command]
 pub async fn list_tasks(state: tauri::State<'_, SharedState>) -> Result<Vec<AgentTask>, String> {
     with_state(state.inner().clone(), |s| Ok(s.tasks.list())).await

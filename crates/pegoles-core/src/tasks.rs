@@ -70,6 +70,31 @@ impl TaskManager {
         Ok(self.create_task(title))
     }
 
+    /// Restore validated inert records without broadcasting live events.
+    pub fn restore_history(&mut self, tasks: &[AgentTask]) -> Result<()> {
+        let mut ids = std::collections::HashSet::new();
+        for task in tasks {
+            if normalize_task_title(&task.title)? != task.title
+                || task.updated_at < task.created_at
+                || !ids.insert(task.id)
+                || self.tasks.contains_key(&task.id)
+            {
+                return Err(CoreError::InvalidTaskHistory);
+            }
+        }
+        for task in tasks {
+            let mut task = task.clone();
+            if matches!(
+                task.status,
+                TaskStatus::Pending | TaskStatus::Running | TaskStatus::WaitingForApproval
+            ) {
+                task.status = TaskStatus::Cancelled;
+            }
+            self.tasks.insert(task.id, task);
+        }
+        Ok(())
+    }
+
     pub fn get(&self, id: &TaskId) -> Result<&AgentTask> {
         self.tasks
             .get(id)

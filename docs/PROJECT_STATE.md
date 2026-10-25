@@ -149,8 +149,10 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
 - Native VM view / human "take control" input path (embed is a stub).
 - Approval grants (`RequireApproval` is reserved; nothing produces it;
   executor fails closed).
-- Persistence of tasks/events across app restarts (the computer itself
-  resumes).
+- Raw event replay across restarts. Bounded task metadata, content-free status
+  transitions and safe text/table summary results now persist locally; open
+  tasks recover as cancelled, without automatic execution or approval.
+  Offline fixture/GUI tests cover this; installed-app restart acceptance is pending.
 - Auto-update (no updater in 0.1).
 - Linux host backend; Windows is unverified.
 - Hybrid local+cloud planner, OpenAI / Gemini / OpenAI-compatible

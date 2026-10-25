@@ -90,7 +90,8 @@ flowchart TB
   native macOS confirmation.
 - **State lives on the host, under the data directory.** Images, models,
   computers and settings live in `~/Library/Application Support/Pegoles`;
-  the model key lives in the Keychain. Task history is in memory only.
+  the model key lives in the Keychain. Bounded task metadata, status history and safe data-only summary results
+  persist under `history/tasks.json`; raw events remain in memory. See PRIVACY.md.
 - **Everything the app runs is inside the bundle.** The installed
   `Pegoles.app` carries its Python runtime, worker and helper; it never
   uses the source checkout it was built from.

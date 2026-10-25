@@ -77,6 +77,8 @@ beforeEach(() => {
   vi.spyOn(api, "getStatus").mockResolvedValue(STATUS);
   vi.spyOn(api, "listEvents").mockResolvedValue(EVENTS);
   vi.spyOn(api, "listTasks").mockResolvedValue([task]);
+  vi.spyOn(api, "getHistoryStatus").mockResolvedValue({read_only:false,previous_task_ids:[]});
+  vi.spyOn(api, "getTaskHistory").mockResolvedValue(null);
   vi.spyOn(api, "getModelSettings").mockResolvedValue(NO_KEY satisfies ModelSettings);
   vi.spyOn(api, "getIntelligence").mockResolvedValue(intelligenceOf());
   vi.spyOn(api, "getHostCapabilities").mockResolvedValue({ platform: "macos", architecture: "arm64", backend: "real", backend_available: true, backend_detail: P.img, guest_transport: "virtio_socket", guest_transport_available: true, required_setup: [P.script], supported: true });
