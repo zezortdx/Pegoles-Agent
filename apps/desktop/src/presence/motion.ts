@@ -1,13 +1,20 @@
 /**
- * Imperative reactions for the SVG renderer: custom properties written on
- * the presence root and short Web Animations. No React state, so a blink or
+ * Imperative reactions of the presence: custom properties written on the
+ * presence root and short Web Animations. No React state, so a blink or
  * a keystroke never re-renders anything. Every call is safe where the Web
  * Animations API is missing (tests): the pose still changes, only the
  * one-shot flourish is skipped.
  */
-import type { PointerPose } from "./gl/types";
 import type { Offset, Timers } from "./life";
 import type { PresenceMode } from "./modes";
+
+/** Where the person's pointer is, as an eye offset (fraction of the mark) and a tilt (degrees). */
+export interface PointerPose {
+  readonly eyeX: number;
+  readonly eyeY: number;
+  readonly pitch: number;
+  readonly yaw: number;
+}
 
 const OUT = "cubic-bezier(0.23, 1, 0.32, 1)";
 const MOVE = "cubic-bezier(0.65, 0, 0.35, 1)";

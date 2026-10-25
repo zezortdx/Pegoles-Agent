@@ -124,6 +124,13 @@ not a SaaS dashboard, chat clone, crypto dashboard or neon gaming UI.
 
 ## 2. Palette (exact)
 
+**Brand mark (official since 2026-09-27).** The logo is the white/silver
+glass ring with two eyes on black (`assets/brand/source/pegoles-mark-source.png`);
+every icon, the installer art, the README mark and the social preview are
+generated from it (`scripts/brand/`). Tiny sizes (16–32 px) use the flat
+glyph variant of the same traced geometry. Blue is not part of the logo:
+in the product it stays the activity/focus signal described below.
+
 Raw colors live in `packages/ui/src/tokens/palette.ts` (brand) and
 `tokens/signal.ts` (status hues). They are referenced **only** by semantic
 tokens; component code/CSS never contains a raw color (enforced by

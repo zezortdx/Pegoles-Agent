@@ -4,12 +4,12 @@
              --screenshot=social-preview.png social-preview.html
      Colours and mark from assets/brand (docs/DESIGN_SYSTEM.md); do not redesign. -->
 <html><head><meta charset="utf-8"><style>
-  :root { --void:#02040A; --surface:#070B14; --electric:#169CFD; --cyan:#4CCEFC; --text:#F4F7FC; --muted:#8B96A8; }
+  :root { --void:#000000; --silver:#E6E8EB; --text:#F4F7FC; --muted:#8B96A8; }
   html, body { margin:0; width:1280px; height:640px; overflow:hidden; background:var(--void); }
   body { font-family: -apple-system, "SF Pro Display", system-ui, sans-serif; color:var(--text);
          display:flex; align-items:center; position:relative; }
   .glow { position:absolute; left:-80px; top:40px; width:640px; height:560px;
-          background: radial-gradient(closest-side, rgba(22,156,253,.20), rgba(22,156,253,0) 70%); }
+          background: radial-gradient(closest-side, rgba(255,255,255,.07), rgba(255,255,255,0) 70%); }
   .mark { position:relative; width:420px; height:420px; margin-left:70px; flex:none;
           background:url("../source/pegoles-mark-source.png") center/contain no-repeat; mix-blend-mode:screen;
           -webkit-mask-image: radial-gradient(closest-side, #000 72%, transparent 100%); }
@@ -18,8 +18,8 @@
   p { font-size:31px; color:var(--muted); margin:0 0 38px; letter-spacing:-.2px; }
   p b { color:var(--text); font-weight:600; }
   .chips { display:flex; flex-wrap:wrap; gap:12px; max-width:700px; }
-  .chip { font-size:21px; font-weight:500; padding:9px 18px; border-radius:999px; color:#CFE8FF;
-          border:1.5px solid rgba(22,156,253,.55); background:rgba(22,156,253,.08); }
+  .chip { font-size:21px; font-weight:500; padding:9px 18px; border-radius:999px; color:var(--silver);
+          border:1.5px solid rgba(230,232,235,.30); background:rgba(230,232,235,.05); }
   .foot { position:absolute; right:56px; bottom:38px; font-size:20px; color:var(--muted); letter-spacing:.2px; }
 </style></head><body>
   <div class="glow"></div>
