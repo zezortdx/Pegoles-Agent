@@ -334,14 +334,42 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
                 Readiness::Waiting => std::thread::sleep(Duration::from_millis(250)),
             }
         }
-        // The run owns agent control until it ends (a human takeover
-        // revokes it and pauses the same run; see `await_control`).
-        self.access.with_core(|r, _| {
-            let mut out = Vec::new();
-            r.begin_agent_session(&mut out)
-                .map(|_| self.bind_control(r.control_generation()))
-                .map_err(|e| e.to_string())
-        })
+        // Readiness does not grant authority: a person may already own the
+        // guest, or take it between the readiness probe and acquisition.
+        loop {
+            if cancel.is_cancelled() {
+                return Err("cancelled".into());
+            }
+            let acquired = self
+                .access
+                .with_core(|r, _| -> Result<Option<u64>, String> {
+                    if cancel.is_cancelled() {
+                        return Err("cancelled".into());
+                    }
+                    if r.state() != Some(ComputerState::Running)
+                        || !r.input_available()
+                        || !r.input_status().frame_available
+                    {
+                        return Err("Computer input unavailable".into());
+                    }
+                    if r.control_owner() == ControlOwner::User {
+                        return Ok(None);
+                    }
+                    r.begin_agent_session(&mut Vec::new())
+                        .map_err(|e| e.to_string())?;
+                    Ok(Some(r.control_generation()))
+                })?;
+            if let Some(generation) = acquired {
+                self.bind_control(generation);
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    "Human control was not returned before the preparation deadline".into(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
 
     fn observe(&self, task: TaskId, cancel: &CancellationToken) -> Result<Screenshot, String> {
@@ -882,6 +910,127 @@ mod tests {
             ControlOwner::None,
             "control released"
         );
+    }
+
+    #[test]
+    fn new_task_waits_for_existing_human_session_without_locking_or_losing_stop() {
+        struct StartupProbe {
+            core: Arc<Mutex<(ComputerRegistry, TaskManager)>>,
+            probes: std::sync::atomic::AtomicUsize,
+            entered: std::sync::mpsc::Sender<()>,
+            release: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl CoreAccess for StartupProbe {
+            fn with_core<R>(
+                &self,
+                f: impl FnOnce(&mut ComputerRegistry, &mut TaskManager) -> R,
+            ) -> R {
+                let result = {
+                    let mut g = self.core.lock().unwrap();
+                    let (r, t) = &mut *g;
+                    f(r, t)
+                };
+                // Task status, lifecycle, readiness, then first acquisition attempt. The
+                // channel blocks only the test worker, never the Core lock.
+                if self
+                    .probes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    == 3
+                {
+                    self.entered.send(()).unwrap();
+                    self.release.lock().unwrap().recv().unwrap();
+                }
+                result
+            }
+        }
+        for mode in ["return", "stop", "vm_failure", "deadline"] {
+            let (core, bus, _dir) = rig();
+            let task = {
+                let mut g = core.lock().unwrap();
+                g.0.start().unwrap();
+                let m =
+                    g.0.capture_frame("human before task", &mut Vec::new())
+                        .unwrap();
+                let a = pegoles_core::human::HumanAuthority {
+                    computer_id: m.computer_id,
+                    frame_id: m.frame_id,
+                    width: m.width_px,
+                    height: m.height_px,
+                    generation: g.0.control_generation(),
+                };
+                g.0.take_snapshot_control(&a).unwrap();
+                g.1.submit_task("same startup objective").unwrap().id
+            };
+            let (entered, seen) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let mut computer = CoreComputer::new(
+                StartupProbe {
+                    core: core.clone(),
+                    probes: std::sync::atomic::AtomicUsize::new(0),
+                    entered,
+                    release: Mutex::new(released),
+                },
+                bus,
+            );
+            if mode == "deadline" {
+                computer.prepare_timeout = Duration::ZERO;
+            }
+            let cancel = CancellationToken::new();
+            let token = cancel.clone();
+            let worker = std::thread::spawn(move || {
+                let mut planner =
+                    ScriptedPlanner::new(Vec::new(), |_| Ok("resumed startup".into()));
+                run_task(
+                    task,
+                    "same startup objective",
+                    &mut planner,
+                    &computer,
+                    &RunLimits::default(),
+                    &token,
+                )
+            });
+            seen.recv_timeout(Duration::from_secs(3)).unwrap();
+            {
+                let mut g = core.try_lock().expect("startup waits without Core");
+                assert_eq!(g.0.control_owner(), ControlOwner::User);
+                assert_eq!(g.1.get(&task).unwrap().status, TaskStatus::Running);
+                match mode {
+                    "return" => {
+                        g.0.return_control().unwrap();
+                    }
+                    "stop" => {
+                        cancel.cancel();
+                        g.0.cancel_agent_input("stop");
+                    }
+                    "deadline" => {}
+                    _ => {
+                        g.0.stop().unwrap();
+                    }
+                }
+            }
+            release.send(()).unwrap();
+            let result = worker.join().unwrap();
+            assert_eq!(
+                result.end,
+                match mode {
+                    "return" => RunEnd::Completed,
+                    "stop" => RunEnd::Cancelled,
+                    _ => RunEnd::Failed,
+                },
+                "{mode}"
+            );
+            if mode == "deadline" {
+                assert!(result.summary.contains("preparation deadline"));
+            }
+            if mode == "return" {
+                assert_eq!(result.summary, "resumed startup");
+                assert!(!cancel.is_cancelled());
+                assert_eq!(
+                    core.lock().unwrap().1.get(&task).unwrap().status,
+                    TaskStatus::Completed
+                );
+            }
+        }
     }
 
     #[test]
