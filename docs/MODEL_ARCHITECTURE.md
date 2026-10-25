@@ -57,13 +57,33 @@ Nothing downstream of the planner changes.
 ### Provider selection
 
 `settings.json` (never secrets): `{"provider": "local" | "anthropic",
-"local_model": "<catalog id>", "anthropic": {"model", "effort"}}`.
+"local_model": "<catalog id>", "anthropic": {"model", "effort"},
+"team": {"enabled", "consent_version"}}` (`team` optional, default off).
 Default: `local`. A settings file from before this phase
 (`{"model","effort"}`) keeps the Anthropic choices but does not switch
 the user away from Local. OpenAI / Gemini / OpenAI-compatible providers
 are not implemented; they slot in as `Planner`s (cloud APIs) or as an
 `InferenceBackend` speaking `/v1/chat/completions` (a self-hosted
 VLM reusing the local prompts and parser).
+
+### Team mode (experimental, opt-in)
+
+`pegoles-agent/src/team` adds `TeamPlanner`, one more `Planner` that wraps
+the Anthropic planner and runs five sequential steps per task: captain plan,
+researcher, executor, critic, captain synthesis. Only the executor (the
+wrapped planner) returns `PlannerTurn::Calls`, and those pass through
+unchanged, so the runner, Core executor, policy, approvals and takeover are
+identical. The other roles are text-only `RoleModel` calls (no tools, no
+thinking, bounded reply) whose output is cleaned, bounded and published as
+`team_progress` events. `Planner::is_cloud()` (default `false`; only the
+Anthropic planner answers `true`) makes the constructor refuse local models;
+`TeamConfig` is off by default and needs the persisted, native-confirmed
+`team` setting (`{enabled, consent_version}`) in `settings.json`, which is
+dropped when the provider is Local. Budgets: 180 s per model request,
+25 min per team run, 60 executor turns; a timeout or error ends the run at
+that step and the later steps are reported as skipped. After a human
+intervention the runner drops a concluded answer and `refresh` sends the
+team back to the executor, so the critic and captain run again.
 
 ### Hybrid (prepared, not built)
 

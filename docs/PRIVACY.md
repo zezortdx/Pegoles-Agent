@@ -47,6 +47,19 @@ before switching to a cloud planner. Your key stays in the macOS
 Keychain; it is never shown back in the app, logged, sent to the local
 model, or placed in the model's context.
 
+### Team mode (experimental, off by default)
+
+Only with Anthropic chosen, and only after you turn it on and confirm a
+native macOS dialog, each task runs through a team of roles (captain,
+researcher, executor, critic, captain again) on the same cloud model. That
+is several requests per task instead of one: the objective, screenshots
+of Pegoles' computer, the executor's report and the team's own short notes
+go to Anthropic, and the API usage is higher. The roles have no tools;
+only the executor acts, through the same policy, approvals and takeover.
+The app shows each role's short status note and the final answer, never
+hidden reasoning. Pegoles Local never uses team mode; switching back to it
+turns team mode off.
+
 ## What Pegoles never does
 
 - No telemetry, analytics, crash reporting or update checks. There is no

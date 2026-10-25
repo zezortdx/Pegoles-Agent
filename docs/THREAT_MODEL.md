@@ -270,3 +270,48 @@ without TypeText; history chronological status audit handles delayed event drain
 Tests use injected native deciders, fake planners/channels and the real executor
 with Mock. Native embed, actual keyboard/VoiceOver and Apple silicon VM behavior
 remain hardware acceptance; periodic snapshots are not a native live display.
+
+### Experimental opt-in team planner
+
+Team mode is a cloud-only planner that runs captain plan, researcher,
+executor, critic and captain synthesis in sequence behind the unchanged
+`Planner` trait. It adds no host capability and no authority.
+
+- Authority: only the executor (the wrapped Anthropic planner) returns
+  `PlannerTurn::Calls`, and the team forwards them untouched, so every
+  action is still parsed into a typed `ComputerAction`, evaluated by
+  `pegoles-policy::evaluate`, dispatched by the Core executor and subject to
+  approvals (PR 4) and snapshot takeover (PR 5). The other roles are
+  text-only requests with no `tools`, no thinking and a 1024-token reply
+  cap; a reply containing a tool call is a protocol error, and role text is
+  never parsed into actions. A role therefore holds no permission, cannot
+  approve and cannot widen what the executor may do. Role and executor text is
+  hostile like any model text: it can be wrong or injected from the screen,
+  and the protection is the policy, not the prompts. The executor receives
+  the team's plan and notes after the user's objective, labelled as
+  untrusted guidance; prompt-level influence on the executor is accepted
+  and bounded by policy.
+- Opt-in and consent: off by default; enabling needs a cloud provider and a
+  native macOS confirmation, recorded with the disclosure version; going back
+  to Pegoles Local turns it off; a hand-edited file cannot run the team on
+  the local model, and `TeamPlanner::new` independently refuses a planner or
+  role model that is not cloud. The webview cannot supply the consent.
+- Budgets and cancellation: 180 s per model request, 25 min for the team,
+  60 executor turns, each in addition to the runner's own limits. A watchdog
+  trips the step's token on timeout or on Stop, so a hung request ends there;
+  a timeout or error ends the run at that step (later steps reported as
+  skipped), and Stop is reported as cancelled, not failed.
+- Display: the UI shows only role names, states and the cleaned, bounded
+  (400 characters) visible reply of each role, and the final answer, as
+  plain text. Invisible formatting and control characters are removed in
+  Rust; no hidden reasoning is requested or shown (thinking blocks are
+  discarded). The final summary is published after the last team event and
+  before the task closes.
+- Takeover: if a human changed the screen after the team concluded, the
+  runner drops that answer and the team returns to the executor (critic and
+  captain run again); stale step states are cleared in the UI.
+- Residual: the team multiplies cloud requests and screenshots per task
+  (privacy and cost, disclosed at consent); a role could write misleading
+  text that the person reads; the critic's verdict is advisory and does not
+  gate completion. The cloud path was not exercised live: all tests use
+  fakes.

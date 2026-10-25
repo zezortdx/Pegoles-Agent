@@ -44,8 +44,9 @@ Argument names: Tauri maps top-level JS keys from camelCase
 | `run_task` | `taskId` | starts the agent on a pending task (one run at a time) |
 | `cancel_task` | `taskId` | stops the run, or cancels a pending task |
 | `get_model_settings` / `set_api_key` / `clear_api_key` / `set_model_settings` | … (Anthropic, optional) | `{ configured, key_source, model, effort, models, efforts }` — the key is never returned |
-| `get_intelligence` | — | `{ provider: "local"\|"anthropic", local_model, local: { runtime_ready, runtime_problem, loaded_model, worker_footprint_bytes, default_model, models[], install, chip, memory_bytes, apple_silicon }, anthropic: ModelSettings }` — no secrets |
-| `set_provider` | `provider`, `localModel?` | `Intelligence` (persists `settings.json`) |
+| `get_intelligence` | — | `{ provider: "local"\|"anthropic", local_model, local: { runtime_ready, runtime_problem, loaded_model, worker_footprint_bytes, default_model, models[], install, chip, memory_bytes, apple_silicon }, anthropic: ModelSettings, team: { enabled } }` — no secrets. `team.enabled` is true only when team mode would run a task now (on, confirmed for the current disclosure, cloud provider) |
+| `set_provider` | `provider`, `localModel?` | `Intelligence` (persists `settings.json`); choosing Pegoles Local also turns team mode off |
+| `set_team_mode` | `enabled: boolean` | `Intelligence`. On: needs a cloud provider and a native macOS confirmation (opened by Core, outside the AppState lock, with backoff after declines); declined, unanswerable or local: nothing is saved and the call rejects. Off: no prompt. The webview supplies only the boolean, never the consent record or any path |
 | `install_local_model` | `model?` (default: chosen) | `Intelligence`; download → verify → atomic install in the background, progress on `pegoles://model-install`; only catalog-offered models |
 | `cancel_local_model_install` | — | `Intelligence` (partial download kept, resumable) |
 | `remove_local_model` | `model` (catalog id) | `Intelligence`; refused while a task runs |
@@ -248,6 +249,7 @@ Wire format: `AgentEvent` serialized with serde, tagged by `type`
 | `display_ready` | `computer_id, ready_in_ms, at` | graphical session Ready AND view attached — exactly once per boot |
 | `display_detached` | `computer_id, reason, at` | a confirmed view went away. `reason`: `computer_stopped`, `computer_reset`, `computer_destroyed`, `computer_error`, `explicit`, `display_replaced`, `display_failed: …`, or the native reason for native-initiated detaches |
 | `control_ownership_changed` | `computer_id, from, to, at` | take / return / every automatic return; an agent run holds `agent` for its whole duration |
+| `team_progress` | `task_id, step (captain_plan/research/execute/critique/synthesis), status (working/done/failed/skipped), summary, at` | experimental team mode only: one step changed state. `summary` is a cleaned, bounded (≤400 characters) piece of that role's visible reply, empty for working/skipped/failed. Untrusted model text: render as plain text only. A `working` event for a step makes later steps stale (a human intervened and the team looks again) |
 | `agent_message` | `task_id, kind (progress/summary/error), text, at` | the agent's narration: notes between actions, the final summary, or why the run stopped. Untrusted model text: render as plain text only |
 
 Guest lifecycle events (`guest_runtime_*`, `computer_*`, `task_*`) are
@@ -377,6 +379,24 @@ Pending requests/grants are in memory only. Cleared payloads leave at most eight
 content-free terminal rows (IDs, reason, successful typed-prefix counts), consumed
 by the waiting runner. History keeps its existing status-only audit and privacy
 taint behavior. Raw input and approval grants never enter its persisted schema.
+
+### Experimental team mode (opt-in)
+
+- `set_team_mode({ enabled })` is the only new command (release ACL
+  `allow-set-team-mode`; exact payload pinned in the ACL and bridge tests).
+  The page can ask, but only Core's native macOS alert, which script in the
+  webview can neither see nor answer, records consent: `settings.json`
+  `team = { enabled: true, consent_version: 1 }`. A different disclosure
+  version, a provider change to Local, or a hand-edited file with Local
+  selected all leave team mode off.
+- A run uses the team only when `team.enabled`, the consent version matches
+  and the provider is Anthropic; otherwise the single-model planner runs.
+  There is no per-task or model-chosen switch.
+- Team progress is published on the normal Core event bus as
+  `team_progress`; no new event channel and no new payload from the page.
+  The summaries are bounded and sanitized in Rust and rendered as plain text.
+- No new host action, path, URL or file access exists in any role call; role
+  requests carry no `tools` member.
 
 ## Snapshot human-input payload and bounds
 
