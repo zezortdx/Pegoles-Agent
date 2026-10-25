@@ -104,7 +104,7 @@ export function Sidebar(props: SidebarProps) {
       data-mode={props.mode}
       aria-label="Sidebar"
       aria-hidden={hidden || undefined}
-      {...(hidden ? { inert: "" } : {})}
+      {...(hidden ? { inert: true } : {})}
     >
       <div className="sidebar__chrome" data-tauri-drag-region>
         <button type="button" className="icon-btn" aria-label="Hide sidebar" title={`Hide sidebar (${props.modifier}\\)`} onClick={props.onToggle}>
