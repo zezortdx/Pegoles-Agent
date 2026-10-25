@@ -433,7 +433,7 @@ impl<A: CoreAccess> AgentComputer for CoreComputer<A> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod internet_tests;
 
 #[cfg(test)]

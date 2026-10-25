@@ -146,7 +146,7 @@ jobs:
   guest-cross:
     # The guest runtime (and the dev input fixture) must compile for
     # aarch64 Linux. `cargo check` needs no linker, so this runs on macOS.
-    name: Guest runtime (aarch64 and x86_64 Linux check)
+    name: Guest runtime (aarch64 Linux check)
     runs-on: macos-15
     timeout-minutes: 20
     permissions:
@@ -204,7 +204,7 @@ jobs:
     # see traffic without containment and none with it). The runner is
     # Windows Server 2025, not the consumer Windows 11 the product
     # targets; nothing here boots a guest.
-    name: Windows x64 (Rust, desktop shell, webview egress)
+    name: Portability (windows-2025)
     runs-on: windows-2025
     timeout-minutes: 90
     permissions:

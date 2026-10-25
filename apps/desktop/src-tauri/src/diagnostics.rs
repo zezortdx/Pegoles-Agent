@@ -304,7 +304,10 @@ mod tests {
             "bank.example",
             "task-123",
         ] {
-            assert!(!text.contains(secret), "{secret} leaked: {text}");
+            assert!(
+                !text.contains(secret),
+                "diagnostic report leaked fixture data"
+            );
         }
         let failures = report["recent_failures"].as_array().unwrap();
         let codes: Vec<&str> = failures
