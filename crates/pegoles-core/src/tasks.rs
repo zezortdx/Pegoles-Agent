@@ -173,6 +173,7 @@ fn is_valid_transition(from: TaskStatus, to: TaskStatus) -> bool {
             | (TaskStatus::Running, TaskStatus::Failed)
             | (TaskStatus::Running, TaskStatus::Cancelled)
             | (TaskStatus::WaitingForApproval, TaskStatus::Running)
+            | (TaskStatus::WaitingForApproval, TaskStatus::Failed)
             | (TaskStatus::WaitingForApproval, TaskStatus::Cancelled)
     )
 }

@@ -17,6 +17,11 @@ const product = import.meta.glob<string>(
 );
 
 describe("IPC surface of the product", () => {
+  it("approval decisions expose only an opaque id and closed decision with a separate policy command", async () => {
+    vi.mocked(invoke).mockClear();
+    await api.getApprovals(); await api.setInputApproval(true); await api.resolveApproval("opaque", "approve_once"); await api.resolveApproval("opaque", "deny");
+    expect(vi.mocked(invoke).mock.calls).toEqual([["get_approvals"], ["set_input_approval", {enabled: true}], ["resolve_approval", {id: "opaque", decision: "approve_once"}], ["resolve_approval", {id: "opaque", decision: "deny"}]]);
+  });
   it("history reads accept only a task identifier with no host path or URL", async () => {
     vi.mocked(invoke).mockClear(); await api.getHistoryStatus(); await api.getTaskHistory("task-id");
     expect(vi.mocked(invoke).mock.calls).toEqual([["get_history_status"],["get_task_history", {taskId:"task-id"}]]);

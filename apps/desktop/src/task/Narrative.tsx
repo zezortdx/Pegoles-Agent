@@ -94,7 +94,7 @@ function FileItem({ path, at }: { path: string; at: string }) {
   );
 }
 
-export const APPROVAL_NOTE = "Nothing has been allowed. This build can’t answer approvals yet, so the task stays paused here.";
+export const APPROVAL_NOTE = "Use the pending approval card to approve once or deny. Expiry denies the action.";
 
 function Approval({ reason, open, at }: { reason?: string; open: boolean; at: string }) {
   useLocale();

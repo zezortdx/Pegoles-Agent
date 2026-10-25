@@ -86,10 +86,69 @@ impl<A: CoreAccess> CoreComputer<A> {
         cancel: &CancellationToken,
     ) -> ActionResult {
         self.pace();
-        self.access.with_core(|r, _| {
-            r.execute_action(task, action, false, &self.ctx, cancel, false)
-                .0
-        })
+        let result = self.access.with_core(|r, tasks| {
+            let result = r
+                .execute_action(task, action, false, &self.ctx, cancel, false)
+                .0;
+            if result.outcome == ActionOutcome::NeedsApproval
+                && tasks.wait_for_approval(&task).is_err()
+            {
+                r.discard_approval(result.action_id);
+            }
+            result
+        });
+        if result.outcome != ActionOutcome::NeedsApproval {
+            return result;
+        }
+        loop {
+            let progress = self.access.with_core(|r, tasks| {
+                if !tasks.get(&task).is_ok_and(|t| {
+                    matches!(
+                        t.status,
+                        TaskStatus::WaitingForApproval | TaskStatus::Running
+                    )
+                }) {
+                    r.discard_approval(result.action_id);
+                }
+                let progress = r.poll_approval(result.action_id, task, cancel);
+                if matches!(
+                    progress,
+                    pegoles_core::approvals::ApprovalProgress::Continue
+                ) {
+                    let _ = tasks.start_task(&task);
+                }
+                if let pegoles_core::approvals::ApprovalProgress::Finished(ref completed) = progress
+                {
+                    if completed.success {
+                        let _ = tasks.start_task(&task);
+                    }
+                }
+                progress
+            });
+            match progress {
+                pegoles_core::approvals::ApprovalProgress::Waiting => {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                pegoles_core::approvals::ApprovalProgress::Continue => self.pace(),
+                pegoles_core::approvals::ApprovalProgress::Stopped { result, .. } => {
+                    // These reasons are bounded Core copy/counts, never guest or typed text.
+                    self.bus.publish(AgentEvent::AgentMessage {
+                        task_id: task,
+                        kind: pegoles_protocol::AgentMessageKind::Error,
+                        text: result.message.clone(),
+                        at: chrono::Utc::now(),
+                    });
+                    cancel.cancel();
+                    return result;
+                }
+                pegoles_core::approvals::ApprovalProgress::Finished(result) => {
+                    if !result.success {
+                        cancel.cancel();
+                    }
+                    return result;
+                }
+            }
+        }
     }
 
     /// Long text as consecutive executor actions, one lock each: every
@@ -115,7 +174,9 @@ impl<A: CoreAccess> CoreComputer<A> {
                 sensitive,
             },
         );
-        if pegoles_policy::evaluate(&whole, &self.ctx).decision != Decision::Allow {
+        if self.access.with_core(|r, _| r.ask_before_input())
+            || pegoles_policy::evaluate(&whole, &self.ctx).decision != Decision::Allow
+        {
             return self.execute(task, whole.action, cancel);
         }
         let chars: Vec<char> = text.chars().collect();
@@ -373,6 +434,223 @@ mod tests {
         let mut c = CoreComputer::new(Shared(core.clone()), bus);
         c.prepare_timeout = Duration::from_secs(3);
         c
+    }
+
+    #[test]
+    fn approval_suspends_outside_lock_then_executes_exactly_once() {
+        let (core, bus, _dir) = rig();
+        let task = core
+            .lock()
+            .unwrap()
+            .1
+            .submit_task("approve input")
+            .unwrap()
+            .id;
+        let computer = Arc::new(computer(&core, bus));
+        let cancel = CancellationToken::new();
+        computer.prepare(&cancel).unwrap();
+        core.lock().unwrap().1.start_task(&task).unwrap();
+        core.lock().unwrap().0.set_ask_before_input(true);
+        let c = computer.clone();
+        let worker = std::thread::spawn(move || {
+            c.act(
+                task,
+                ComputerAction::KeyPress { key: "Tab".into() },
+                &cancel,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let pending = loop {
+            let mut g = core.lock().unwrap();
+            let list = g.0.list_approvals();
+            if let Some(p) = list.first() {
+                assert_eq!(
+                    g.1.get(&task).unwrap().status,
+                    TaskStatus::WaitingForApproval
+                );
+                break p.clone();
+            }
+            drop(g);
+            assert!(Instant::now() < deadline, "no approval registered");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(!worker.is_finished());
+        core.lock()
+            .unwrap()
+            .0
+            .resolve_approval(
+                pending.id,
+                pegoles_core::approvals::ApprovalDecision::ApproveOnce,
+            )
+            .unwrap();
+        let result = worker.join().unwrap();
+        assert_eq!(result.action_id, pending.id);
+        assert_eq!(result.outcome, ActionOutcome::Executed);
+        let mut g = core.lock().unwrap();
+        assert!(g
+            .0
+            .resolve_approval(
+                pending.id,
+                pegoles_core::approvals::ApprovalDecision::ApproveOnce
+            )
+            .is_err());
+        assert_eq!(g.1.get(&task).unwrap().status, TaskStatus::Running);
+        assert_eq!(
+            g.0.audit_rows(500)
+                .iter()
+                .filter(|e| e.verb == "key_press" && e.outcome == "Executed")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn approval_covers_whole_long_text_once_and_tripwire_cannot_be_split() {
+        let (core, bus, _dir) = rig();
+        let task = core.lock().unwrap().1.submit_task("type").unwrap().id;
+        let computer = Arc::new(computer(&core, bus));
+        let cancel = CancellationToken::new();
+        computer.prepare(&cancel).unwrap();
+        core.lock().unwrap().1.start_task(&task).unwrap();
+        core.lock().unwrap().0.set_ask_before_input(true);
+        let c = computer.clone();
+        let token = cancel.clone();
+        let text = "x".repeat(TYPE_CHARS_PER_LOCK * 3 + 1);
+        let worker = std::thread::spawn(move || {
+            c.act(
+                task,
+                ComputerAction::TypeText {
+                    text,
+                    sensitive: true,
+                },
+                &token,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let id = loop {
+            if let Some(p) = core.lock().unwrap().0.list_approvals().first() {
+                break p.id;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        core.lock()
+            .unwrap()
+            .0
+            .resolve_approval(id, pegoles_core::approvals::ApprovalDecision::ApproveOnce)
+            .unwrap();
+        assert_eq!(worker.join().unwrap().outcome, ActionOutcome::Executed);
+        assert!(core.lock().unwrap().0.list_approvals().is_empty());
+        let text = format!("{}PRIVATE KEY-----", "x".repeat(TYPE_CHARS_PER_LOCK - 3));
+        assert_eq!(
+            computer
+                .act(
+                    task,
+                    ComputerAction::TypeText {
+                        text,
+                        sensitive: false
+                    },
+                    &cancel
+                )
+                .outcome,
+            ActionOutcome::Blocked
+        );
+        assert!(core.lock().unwrap().0.list_approvals().is_empty());
+    }
+
+    #[test]
+    fn denial_stops_the_run_and_publishes_a_safe_reason() {
+        let (core, bus, _dir) = rig();
+        let mut events = bus.subscribe();
+        let task = core.lock().unwrap().1.submit_task("deny").unwrap().id;
+        let computer = Arc::new(computer(&core, bus));
+        let cancel = CancellationToken::new();
+        computer.prepare(&cancel).unwrap();
+        core.lock().unwrap().1.start_task(&task).unwrap();
+        core.lock().unwrap().0.set_ask_before_input(true);
+        let c = computer.clone();
+        let token = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            c.act(task, ComputerAction::KeyPress { key: "Tab".into() }, &token)
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let id = loop {
+            if let Some(p) = core.lock().unwrap().0.list_approvals().first() {
+                break p.id;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        core.lock()
+            .unwrap()
+            .0
+            .resolve_approval(id, pegoles_core::approvals::ApprovalDecision::Deny)
+            .unwrap();
+        assert_eq!(worker.join().unwrap().outcome, ActionOutcome::Interrupted);
+        assert!(cancel.is_cancelled());
+        let mut reasons = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let AgentEvent::AgentMessage {
+                kind: pegoles_protocol::AgentMessageKind::Error,
+                text,
+                ..
+            } = event
+            {
+                reasons.push(text);
+            }
+        }
+        assert_eq!(reasons, vec!["Action denied by the human"]);
+    }
+
+    #[test]
+    fn approval_wait_honors_runner_deadline_without_retrying() {
+        let (core, bus, _dir) = rig();
+        let mut events = bus.subscribe();
+        let task = core.lock().unwrap().1.submit_task("deadline").unwrap().id;
+        core.lock().unwrap().0.set_ask_before_input(true);
+        let computer = computer(&core, bus);
+        let mut planner = ScriptedPlanner::new(
+            vec![vec![PlannedCall {
+                call_id: "one".into(),
+                label: "key".into(),
+                steps: Ok(vec![Step::Act(ComputerAction::KeyPress {
+                    key: "Tab".into(),
+                })]),
+            }]],
+            |_| Ok("done".into()),
+        );
+        let limits = RunLimits {
+            max_duration: Duration::from_millis(250),
+            ..RunLimits::default()
+        };
+        let report = run_task(
+            task,
+            "deadline",
+            &mut planner,
+            &computer,
+            &limits,
+            &CancellationToken::new(),
+        );
+        assert_eq!(report.end, RunEnd::Failed);
+        assert_eq!(
+            core.lock().unwrap().1.get(&task).unwrap().status,
+            TaskStatus::Failed
+        );
+        assert!(core.lock().unwrap().0.list_approvals().is_empty());
+        let mut requests = 0;
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, AgentEvent::ApprovalRequested { .. }) {
+                requests += 1;
+            }
+        }
+        assert_eq!(requests, 1);
+        assert!(core
+            .lock()
+            .unwrap()
+            .0
+            .audit_rows(500)
+            .iter()
+            .all(|a| a.verb != "key_press" || a.outcome != "Executed"));
     }
 
     #[test]

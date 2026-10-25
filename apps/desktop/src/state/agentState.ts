@@ -150,6 +150,8 @@ function latestNote(events: readonly AgentEvent[], kind: "progress" | "error"): 
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const message = agentMessageOf(events[i]);
     if (message?.kind === kind) return kind === "error" ? message.text : firstLine(message.text);
+    const event = events[i];
+    if (kind === "error" && event.type === "action_failed" && typeof event.error === "string") return event.error;
   }
   return undefined;
 }

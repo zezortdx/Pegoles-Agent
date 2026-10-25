@@ -21,6 +21,13 @@ pub const KEY_CANCELLED: &str = "the macOS key window was cancelled, so nothing 
 /// The questions Pegoles asks outside the webview. A trait so tests can
 /// answer them; `Err` means the question could not be asked at all.
 pub trait Consent: Send + Sync {
+    fn confirm_agent_input(&self, _summary: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn change_input_policy(&self, _enabled: bool) -> Result<bool, String> {
+        Ok(false)
+    }
+
     /// Ask before tasks start going to `provider`. `Ok(true)` only when
     /// the user chose to continue.
     fn allow_cloud_planner(&self, provider: Provider) -> Result<bool, String>;
@@ -135,6 +142,7 @@ mod native {
         open: AtomicBool,
         cloud_backoff: Mutex<DeclineBackoff>,
         key_backoff: Mutex<DeclineBackoff>,
+        input_backoff: Mutex<DeclineBackoff>,
     }
 
     struct Reopen<'a>(&'a AtomicBool);
@@ -152,7 +160,46 @@ mod native {
                 open: AtomicBool::new(false),
                 cloud_backoff: Mutex::new(DeclineBackoff::default()),
                 key_backoff: Mutex::new(DeclineBackoff::default()),
+                input_backoff: Mutex::new(DeclineBackoff::default()),
             }
+        }
+
+        fn confirm_input(&self, prompt: crate::input_consent::InputPrompt) -> Result<bool, String> {
+            if lock(&self.input_backoff).closed(Instant::now()) {
+                return Err(PROMPT_PAUSED.into());
+            }
+            let allowed = self.ask(move |mtm| {
+                let alert = alert(mtm, prompt.title, &prompt.message, prompt.confirm);
+                if let Some(cancel) = alert.buttons().lastObject() {
+                    cancel.setTitle(&NSString::from_str(prompt.cancel));
+                }
+                let buttons = alert.buttons();
+                if let (Some(confirm), Some(cancel)) = (buttons.firstObject(), buttons.lastObject())
+                {
+                    confirm.setKeyEquivalent(&NSString::from_str(""));
+                    cancel.setKeyEquivalent(&NSString::from_str("\r"));
+                }
+                alert.runModal() == NSAlertFirstButtonReturn
+            })?;
+            let mut backoff = lock(&self.input_backoff);
+            if allowed {
+                backoff.accepted();
+            } else {
+                backoff.declined(Instant::now());
+            }
+            Ok(allowed)
+        }
+
+        fn confirm_saved_input(
+            &self,
+            question: crate::input_consent::InputQuestion<'_>,
+        ) -> Result<bool, String> {
+            let store = crate::preferences::PreferenceStore::new(
+                pegoles_computer::pegoles_data_dir().join("preferences"),
+            );
+            crate::input_consent::confirm_with_store(&store, question, |prompt| {
+                self.confirm_input(prompt)
+            })
         }
 
         /// Run `show` on the main thread (AppKit) and wait for the answer.
@@ -191,6 +238,13 @@ mod native {
     }
 
     impl Consent for NativeConsent {
+        fn confirm_agent_input(&self, summary: &str) -> Result<bool, String> {
+            self.confirm_saved_input(crate::input_consent::InputQuestion::Action(summary))
+        }
+        fn change_input_policy(&self, enabled: bool) -> Result<bool, String> {
+            self.confirm_saved_input(crate::input_consent::InputQuestion::Policy(enabled))
+        }
+
         fn allow_cloud_planner(&self, provider: Provider) -> Result<bool, String> {
             let name = match provider {
                 Provider::Anthropic => "Anthropic",

@@ -4,6 +4,7 @@
 //! directly; it goes through this crate (via Tauri commands) and
 //! subscribes to [`AgentEvent`]s.
 
+pub mod approvals;
 pub mod display;
 #[cfg(test)]
 mod display_tests;

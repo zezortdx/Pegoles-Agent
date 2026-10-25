@@ -46,12 +46,14 @@ document states what is enforced today, where, and what is not.
    coordinates, drag/scroll/wait/text caps, key vocabulary, no control
    characters in typed text, a key-material tripwire. Waits pass
    policy and audit too (`begin_wait`/`end_wait`). `RequireApproval`
-   is reserved and treated as a denial (fail closed): no current action
-   produces it.
+   suspends an exact action for finite native human confirmation when the
+   Core-owned session setting asks before modifying VM input. It never
+   overrides a Deny; expiry, refusal and stale decisions fail closed.
 3. **The VM has no network device, no shared folders, no clipboard, no
    host input devices** (`VmManager.swift::buildConfiguration`). With no
    network, nothing the agent does inside the VM can have an external
-   side effect; that is why in-VM actions need no approval prompts.
+   side effect. Default in-VM actions need no approval prompts; the optional
+   session guard can require them without adding host or network authority.
 4. **The guest is untrusted.** All guest frames are parsed as data with
    bounds; malformed or oversized input drops the connection, never the
    host (a char-boundary panic in error truncation was fixed and

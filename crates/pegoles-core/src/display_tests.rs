@@ -1046,7 +1046,7 @@ fn computer_view_wire_shape() {
 /// SECURITY guard (Phase 5): `ControlOwner::Agent` is reachable ONLY
 /// through the policy-checked executor (`input.rs` acquire/release +
 /// arbiter) and the human-takeover check (`display.rs`). (1) No other
-/// production source constructs or compares it; (2) driving every HUMAN
+/// production source constructs it; approvals may only compare it; (2) driving every HUMAN
 /// control path never yields it.
 #[test]
 fn agent_control_only_from_executor() {
@@ -1072,6 +1072,10 @@ fn agent_control_only_from_executor() {
                     || line.contains("!= ControlOwner::Agent")
                     || line.contains("ControlOwner::Agent |")
                     || line.contains("agent_may_act")
+            } else if name == "approvals.rs" {
+                // Approval resume only compares ownership; it never acquires it.
+                line.contains("self.control_owner() == ControlOwner::Agent")
+                    || line.contains("self.control_owner() != ControlOwner::Agent")
             } else if name == "display.rs" {
                 line.contains("== ControlOwner::Agent")
             } else {

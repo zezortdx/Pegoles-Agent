@@ -4,8 +4,11 @@
 //! `commands.rs`): the in-process VM needs the main queue free.
 
 pub mod agent;
+mod approval_commands;
 pub mod commands;
 pub mod consent;
+#[cfg(any(target_os = "macos", test))]
+mod input_consent;
 pub mod local;
 #[cfg(target_os = "macos")]
 mod native_display;

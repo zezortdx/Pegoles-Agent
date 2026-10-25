@@ -48,6 +48,7 @@ pub fn default_backend_kind() -> BackendKind {
 }
 
 pub struct ComputerRegistry {
+    pub(crate) approvals: crate::approvals::Approvals,
     pub(crate) backend: Option<Box<dyn ComputerBackend>>,
     /// Platform framebuffer adapter (Phase 4) + display/control state.
     /// `UnavailableDisplay` until an embedding host installs a real one
@@ -101,6 +102,7 @@ impl ComputerRegistry {
     /// Test constructor with explicit dirs (never touches real data).
     pub fn with_dirs(bus: EventBus, kind: BackendKind, data_dir: PathBuf) -> Self {
         Self {
+            approvals: crate::approvals::Approvals::default(),
             backend: None,
             display: DisplaySlot::unavailable(),
             kind,

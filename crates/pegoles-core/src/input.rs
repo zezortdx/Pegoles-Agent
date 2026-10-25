@@ -265,6 +265,7 @@ impl ComputerRegistry {
     /// Cooperative cancel for the running agent sequence (takeover,
     /// pause, stop, shutdown). Releases pressed state best-effort.
     pub fn cancel_agent_input(&mut self, reason: &str) {
+        self.invalidate_approvals();
         self.agent_cancel.cancel();
         self.release_pressed_state(reason);
     }
@@ -291,6 +292,7 @@ impl ComputerRegistry {
         ControlArbiter::agent_may_act(self.display.control)
             .map_err(CoreError::ControlUnavailable)?;
         self.require_running()?;
+        self.invalidate_approvals();
         self.agent_cancel = CancellationToken::new();
         self.set_control(id, ControlOwner::Agent, out);
         Ok(id)
@@ -298,6 +300,7 @@ impl ComputerRegistry {
 
     /// End an agent session: release pressed state, return control to None.
     pub fn end_agent_session(&mut self, out: &mut Vec<AgentEvent>) {
+        self.invalidate_approvals();
         self.release_pressed_state("session end");
         if self.display.control == ControlOwner::Agent {
             if let Some(id) = self.current_id() {
@@ -352,7 +355,7 @@ impl ComputerRegistry {
         cancel: &CancellationToken,
         manage_control: bool,
     ) -> (ActionResult, Vec<AgentEvent>) {
-        let mut out = Vec::new();
+        let out = Vec::new();
         let started_wall = Utc::now();
         // A fresh managed action is a new user intent: stale takeover
         // state from an older sequence must not block it. (Runner steps
@@ -375,6 +378,20 @@ impl ComputerRegistry {
         };
         let mut req = ActionRequest::new(task_id, computer_id, action);
         req.observe_after = observe_after;
+        self.execute_request(req, ctx, cancel, manage_control)
+    }
+
+    pub(crate) fn execute_request(
+        &mut self,
+        req: ActionRequest,
+        ctx: &PolicyContext,
+        cancel: &CancellationToken,
+        manage_control: bool,
+    ) -> (ActionResult, Vec<AgentEvent>) {
+        let mut out = Vec::new();
+        let started_wall = Utc::now();
+        let computer_id = req.computer_id;
+        let task_id = req.task_id;
         let redacted = req.redacted_for_event();
         self.emit(
             AgentEvent::ActionRequested {
@@ -405,7 +422,10 @@ impl ComputerRegistry {
         }
 
         // Policy gate: every action, even inside the isolated VM.
-        let verdict = evaluate(&req, ctx);
+        let effective = PolicyContext {
+            ask_before_input: ctx.ask_before_input || self.approvals.strict,
+        };
+        let verdict = evaluate(&req, &effective);
         self.emit(
             AgentEvent::ActionEvaluated {
                 request: redacted.clone(),
@@ -433,28 +453,27 @@ impl ComputerRegistry {
                 return (result, out);
             }
             Decision::RequireApproval => {
+                let queued = self.queue_approval(req.clone());
                 let result = ActionResult::failed(
                     req.action_id,
                     started_wall,
-                    ActionOutcome::NeedsApproval,
-                    verdict.reason.clone(),
+                    if queued.is_ok() {
+                        ActionOutcome::NeedsApproval
+                    } else {
+                        ActionOutcome::Interrupted
+                    },
+                    queued
+                        .err()
+                        .unwrap_or_else(|| "Waiting for human approval".into()),
                 );
                 self.emit(
                     AgentEvent::ApprovalRequested {
                         task_id,
-                        reason: verdict.reason,
+                        reason: "Human approval required for VM input".into(),
                         at: Utc::now(),
                     },
                     &mut out,
                 );
-                self.emit(
-                    AgentEvent::ActionCompleted {
-                        request: redacted,
-                        result: result.clone(),
-                    },
-                    &mut out,
-                );
-                self.audit_action(&req, &decision_name, &result);
                 return (result, out);
             }
             Decision::Allow => {}
@@ -519,7 +538,8 @@ impl ComputerRegistry {
             &mut out,
         );
 
-        let result = self.dispatch(req.clone(), cancel, &mut out);
+        let result = self.dispatch(req.clone(), cancel, &mut out, 0, &mut 0);
+        self.publish_action_result(&req, &result, &mut out);
 
         if manage_control && acquired_here {
             self.release_pressed_state("action end");
@@ -667,13 +687,120 @@ impl ComputerRegistry {
         (result, std::mem::take(out))
     }
 
+    /// A private continuation of an exact Core-owned approval. It publishes no
+    /// action terminal events: approvals settle the original whole request.
+    pub(crate) fn execute_approved_slice(
+        &mut self,
+        req: ActionRequest,
+        ctx: &PolicyContext,
+        cancel: &CancellationToken,
+        primitive_offset: usize,
+    ) -> (ActionResult, usize) {
+        let started = Utc::now();
+        if !self.rate_limiter.check(input_clock_ms()) {
+            return (
+                Self::dispatch_failed(&req, started, "rate limit exceeded"),
+                0,
+            );
+        }
+        let effective = PolicyContext {
+            ask_before_input: ctx.ask_before_input || self.approvals.strict,
+        };
+        let verdict = evaluate(&req, &effective);
+        if verdict.decision == Decision::Deny {
+            return (
+                ActionResult::failed(
+                    req.action_id,
+                    started,
+                    ActionOutcome::Blocked,
+                    verdict.reason,
+                ),
+                0,
+            );
+        }
+        if cancel.is_cancelled()
+            || self.agent_cancel.is_cancelled()
+            || self.display.control != ControlOwner::Agent
+        {
+            return (
+                self.dispatch_interrupted(&req, started, "cancelled before dispatch"),
+                0,
+            );
+        }
+        let mut confirmed_typed = 0;
+        let result = self.dispatch(
+            req,
+            cancel,
+            &mut Vec::new(),
+            primitive_offset,
+            &mut confirmed_typed,
+        );
+        (result, confirmed_typed)
+    }
+
+    pub(crate) fn publish_action_result(
+        &mut self,
+        req: &ActionRequest,
+        result: &ActionResult,
+        out: &mut Vec<AgentEvent>,
+    ) {
+        let event = if result.success {
+            AgentEvent::ActionCompleted {
+                request: req.redacted_for_event(),
+                result: result.clone(),
+            }
+        } else {
+            AgentEvent::ActionFailed {
+                action_id: req.action_id,
+                request: req.redacted_for_event(),
+                error: result.message.clone(),
+                at: Utc::now(),
+            }
+        };
+        self.emit(event, out);
+    }
+
+    fn dispatch_completed(
+        req: ActionRequest,
+        started: DateTime<Utc>,
+        message: impl Into<String>,
+        frame_id: Option<pegoles_protocol::FrameId>,
+    ) -> ActionResult {
+        let mut result = ActionResult::executed(req.action_id, started, message);
+        result.resulting_frame_id = frame_id;
+        result
+    }
+    fn dispatch_failed(
+        req: &ActionRequest,
+        started: DateTime<Utc>,
+        message: impl Into<String>,
+    ) -> ActionResult {
+        ActionResult::failed(req.action_id, started, ActionOutcome::Failed, message)
+    }
+    fn dispatch_interrupted(
+        &mut self,
+        req: &ActionRequest,
+        started: DateTime<Utc>,
+        reason: &str,
+    ) -> ActionResult {
+        self.release_pressed_state(reason);
+        ActionResult::failed(
+            req.action_id,
+            started,
+            ActionOutcome::Interrupted,
+            format!("interrupted: {reason}"),
+        )
+    }
+
     /// Dispatch an allowed action's primitives. Caller owns arbitration
-    /// and the Started event; this returns Completed (Executed) or Failed.
+    /// and action lifecycle events; this returns a result without settling it.
     fn dispatch(
         &mut self,
         req: ActionRequest,
         cancel: &CancellationToken,
         out: &mut Vec<AgentEvent>,
+        primitive_offset: usize,
+        confirmed_typed: &mut usize,
     ) -> ActionResult {
         let started_wall = Utc::now();
         // Wait is pure timing (cancellable slices); display info is
@@ -682,23 +809,22 @@ impl ComputerRegistry {
             let capped = (*duration_ms).min(limits::MAX_WAIT_MS);
             let slept = sleep_cancellable(capped, cancel, &self.agent_cancel);
             if !slept {
-                return self.interrupted_result(&req, started_wall, "wait cancelled", out);
+                return self.dispatch_interrupted(&req, started_wall, "wait cancelled");
             }
-            return self.completed(req, started_wall, "waited", None, out);
+            return Self::dispatch_completed(req, started_wall, "waited", None);
         }
         if matches!(req.action, ComputerAction::GetDisplayInfo) {
             match self.guest_pixel_size() {
                 Ok((w, h)) => {
-                    return self.completed(
+                    return Self::dispatch_completed(
                         req,
                         started_wall,
                         format!("display is {w}x{h}"),
                         None,
-                        out,
                     );
                 }
                 Err(e) => {
-                    return self.failed_result(&req, started_wall, e.to_string(), out);
+                    return Self::dispatch_failed(&req, started_wall, e.to_string());
                 }
             }
         }
@@ -714,27 +840,27 @@ impl ComputerRegistry {
             return match self.capture_frame_cancellable(&request_id, &cancelled, out) {
                 Ok(meta) => {
                     let message = format!("observed {}x{}", meta.width_px, meta.height_px);
-                    self.completed(req, started_wall, message, Some(meta.frame_id), out)
+                    Self::dispatch_completed(req, started_wall, message, Some(meta.frame_id))
                 }
                 Err(_) if cancelled() => {
-                    self.interrupted_result(&req, started_wall, "observe cancelled", out)
+                    self.dispatch_interrupted(&req, started_wall, "observe cancelled")
                 }
-                Err(message) => self.failed_result(&req, started_wall, message, out),
+                Err(message) => Self::dispatch_failed(&req, started_wall, message),
             };
         }
         let transform = match self.transform() {
             Ok(t) => t,
-            Err(e) => return self.failed_result(&req, started_wall, e.to_string(), out),
+            Err(e) => return Self::dispatch_failed(&req, started_wall, e.to_string()),
         };
         let ops = action_to_input_ops(&req.action, &transform);
         let op_count = ops.len();
         if ops.is_empty() {
             // Never report success for something that did nothing.
-            return self.failed_result(&req, started_wall, "action has no guest primitives", out);
+            return Self::dispatch_failed(&req, started_wall, "action has no guest primitives");
         }
         for (i, op) in ops.iter().enumerate() {
             if cancelled() {
-                return self.interrupted_result(&req, started_wall, "cancelled mid-action", out);
+                return self.dispatch_interrupted(&req, started_wall, "cancelled mid-action");
             }
             // Track pressed state for stuck-input recovery.
             match op {
@@ -760,32 +886,34 @@ impl ComputerRegistry {
             // Validate the lowered op against the guest wire bounds.
             if let Some(g) = op_to_guest(op) {
                 if !g.is_bounded() {
-                    return self.failed_result(&req, started_wall, "op exceeds guest bounds", out);
+                    return Self::dispatch_failed(&req, started_wall, "op exceeds guest bounds");
                 }
             }
-            let request_id = format!("{}:{i}", req.action_id);
+            let request_id = format!("{}:{primitive_offset}:{i}", req.action_id);
             let outcome = match self.backend.as_deref_mut() {
                 Some(backend) => backend.input_execute_cancellable(&request_id, op, &cancelled),
                 None => {
-                    return self.failed_result(&req, started_wall, "no computer available", out);
+                    return Self::dispatch_failed(&req, started_wall, "no computer available");
                 }
             };
             if !outcome.ok && cancelled() {
                 // Stopped waiting for the ack: release whatever may be
-                // held (interrupted_result does) and report the cancel.
-                return self.interrupted_result(&req, started_wall, "cancelled mid-action", out);
+                // held (dispatch_interrupted does) and report the cancel.
+                return self.dispatch_interrupted(&req, started_wall, "cancelled mid-action");
             }
             if !outcome.ok {
                 // A failed primitive may leave buttons down: recover now.
                 self.release_pressed_state("primitive failed");
-                return self.failed_result(
+                return Self::dispatch_failed(
                     &req,
                     started_wall,
                     outcome
                         .error
                         .unwrap_or_else(|| "backend rejected input".to_string()),
-                    out,
                 );
+            }
+            if let InputOp::TypeText { text } = op {
+                *confirmed_typed += text.chars().count();
             }
         }
         // Optional observation chained to the action (no extra policy hop).
@@ -795,24 +923,22 @@ impl ComputerRegistry {
             match self.capture_frame_cancellable(&request_id, &cancelled, out) {
                 Ok(meta) => frame_id = Some(meta.frame_id),
                 Err(_) if cancelled() => {
-                    return self.interrupted_result(&req, started_wall, "observe cancelled", out);
+                    return self.dispatch_interrupted(&req, started_wall, "observe cancelled");
                 }
                 Err(message) => {
-                    return self.failed_result(
+                    return Self::dispatch_failed(
                         &req,
                         started_wall,
                         format!("observe_after failed: {message}"),
-                        out,
                     );
                 }
             }
         }
-        self.completed(
+        Self::dispatch_completed(
             req,
             started_wall,
             format!("executed {op_count} primitive(s)"),
             frame_id,
-            out,
         )
     }
 
@@ -961,7 +1087,12 @@ impl ComputerRegistry {
         entries.iter().skip(skip).cloned().collect()
     }
 
-    fn audit_action(&mut self, req: &ActionRequest, decision: &str, result: &ActionResult) {
+    pub(crate) fn audit_action(
+        &mut self,
+        req: &ActionRequest,
+        decision: &str,
+        result: &ActionResult,
+    ) {
         let text_len = match &req.action {
             ComputerAction::TypeText { text, .. } => Some(text.chars().count()),
             _ => None,

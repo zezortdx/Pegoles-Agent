@@ -147,8 +147,6 @@ observe p50 108 ms / p95 119 ms. Numbers: `docs/PERFORMANCE.md`.
 ## Not implemented
 
 - Native VM view / human "take control" input path (embed is a stub).
-- Approval grants (`RequireApproval` is reserved; nothing produces it;
-  executor fails closed).
 - Raw event replay across restarts. Bounded task metadata, content-free status
   transitions and safe text/table summary results now persist locally; open
   tasks recover as cancelled, without automatic execution or approval.
@@ -201,3 +199,16 @@ bash scripts/release/verify-artifact.sh target/release-artifacts/Pegoles_<v>_arm
    mitigated by reserved-port auth + non-dumpable runtime).
 9. Native VM view + human input (take control).
 10. Windows: compile and run on real hardware before claiming anything.
+
+### Agent 2.0 approvals (offline verified)
+
+Core now supports exact, native-confirmed one-shot approval of modifying VM
+input through an optional session-only setting (off again after restart).
+The task shows an inline decision card; the inbox exposes pending count and
+deadlines. Pending requests/grants never persist, expire after 120 monotonic
+seconds, and are invalidated by stop/reset/control changes or task completion.
+Existing policy denials remain unconditional. Full-payload validation precedes
+sliced typing; cancellation reports the completed prefix. The full offline gate
+covers Core/native deciders/UI/IPC and existing history/privacy behavior.
+Installed-app native, VoiceOver and actual-VM acceptance are still pending;
+this does not implement PR5 human takeover/resume behavior.

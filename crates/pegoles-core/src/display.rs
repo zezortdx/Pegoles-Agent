@@ -774,6 +774,7 @@ impl ComputerRegistry {
         if from == to {
             return;
         }
+        self.invalidate_approvals();
         self.display.control = to;
         self.emit(
             AgentEvent::ControlOwnershipChanged {

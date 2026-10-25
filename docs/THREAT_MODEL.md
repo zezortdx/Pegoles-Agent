@@ -92,7 +92,7 @@ Each row: attack surface → mitigation (where) → verification → residual ri
 | | |
 |---|---|
 | Surface | Typed `ComputerAction` values chosen by the model |
-| Mitigation | `pegoles-policy::evaluate` is an exhaustive match: finite unit-square coordinates, drag/scroll/wait/text caps, key vocabulary and chord validation, no control or Unicode format/bidi/zero-width characters in typed text, a key-material tripwire. `RequireApproval` is treated as deny. `pegoles-core/src/input.rs` applies rate limit → policy → cancellation → control ownership (checked under the dispatch lock). Waits are policy-checked and audited. Keys are dispatched in the normalized form the policy judged. |
+| Mitigation | `pegoles-policy::evaluate` is an exhaustive match: finite unit-square coordinates, drag/scroll/wait/text caps, key vocabulary and chord validation, no control or Unicode format/bidi/zero-width characters in typed text, a key-material tripwire. `RequireApproval` suspends an exact request for finite native human confirmation; absent confirmation it fails closed. `pegoles-core/src/input.rs` applies rate limit → policy → cancellation → control ownership (checked under the dispatch lock). Waits are policy-checked and audited. Keys are dispatched in the normalized form the policy judged. |
 | Verification | `pegoles-policy` escape matrix + property tests (never panics, never allows out-of-range or non-finite input), `pegoles-core` executor tests, `core_computer::scripted_run_goes_through_the_real_executor_and_policy` |
 | Residual | The key-material tripwire is a heuristic, not a boundary (the VM has no network, so typed secrets cannot leave it). |
 
@@ -203,3 +203,40 @@ network containment, sandbox, policy and planner authority are unchanged.
 | Rendering / authority | Typed, associated text/table summaries only, labelled as agent results. React text nodes and table cells, no HTML/Markdown interpretation, no path/URL/file-read command, no new executor/protocol authority. Previous tasks/results remain navigable after restart; locale changes preserve mounted task/draft data. |
 | Verification | Core history tests: actual round-trip/reopen, recovery with no bus events, strict schema/association, exact count/age/read-byte limits and serialized-byte retention, corrupt/oversize/symlink/disk/private-mode failures, objective/input/output taint. Crash fixtures verify full private stages disappear on reopen, repeated fixed-slot interruptions remain bounded, active writer locks prevent cleanup/competing writes, exact scan limits and unrelated/corrupt canonical preservation. AppState tests: isolated injection, physical startup retention, disk read-only warning, lost-event output suppression. Artifact/App tests: inert hostile text/table cells, empty/load/error states, task navigation, previous tasks and visible warning. IPC shape/ACL and existing HTML-sink tests remain required. |
 | Residual | Local objectives and allowed summaries are private, unencrypted user data; secret-pattern detection is conservative but incomplete. Same-user host mutation races remain outside scope. Corruption is preserved instead of automatically repaired; storage failures can delay physical expiry. Retention runs on startup/commands, not while the app is closed. Windows ACL/reparse-point and installed-app/hardware restart behavior remain unverified. |
+
+### Human approval authority (Agent 2.0, offline verification)
+
+The optional **Ask before agent input** setting adds approval only to otherwise
+allowed modifying VM actions. Default remains off; both changes require native
+confirmation. The UI explicitly labels it session-only and restart resets it.
+Existing policy Deny rules, sealed/offline VM and private-key tripwires remain.
+
+Core stores at most eight exact pending requests (one per task), bound to the
+original action/task/computer IDs, Agent ownership and control generation. A
+120-second monotonic deadline fails closed. The webview gets only IDs, a safe
+verb summary and a wall-clock display deadline. Approval IPC offers only
+`approve_once` and `deny`; no replacement action, payload, path or blanket grant.
+Approve once must also pass native ConsentGate. It uses a Core-derived safe
+summary outside Core locks, then revalidates the live task/request/deadline and
+ownership after the human responds. Return/Escape do not approve natively;
+existing one-dialog-at-a-time and declining backoff patterns apply. Native
+refusal or unavailable confirmation denies. Guest/model approval tags fail parsing.
+
+The runner waits outside Core locks and honors its cancellation/deadline token.
+Denial/expiry ends the run rather than becoming a model-retry loop. Long typing
+is approved as one complete payload and sliced under short locks; full-payload
+policy and ownership are checked again for every slice. Failed/cancelled slices
+report the previously completed prefix. Clearing raw pending payloads preserves
+at most eight content-free stop records for that accounting. Typed stop reasons
+separate control intervention from explicit denial/expiry for future takeover
+integration. No grant or pending payload is persisted or recovered.
+
+Residuals: a compromised webview can deny work, request native prompts within
+the existing backoff, and misrepresent its own display. It cannot answer the
+native confirmation. Safe summaries intentionally omit typed contents, so the
+human approves the bounded input action in context rather than reviewing its
+text in the dialog. Expiry uses monotonic Core time; the webview countdown can
+be inaccurate after clock changes. Existing VM/guest round-trip cancellation
+latency remains. Native visual/VoiceOver and actual hardware execution were not
+run; injected deciders prove authority/lock/race behavior offline. This is a
+session guard, not durable security policy or a new host capability.

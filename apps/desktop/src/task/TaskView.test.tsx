@@ -195,7 +195,7 @@ describe("TaskView", () => {
     const waiting: TaskActivity = { mode: "needs-user", headline: "Needs your approval", approvalReason: "Open example.com", recent: [], pulse: 1, live: true };
     view(waiting, items, { status: "waiting_for_approval" });
     expect(screen.getByText("Stopped to ask you")).toBeTruthy();
-    expect(screen.getByText(/Nothing has been allowed/)).toBeTruthy();
+    expect(screen.getByText(/Use the pending approval card/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Allow|Approve/ })).toBeNull();
   });
 

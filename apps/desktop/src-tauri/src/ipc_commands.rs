@@ -11,6 +11,9 @@
 ipc_commands! {
     release: [
         get_status,
+        get_approvals,
+        set_input_approval,
+        resolve_approval,
         get_preferences,
         set_preferences,
         create_computer,
