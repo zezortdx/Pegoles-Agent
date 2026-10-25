@@ -374,7 +374,11 @@ mod tests {
 
     #[test]
     fn socket_paths_must_sit_in_the_egress_folder_of_the_data_root() {
-        let root = Path::new("/data/Pegoles");
+        // A rooted path needs a drive to be absolute on Windows. Keep the
+        // containment checks active on both platforms with native fixtures.
+        let prefix = if cfg!(windows) { "C:" } else { "" };
+        let root_path = PathBuf::from(format!("{prefix}/data/Pegoles"));
+        let root = root_path.as_path();
         let good = root.join("egress/0123456789abcdef/s");
         assert!(is_egress_socket_path(root, &good));
         for bad in [
@@ -391,11 +395,21 @@ mod tests {
             "egress/0123456789abcdef/s",
             "/data/Pegoles/egress/0123456789abcdef/s\0",
         ] {
-            assert!(!is_egress_socket_path(root, Path::new(bad)), "{bad}");
+            let candidate = if bad.starts_with('/') {
+                PathBuf::from(format!("{prefix}{bad}"))
+            } else {
+                PathBuf::from(bad)
+            };
+            assert!(!is_egress_socket_path(root, &candidate), "{bad}");
         }
-        let long = Path::new("/data/Pegoles").join(format!("egress/{}/s", "a".repeat(41)));
+        #[cfg(windows)]
+        assert!(!is_egress_socket_path(
+            root,
+            Path::new("/data/Pegoles/egress/0123456789abcdef/s")
+        ));
+        let long = root.join(format!("egress/{}/s", "a".repeat(41)));
         assert!(!is_egress_socket_path(root, &long));
-        let deep_root = PathBuf::from(format!("/{}", "r".repeat(95)));
+        let deep_root = PathBuf::from(format!("{prefix}/{}", "r".repeat(95)));
         assert!(!is_egress_socket_path(
             &deep_root,
             &deep_root.join("egress/0123456789abcdef/s")
