@@ -2,42 +2,39 @@
 
 Manual steps for publishing Pegoles on GitHub and cutting releases. The
 repository is **`zezortdx/Pegoles-Agent`** (display name Pegoles Agent),
-created **private** on 2026-09-27 on a GitHub Free account. It stays private
-until this checklist and `docs/RELEASE_GATES.md` are complete. Boxes marked
-[x] are done. "Plan-blocked" means GitHub Free does not offer the setting on
-a private repository; the API refused it, and it has to be applied right
-after the switch to public (step 3).
+created private on 2026-09-27 on a GitHub Free account and made **public**
+the same day, once the private-side gates in `docs/RELEASE_GATES.md` had
+passed. 0.1.0 was released from it (source-first) on 2026-09-27. Boxes
+marked [x] are done and were read back through the GitHub API after the
+switch.
 
 Workflows involved (all in `.github/workflows/`):
 
 | File | Runs on | Purpose |
 |---|---|---|
 | `ci.yml` | PRs, pushes to `main` | the gate (read-only token, no secrets) |
-| `codeql.yml` | PRs to `main`, pushes to `main`, weekly | code scanning, advanced setup (private repository: SARIF artifact + `.github/scripts/codeql-gate.py`) |
-| `dependency-review.yml` | PRs to `main` | blocks new high/critical vulnerable dependencies (skipped while private: unsupported there) |
-| `release.yml` | `v*` tags only | `build` (no secrets: gate, unsigned bundle, runtime sandbox tests, manifest + SBOM) → `sign` (protected `release` environment: sign, notarize, staple, verify, checksums; runs no dependency code) → `publish` (attest, draft release) |
+| `codeql.yml` | PRs to `main`, pushes to `main`, weekly | code scanning, advanced setup: results upload to code scanning (the SARIF gate `.github/scripts/codeql-gate.py` also runs) |
+| `dependency-review.yml` | PRs to `main` | blocks new high/critical vulnerable dependencies |
+| `release.yml` | `v*` tags, only when the variable `PEGOLES_BINARY_RELEASES` is `true` (§5) | `build` (no secrets: gate, unsigned bundle, runtime sandbox tests, manifest + SBOM) → `sign` (protected `release` environment: sign, notarize, staple, verify, checksums; runs no dependency code) → `publish` (attest, draft release) |
 
 ## 1. Before the first push
 
 - [x] Repository decided: `zezortdx/Pegoles-Agent`. The issue template
   chooser links private vulnerability reporting, and the README's
   attestation command names the repository.
-- [ ] `crates/pegoles-computer/catalog/images.json` keeps the `UNPUBLISHED`
-  marker until the archive is actually hosted (step 6). The release
-  workflow refuses to build while it is there.
-- [ ] Claim or rename what the code refers to: the npm scope `@pegoles`
-  (packages are `private: true`, so nothing publishes) and the crate names
-  (every workspace crate is `publish = false`).
+- [x] `crates/pegoles-computer/catalog/images.json` points at the hosted
+  archive (step 6); the `UNPUBLISHED` marker is gone.
+- [ ] Optional: claim the npm scope `@pegoles` and the crate names. Nothing
+  publishes today (packages are `private: true`, every workspace crate is
+  `publish = false`).
 - [x] History purged of `scripts/brand/__pycache__/*.pyc` (they held an
   absolute `/Users/<name>/...` path) with `git filter-repo`, before the
   first push. Every other commit, author, date and message is unchanged:
   checked commit by commit, and the release tip tree is identical.
-- [ ] Commit author email: every commit carries the maintainer's personal
-  address, and it becomes public with the repository. Keep it, or rewrite
-  it to the GitHub `noreply` address while the repository is still
-  private. Rewriting now needs a force push of both branches, so it is the
-  maintainer's call. For new commits, at least consider
-  `git config user.email <id>+<user>@users.noreply.github.com`.
+- [x] Commit author email: rewritten to the maintainer's GitHub `noreply`
+  address on every commit before the repository went public (the
+  maintainer's decision); the history was rescanned afterwards. Squash
+  merges are made with the `noreply` address as author.
 - [x] Only explicit refs were pushed: `main` and `release/v0.1.0`. Never
   `git push --mirror` or `--all`: local `refs/backup/*` and `refs/codex/*`
   hold superseded snapshots, including the pre-purge history.
@@ -56,23 +53,20 @@ Workflows involved (all in `.github/workflows/`):
   snapshot never ran.
 - [x] Note: on GitHub Free, artifact attestations, dependency review, code
   scanning uploads, secret scanning, rulesets/branch protection and
-  environment reviewers work only in **public** repositories. While
-  private, `codeql.yml` gates on its own SARIF, `dependency-review.yml` is
-  skipped, and `release.yml` must not run (its attestation step would
-  fail). Flip to public (step 3) before cutting a release.
+  environment reviewers work only in **public** repositories, which is
+  why everything below was applied right after the switch.
 - [x] First GitHub run (PR #1): every CI job and every CodeQL language
   green on head `0744f6b` (details in `docs/RELEASE_GATES.md`, gate 7).
   One full CI + CodeQL run took about 16 macOS runner minutes (billed
-  10x) and about 35 Linux/Windows minutes. A private repository on GitHub
-  Free has 2,000 included minutes a month, so weekly Dependabot PRs can
-  use up the quota while private; public repositories are not metered.
+  10x) and about 35 Linux/Windows minutes. Public repositories use
+  GitHub-hosted runners without a minutes quota; nothing runs on the
+  maintainer's Mac.
 
 ## 3. Repository settings
 
 Settings -> General
 
-- [ ] Visibility: public once steps 1-5 are done (Danger Zone -> Change
-  visibility). Then immediately apply every plan-blocked item below.
+- [x] Visibility: **public** (2026-09-27).
 - [x] Features: Issues on; Wiki off; Projects off; Discussions off.
 - [x] Pull Requests: **squash merging** only (linear history); merge
   commits and rebase merging off; "Always suggest updating pull request
@@ -88,28 +82,24 @@ Settings -> Actions -> General
   plus `dtolnay/rust-toolchain@*, pnpm/action-setup@*`, Marketplace
   "verified" creators not allowed; **"Require actions to be pinned to a
   full-length commit SHA"** on.
-- [x] Fork pull request workflows (private repository): not run at all;
-  no write tokens and no secrets for fork PRs. After going public: set
-  **"Require approval for all external contributors"**.
+- [x] Fork pull request workflows: **"Require approval for all external
+  contributors"**; fork PRs get no write token and no secrets.
 - [x] Workflow permissions: **read-only** default token; "Allow GitHub
   Actions to create and approve pull requests" **off**.
 - [x] Runners: no self-hosted runners. Pull requests never run on
   self-hosted runners.
 
-Settings -> Rules -> Rulesets -> New branch ruleset `main` (**plan-blocked
-while private**: "Upgrade to GitHub Pro or make this repository public";
-classic branch protection is refused the same way)
+Settings -> Rules -> Rulesets -> branch ruleset `main` (id 24074522)
 
-- [ ] Enforcement: Active. Target: default branch. Bypass list: empty.
-- [ ] Restrict deletions; Block force pushes; Require linear history.
-- [ ] Require a pull request before merging: required approvals **0**
+- [x] Enforcement: Active. Target: default branch. Bypass list: empty.
+- [x] Restrict deletions; Block force pushes; Require linear history.
+- [x] Require a pull request before merging (squash only): required approvals **0**
   while there is a single maintainer (GitHub never lets authors approve
   their own PR; raise to 1 with a second maintainer and enable "Dismiss
   stale approvals" and "Require approval of the most recent push");
   **Require conversation resolution** on.
-- [ ] Require status checks to pass, "Require branches to be up to date"
-  on. Add these checks (they appear in the picker after they have run
-  once, so open a trivial PR first):
+- [x] Require status checks to pass, "Require branches to be up to date"
+  on, these 16 checks:
   - `Rust (macOS arm64)`
   - `Rust release profile (macOS arm64)`
   - `Swift VM helper (macOS arm64)`
@@ -123,31 +113,29 @@ classic branch protection is refused the same way)
   - `Dependency review`
   - `CodeQL (actions)`, `CodeQL (javascript-typescript)`,
     `CodeQL (python)`, `CodeQL (rust)`, `CodeQL (swift)`
-- [ ] Require code scanning results: CodeQL, alerts "High or higher".
+- [x] Require code scanning results: CodeQL, security alerts "High or
+  higher", other alerts "Errors".
 
-Settings -> Rules -> Rulesets -> New tag ruleset `release tags`
-(**plan-blocked while private**)
+Settings -> Rules -> Rulesets -> tag ruleset `release tags` (id 24074524)
 
-- [ ] Target: tags matching `v*` and `guest-image-*`.
-- [ ] Restrict creations, updates and deletions; bypass list: Repository
-  admin (the maintainer) for creations only. Tags are then created only by
-  the maintainer and never moved or deleted.
+- [x] Target: tags matching `v*` and `guest-image-*`.
+- [x] Restrict creations, updates and deletions; non-fast-forward blocked.
+  Bypass list: Repository admin (the maintainer), so only the maintainer
+  creates these tags. GitHub applies a bypass to every rule of a ruleset,
+  so an admin could still move or delete a tag that has no release; the
+  tag of a published release is locked by release immutability, and
+  release tags are never moved (`v0.1.0`, `guest-image-0.3`).
 
 Settings -> Environments -> `release` (created)
 
-- [ ] Required reviewers: the maintainer (**plan-blocked while private**:
-  "ensure the billing plan supports the required reviewers protection
-  rule"). Leave **"Prevent self-review" off** while there is one
+- [x] Required reviewers: the maintainer. **"Prevent self-review" off** while there is one
   maintainer (otherwise nobody can approve); turn it on when there are
   two. Do not add any secret before this rule exists.
 - [x] Deployment branches and tags: "Selected branches and tags" with one
   **tag** rule `v*` and no branch rule (the workflow also refuses non-tag
-  refs). "Allow administrators to bypass" off. GitHub documents deployment
-  branch rules for private repositories as a Pro feature; the API accepted
-  them here, but their enforcement while private is unverified, so treat
-  them as effective only once public.
-- [ ] Environment secrets (and no repository or organization secrets;
-  none exist today):
+  refs). "Allow administrators to bypass" off.
+- [ ] Environment secrets, only when binary releases start (§4, §5). Today
+  there are none, and no repository or organization secrets either:
 
   | Secret | Value |
   |---|---|
@@ -164,18 +152,20 @@ Settings -> Environments -> `release` (created)
 Settings -> Code security
 
 - [x] Dependency graph and Dependabot alerts: on. The one alert so far
-  (glib 0.18 `VariantStrIter` unsoundness, Linux GTK tree only) is
-  dismissed as not used, with the same reasoning as `deny.toml`.
-- [ ] Dependabot security updates: on once `main` holds the release branch
-  (they target the default branch; paused until then). Version updates
-  come from `.github/dependabot.yml` on `main` (no auto-merge).
-- [ ] Code scanning: keep **advanced setup** (`codeql.yml`); do not enable
-  default setup (they conflict). Uploads start working once public.
-- [ ] Secret scanning: on; **Push protection: on** (**plan-blocked while
-  private**: "Secret scanning is not available for this repository"; the
-  `secrets` CI job scans the full history meanwhile).
-- [ ] **Private vulnerability reporting: on** (public repositories only;
-  SECURITY.md and CODE_OF_CONDUCT.md route reports there).
+  (glib 0.18 `VariantStrIter` unsoundness) is dismissed as not used: glib
+  is only in Tauri's Linux GTK tree and absent from the macOS dependency
+  graph, the same reasoning as `deny.toml`. Dependabot cannot update it
+  (Tauri pins gtk-rs 0.18), so its security-update job for it fails; that
+  is expected until Tauri moves on.
+- [x] Dependabot security updates: on. Version updates come from
+  `.github/dependabot.yml` (no auto-merge); major-version upgrades wait
+  until after 0.1.0.
+- [x] Code scanning: **advanced setup** (`codeql.yml`), five languages
+  uploading; default setup stays off (they conflict).
+- [x] Secret scanning: on; **Push protection: on**. The `secrets` CI job
+  also scans the full history on every run.
+- [x] **Private vulnerability reporting: on** (SECURITY.md and
+  CODE_OF_CONDUCT.md route reports there).
 
 ## 4. Signing and notarization credentials
 
@@ -237,33 +227,41 @@ SHA-512).
   `pegoles-base-0.3-arm64.raw.gz` uploaded as a draft, its digest checked
   (GitHub reports the pinned SHA-256), then published (immutable, not
   "latest").
-- [x] The catalog URL is that asset. It downloads anonymously once the
-  repository is public.
+- [x] The catalog URL is that asset. It downloads anonymously; the
+  installed app downloaded and verified it in 37 s in the 0.1.0 acceptance
+  run.
 - A new image is a new release `guest-image-<version>` and new pins; an
   existing image release is never edited.
 
 ## 7. Cutting a source-first release
 
-1. [ ] Set the version in all four places:
+1. Set the version in all four places:
    `apps/desktop/src-tauri/tauri.conf.json`,
    `apps/desktop/src-tauri/Cargo.toml` (then `cargo metadata` to refresh
    `Cargo.lock`), `apps/desktop/package.json`, `package.json`.
-2. [ ] Move the `Unreleased` entries in `CHANGELOG.md` under the version
+2. Move the `Unreleased` entries in `CHANGELOG.md` under the version
    with today's date.
-3. [ ] Merge through a PR with every required check green.
-4. [ ] On the merge commit: a fresh `git clone`, `./scripts/install.sh`,
+3. Merge through a PR with every required check green.
+4. On the merge commit: a fresh `git clone`, `./scripts/install.sh`,
    then the acceptance run in the installed app (fresh data: set up
    Pegoles Local and the computer from their real sources, a task, Stop,
    Reset, quit and relaunch).
-5. [ ] Tag that exact commit and push only the tag:
+5. Tag that exact commit and push only the tag:
    `git tag -a v<version> -m "Pegoles Agent <version>" <commit> && git push origin v<version>`.
-6. [ ] From the clean-clone build of the tag, generate `SHA256SUMS`, the
+6. From the clean-clone build of the tag, generate `SHA256SUMS`, the
    CycloneDX SBOM and `build-manifest.json`
    (`scripts/release/provenance.sh --no-dmg`, then `shasum -a 256` over
-   the attached files into `SHA256SUMS`), and create a **draft**
+   the attached files, plus the pinned guest image archive's line, into
+   `SHA256SUMS`), and create a **draft**
    release for the tag with them attached; the source archives GitHub
    generates are the primary artifact. No DMG is attached unless it is
    clearly labeled as unsigned and not notarized.
-7. [ ] Review the draft, then **publish** it. With release immutability on,
+7. Review the draft, then **publish** it. With release immutability on,
    the tag and assets are frozen from then on.
-8. [ ] A bad release is never edited in place: publish a new version.
+8. A bad release is never edited in place: publish a new version.
+
+0.1.0 followed these steps: merge commit `58616be` (PR #10), tag object
+`157ae56`, release
+<https://github.com/zezortdx/Pegoles-Agent/releases/tag/v0.1.0> (immutable,
+latest) with `build-manifest.json`, `pegoles-0.1.0.cdx.json` and
+`SHA256SUMS`; the release workflow was skipped for the tag, as intended.
