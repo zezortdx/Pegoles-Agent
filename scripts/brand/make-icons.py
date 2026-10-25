@@ -2,7 +2,7 @@
 """Generate desktop application icon assets from the Pegoles brand mark.
 
 Source of truth: assets/brand/source/pegoles-mark-source.png (1254x1254,
-opaque black background, glowing blue mark centered). This script never
+opaque black background, white/silver glass mark centered). This script never
 redesigns, recolors, or restyles the mark -- it only resizes the existing
 artwork and, for very small renders, tightens the soft outer glow so the
 ring and eyes stay legible (a standard "generate small icons from a
@@ -34,8 +34,26 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_PNG = REPO_ROOT / "assets/brand/source/pegoles-mark-source.png"
+GLYPH_SVG = REPO_ROOT / "assets/brand/pegoles-mark-glyph.svg"
 TAURI_ICONS_DIR = REPO_ROOT / "apps/desktop/src-tauri/icons"
+TAURI_INSTALLER_DIR = REPO_ROOT / "apps/desktop/src-tauri/windows"
 BRAND_ICONS_DIR = REPO_ROOT / "assets/brand/icons"
+BRAND_RASTER_DIR = REPO_ROOT / "assets/brand/raster"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import brandlib as bl  # noqa: E402  (sibling module; needs the path above)
+
+# Mark width / frame width. The source square frames the mark at ~50 %
+# (the rest is its glow); Windows/Linux tiles crop tighter so the mark
+# reads at taskbar sizes, and the tiny glyph fills most of its tile.
+TILE_MARK_FRACTION = 0.64
+MAC_MARK_FRACTION = 0.62
+GLYPH_MARK_FRACTION = 0.86
+# Silver ramp for the flat small-size glyph, sampled from the source ring
+# (bright top rim -> darker lower body) and the eyes.
+GLYPH_RING_TOP = (246, 247, 248)
+GLYPH_RING_BOTTOM = (176, 178, 180)
+GLYPH_EYES = (255, 255, 255)
 
 # --- macOS Apple app-icon grid (reference values "at 1024") -----------------
 MAC_CANVAS_1024 = 1024
@@ -94,15 +112,101 @@ def crisp_base(source: Image.Image) -> Image.Image:
     return Image.fromarray(out, mode="RGB")
 
 
+def glyph_polygons() -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Ring and eye outlines of the shipped flat glyph (640-unit space)."""
+    import re
+
+    svg = GLYPH_SVG.read_text(encoding="utf-8")
+    paths = dict(re.findall(r'<path id="(ring|eyes)"[^>]*? d="([^"]+)"', svg))
+    ring = [bl.sample_cubics(sub, step=0.25) for sub in bl.parse_path(paths["ring"])]
+    eyes = [bl.sample_cubics(sub, step=0.25) for sub in bl.parse_path(paths["eyes"])]
+    return ring, eyes
+
+
+def hinted_eyes(eyes: list[np.ndarray], size: int) -> np.ndarray:
+    """Eye coverage snapped to whole pixels: each eye keeps its centre and
+    proportions but covers full pixel columns (at least one) and rows, so
+    it stays pure white instead of blurring to grey at 16-32 px."""
+    cov = np.zeros((size, size))
+    for eye in eyes:
+        cx, cy = eye[:, 0].mean(), eye[:, 1].mean()
+        w = max(1, round(eye[:, 0].max() - eye[:, 0].min()))
+        h = max(2, round(eye[:, 1].max() - eye[:, 1].min()))
+        x0 = int(np.floor(cx - w / 2 + 0.5))
+        y0 = int(np.floor(cy - h / 2 + 0.5))
+        cov[max(0, y0) : y0 + h, max(0, x0) : x0 + w] = 1
+    return cov
+
+
+def render_glyph(size: int, mark_fraction: float = GLYPH_MARK_FRACTION, transparent: bool = False) -> Image.Image:
+    """Small-size variant: the same traced geometry, flat silver on black.
+
+    The soft glow cannot survive 16-32 px, so tiny frames draw the ring
+    and eyes as solid shapes (exact outlines from the vector trace, 8x8
+    supersampled coverage; eyes snapped to whole pixels up to 32 px). Same
+    geometry, same proportions; only the lighting is dropped. With
+    `transparent`, only the silhouette is opaque (black face, silver ring).
+    """
+    ring, eyes = glyph_polygons()
+    pts = np.vstack(ring)
+    x0, x1 = pts[:, 0].min(), pts[:, 0].max()
+    y0, y1 = pts[:, 1].min(), pts[:, 1].max()
+    scale = size * mark_fraction / max(x1 - x0, y1 - y0)
+    ox = (size - (x1 - x0) * scale) / 2 - x0 * scale
+    oy = (size - (y1 - y0) * scale) / 2 - y0 * scale
+
+    def place(polys: list[np.ndarray]) -> list[np.ndarray]:
+        return [np.column_stack([q[:, 0] * scale + ox, q[:, 1] * scale + oy]) for q in polys]
+
+    ring_cov = bl.raster_mask(place(ring), size=size, ss=8)[..., None]
+    placed_eyes = place(eyes)
+    eye_cov = (hinted_eyes(placed_eyes, size) if size <= 32 else bl.raster_mask(placed_eyes, size=size, ss=8))[..., None]
+    t = np.clip((np.arange(size) + 0.5 - (y0 * scale + oy)) / ((y1 - y0) * scale), 0, 1)
+    top, bottom = np.array(GLYPH_RING_TOP, float), np.array(GLYPH_RING_BOTTOM, float)
+    ring_rgb = (top + (bottom - top) * t[:, None])[:, None, :]
+    rgb = ring_rgb * ring_cov
+    rgb = rgb * (1 - eye_cov) + np.array(GLYPH_EYES, float) * eye_cov
+    out = np.clip(rgb + 0.5, 0, 255).astype(np.uint8)
+    if not transparent:
+        return Image.fromarray(out, mode="RGB").convert("RGBA")
+    # The ring path is outer + inner (even-odd); the silhouette is the outer contour alone.
+    silhouette = bl.raster_mask(place(ring[:1]), size=size, ss=8)
+    alpha = np.clip(np.maximum(silhouette, eye_cov[..., 0]) * 255 + 0.5, 0, 255).astype(np.uint8)
+    return Image.fromarray(np.dstack([out, alpha]), mode="RGBA")
+
+
+def tight_crop(source: Image.Image, mark_fraction: float = TILE_MARK_FRACTION) -> Image.Image:
+    """Square crop of the source centred on the mark, which then spans
+    `mark_fraction` of the crop width (glow kept, only empty black cut)."""
+    w = source.size[0]
+    mark_w = 628.0  # traced outer width in source pixels (geometry.json)
+    side = min(w, round(mark_w / mark_fraction))
+    left = (w - side) // 2
+    return source.crop((left, left, left + side, left + side))
+
+
+def rounded_tile(content: Image.Image, size: int, margin_frac: float = 0.03, radius_frac: float = 0.22) -> Image.Image:
+    """Dark rounded tile (transparent outside) carrying `content`."""
+    margin = round(size * margin_frac) if size >= 32 else 0
+    body = size - 2 * margin
+    radius = max(1, round(body * radius_frac))
+    tile = content.convert("RGBA").resize((body, body), Image.LANCZOS)
+    tile.putalpha(squircle_mask(body, radius))
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.paste(tile, (margin, margin), tile)
+    return canvas
+
+
 def make_square_frame(source: Image.Image, crisp_source: Image.Image, size: int, crisp: bool) -> Image.Image:
-    """Full-bleed square render at `size`, faithful to the source."""
-    base = crisp_source if crisp else source
-    frame = base.resize((size, size), Image.LANCZOS)
+    """Windows/Linux frame: rounded dark tile. Tiny sizes (crisp) draw the
+    flat small-size glyph; larger ones carry the tightly cropped source."""
     if crisp:
-        frame = frame.filter(ImageFilter.UnsharpMask(radius=1.2, percent=140, threshold=2))
-    elif size <= 128:
+        return rounded_tile(render_glyph(size), size)
+    content = tight_crop(crisp_source if size <= 64 else source)
+    frame = rounded_tile(content, size)
+    if size <= 128:
         frame = frame.filter(ImageFilter.UnsharpMask(radius=0.8, percent=60, threshold=3))
-    return frame.convert("RGBA")
+    return frame
 
 
 def squircle_mask(body_px: int, radius_px: int, supersample: int = 4) -> Image.Image:
@@ -121,10 +225,10 @@ def make_mac_icon(source: Image.Image, crisp_source: Image.Image, canvas_px: int
     body = canvas_px - 2 * margin
     radius = max(1, round(MAC_RADIUS_1024 * scale))
 
-    content_src = crisp_source if crisp else source
-    content = content_src.resize((body, body), Image.LANCZOS)
     if crisp:
-        content = content.filter(ImageFilter.UnsharpMask(radius=1.0, percent=120, threshold=2))
+        content = render_glyph(body).convert("RGB")
+    else:
+        content = tight_crop(source, MAC_MARK_FRACTION).resize((body, body), Image.LANCZOS)
 
     mask = squircle_mask(body, radius)
     body_rgba = Image.new("RGBA", (body, body))
@@ -193,6 +297,36 @@ def build_linux_pngs(source: Image.Image, crisp_source: Image.Image, out_dirs: l
         for out_dir in out_dirs:
             frame.save(out_dir / filename, format="PNG", optimize=True)
     return rendered
+
+
+def build_installer_images(source: Image.Image, out_dirs: list[Path]) -> dict[str, Image.Image]:
+    """NSIS wizard art (24-bit BMP, the formats NSIS/MUI2 accept):
+    header 150x57 (inner pages) and sidebar 164x314 (welcome/finish).
+    Black field, the mark with its own glow; no text (the wizard prints
+    the product name itself, localized)."""
+    crop = tight_crop(source, 0.5)
+    header = Image.new("RGB", (150, 57), (0, 0, 0))
+    mark = crop.resize((57, 57), Image.LANCZOS)
+    header.paste(mark, (150 - 57 - 4, 0))
+    sidebar = Image.new("RGB", (164, 314), (0, 0, 0))
+    mark = crop.resize((150, 150), Image.LANCZOS)
+    sidebar.paste(mark, (7, 64))
+    images = {"nsis-header.bmp": header, "nsis-sidebar.bmp": sidebar}
+    for out_dir in out_dirs:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for name, im in images.items():
+            im.save(out_dir / name, format="BMP")
+    return images
+
+
+def build_small_glyphs(out_dir: Path, raster_dir: Path) -> None:
+    """Standalone small-size variant for docs, tray/status use and anything
+    drawn at 16-48 px: on a dark rounded tile (`pegoles-glyph-N.png`) and
+    as the bare mark on transparency (`raster/pegoles-mark-N.png`, the small
+    end of the 16-512 ladder; variants.py makes 64-512 from the source)."""
+    for size in (16, 24, 32, 48):
+        rounded_tile(render_glyph(size), size).save(out_dir / f"pegoles-glyph-{size}.png", format="PNG", optimize=True)
+        render_glyph(size, 0.96, transparent=True).save(raster_dir / f"pegoles-mark-{size}.png", format="PNG", optimize=True)
 
 
 def _load_font(size: int):
@@ -286,112 +420,64 @@ def build_preview(
     sheet.save(BRAND_ICONS_DIR / "preview.png", format="PNG", optimize=True)
 
 
-README_TEMPLATE = """# Pegoles desktop app icons
+README_TEMPLATE = """# Pegoles app icons and installer art
 
 Generated by `scripts/brand/make-icons.py` from the single source of truth:
-`assets/brand/source/pegoles-mark-source.png` (1254x1254, opaque black
-background, glowing electric-blue mark centered). The script never
-redesigns, recolors, or restyles the mark -- it only resizes the existing
-artwork and, for the smallest renders, tightens the soft outer glow so the
-ring and eyes stay readable (see "Small-size legibility" below).
-
-Run it with:
+`assets/brand/source/pegoles-mark-source.png` (1254x1254, the official
+mark: a white/silver glass ring with two eyes on black, soft glow). The
+script never redesigns or recolors the mark. It only frames and resizes
+it, and below 48 px it draws the small-size variant described below.
 
 ```
 python3 scripts/brand/make-icons.py
 ```
 
-It writes the same outputs to two places:
+Outputs go to `apps/desktop/src-tauri/icons/` (Tauri `bundle.icon`),
+`apps/desktop/src-tauri/windows/` (NSIS art) and `assets/brand/icons/`
+(provenance copies, `iconset/`, `installer/`, small glyphs, this README,
+`preview.png`).
 
-- `apps/desktop/src-tauri/icons/` -- consumed by the Tauri bundler
-  (`tauri.conf.json` -> `bundle.icon`).
-- `assets/brand/icons/` -- provenance copies + this README + `preview.png`
-  + the intermediate `iconset/AppIcon.iconset/` used to build the `.icns`.
+## macOS: `icon.icns`
 
-## macOS -- `icon.icns`
+Apple app-icon grid: 1024 canvas, ~824 px rounded body, ~100 px
+transparent margin. The body carries the source cropped so the mark spans
+62 % of it (the rest is its own glow). `iconutil` builds the `.icns` from
+`iconset/AppIcon.iconset/` (16 to 512@2x). A macOS 26 layered `.icon`
+needs Xcode's Icon Composer and is not produced here.
 
-Built to Apple's app-icon grid: a 1024x1024 canvas, a rounded-rect
-("squircle-ish") body ~824x824 centered (~100px transparent margin per
-side), corner radius ~185px at 1024 scale (radius/margin/body all scale
-together for the smaller grid sizes). The body is filled by resizing the
-*entire* source square (its black background travels with it) into the
-824x824 box and clipping with the rounded-rect mask -- so the glow is
-never cropped, only the square's already-near-black corners are rounded
-off. Outside the squircle is transparent.
+## Windows: `icon.ico`
 
-`iconutil -c icns` builds `icon.icns` from `iconset/AppIcon.iconset/`,
-covering the full standard set: 16, 16@2x, 32, 32@2x, 128, 128@2x, 256,
-256@2x, 512, 512@2x.
+Frames 16, 24, 32, 48, 64, 128, 256 px: a dark rounded tile (transparent
+corners) carrying the source cropped so the mark spans 64 % of the tile.
+Desktop apps on Windows get no system corner mask, so the tile shape is
+part of the icon. The same `.ico` is the installer icon, the taskbar and
+the title-bar icon.
 
-**Deferred:** macOS 26 "Liquid Glass" layered icons (the multi-layer
-`.icon` format edited in Xcode's Icon Composer) are NOT produced here --
-Icon Composer is an Xcode GUI tool and this host only has the Command
-Line Tools installed (no Xcode). `icon.icns` is what the app bundle uses
-today; a layered `.icon` is a follow-up once Xcode is available, not
-something faked or approximated by this script.
+## Small-size variant (16, 24, 32 px)
 
-**Known limitation:** at the 16px iconset entry the squircle body is only
-~13x13px (824/1024 scale of a 16px canvas), which is not enough pixels to
-render both the ring and the two eyes distinctly -- it reads as a glowing
-blue emblem rather than a crisp ring+eyes. This matches Apple's own
-16px app icons, which lose fine detail at that size too; 16px macOS icons
-are rarely seen at native resolution outside small Finder rows. See
-`preview.png` for a direct look.
+The glow cannot survive tiny sizes; a downscale turns the ring into a
+smudge. Those frames draw `pegoles-mark-glyph.svg` (the exact traced ring
+and eyes) as flat shapes: a silver ramp on the ring, white eyes, black
+field, 8x8 supersampled coverage, eyes snapped to whole pixels so they stay
+white. Same geometry and proportions, no lighting. Standalone copies:
+`pegoles-glyph-{16,24,32,48}.png` (dark tile) and
+`../raster/pegoles-mark-{16,24,32,48}.png` (bare mark on transparency).
 
-## Windows -- `icon.ico`
+## Installer art (NSIS)
 
-Frames: 16, 24, 32, 48, 64, 128, 256px, all full-bleed square (no
-rounding). This matches Windows convention: Explorer, the taskbar, and
-Start already apply their own corner treatment/shadow chrome around
-pinned tiles and file icons, so a source `.ico` that is itself already
-rounded gets double-rounded or shows mismatched corners at small sizes.
-Shipping a plain square keeps every consumer's masking correct.
+`nsis-header.bmp` (150x57, inner pages) and `nsis-sidebar.bmp` (164x314,
+welcome and finish pages): 24-bit BMP, black field with the mark and its
+glow, no text (the wizard prints the localized product name).
 
-## Small-size legibility
+## Linux / other PNGs
 
-At 16/24/32px, a literal box-filter downscale of the full glow turns the
-ring into a blurry smudge. For those sizes only, the script derives the
-frame from a "crisper base": the same source pixels run through a small
-levels/gamma adjustment that pulls in the faintest outer glow and lifts
-the mid-tones, then downscales, then applies a light unsharp mask. This
-is standard icon-authoring practice (generating small mip levels from a
-tuned base rather than naively shrinking the largest asset) -- it does
-not move, recolor, or redraw the ring/eyes. 48px and up use a faithful
-direct resize of the source (with a very light unsharp mask through
-128px) since detail survives fine at those sizes. The same crisp-base
-treatment is applied to the macOS 16/16@2x/32 iconset entries.
-
-## Linux / other -- PNGs
-
-`32x32.png`, `128x128.png`, `128x128@2x.png` (256px), full-bleed square,
-same treatment as the Windows frames (crisp base at 32px, faithful
-resize at 128/256px). These three PNGs are also what Tauri uses as the
-runtime window icon on Linux/X11/Wayland and are referenced directly by
-`bundle.icon`.
-
-`Square*Logo*.png` (MSIX/Windows Store tiles) are intentionally **not**
-generated: `bundle.targets` does not include an MSIX/Store target, so
-Tauri's Windows packaging (`msi`/`nsis`) does not need them. Generating
-them anyway would just be unused clutter in this directory.
-
-## `bundle.icon` (tauri.conf.json)
-
-```json
-"icon": [
-  "icons/32x32.png",
-  "icons/128x128.png",
-  "icons/128x128@2x.png",
-  "icons/icon.icns",
-  "icons/icon.ico"
-]
-```
+`32x32.png`, `128x128.png`, `128x128@2x.png`: same tiles as the Windows
+frames. Referenced by `bundle.icon`.
 
 ## `preview.png`
 
-A contact sheet showing every generated size (macOS squircle renders,
-Windows `.ico` frames, Linux PNGs) on both a light and a dark background,
-so clipping, muddy small sizes, or off-center framing are visible at a
-glance. Regenerate it by re-running the script.
+Contact sheet of every generated size on light and dark backgrounds,
+upscaled with nearest-neighbor so the shipped pixels stay visible.
 """
 
 
@@ -411,6 +497,10 @@ def main() -> None:
 
     print("Building Windows icon.ico ...")
     ico_frames = build_ico(source, crisp_source, [TAURI_ICONS_DIR / "icon.ico", BRAND_ICONS_DIR / "icon.ico"])
+
+    print("Building NSIS installer art + small glyphs ...")
+    build_installer_images(source, [TAURI_INSTALLER_DIR, BRAND_ICONS_DIR / "installer"])
+    build_small_glyphs(BRAND_ICONS_DIR, BRAND_RASTER_DIR)
 
     print("Building Linux/other PNGs ...")
     linux_frames = build_linux_pngs(source, crisp_source, [TAURI_ICONS_DIR, BRAND_ICONS_DIR])

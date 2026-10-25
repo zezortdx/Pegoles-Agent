@@ -2,7 +2,7 @@
   "source": {
     "file": "assets/brand/source/pegoles-mark-source.png",
     "size": 1254,
-    "sha256_prefix": "2c1660e1"
+    "sha256_prefix": "bbb538cb"
   },
   "method": "unblend-from-black alpha, centred square crop, far-halo taper, premultiplied Lanczos",
   "crop_side_source_px": 840,
@@ -10,42 +10,42 @@
     {
       "file": "raster/pegoles-mark-64.png",
       "px": 64,
-      "bytes": 7599
+      "bytes": 7743
     },
     {
       "file": "raster/pegoles-mark-64.webp",
       "px": 64,
-      "bytes": 5902
+      "bytes": 6082
     },
     {
       "file": "raster/pegoles-mark-128.png",
       "px": 128,
-      "bytes": 25643
+      "bytes": 30108
     },
     {
       "file": "raster/pegoles-mark-128.webp",
       "px": 128,
-      "bytes": 17670
+      "bytes": 23246
     },
     {
       "file": "raster/pegoles-mark-256.png",
       "px": 256,
-      "bytes": 95924
+      "bytes": 123445
     },
     {
       "file": "raster/pegoles-mark-256.webp",
       "px": 256,
-      "bytes": 22462
+      "bytes": 26748
     },
     {
       "file": "raster/pegoles-mark-512.png",
       "px": 512,
-      "bytes": 368837
+      "bytes": 497742
     },
     {
       "file": "raster/pegoles-mark-512.webp",
       "px": 512,
-      "bytes": 79682
+      "bytes": 113798
     }
   ]
 }

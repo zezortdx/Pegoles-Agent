@@ -6,7 +6,7 @@ describe("presence targets", () => {
   it("defines targets and an accessible sentence for every mode", () => {
     for (const mode of PRESENCE_MODES) {
       const t = presenceTargets(mode);
-      expect(Number.isFinite(t.breathAmp) && Number.isFinite(t.eyeScaleY) && Number.isFinite(t.fpsCap)).toBe(true);
+      expect(Number.isFinite(t.breathAmp) && Number.isFinite(t.eyeScaleY) && Number.isFinite(t.halo)).toBe(true);
       expect(PRESENCE_LABEL[mode]).toMatch(/Pegoles/);
     }
   });
@@ -31,21 +31,11 @@ describe("presence targets", () => {
     for (const mode of PRESENCE_MODES) {
       const full = presenceTargets(mode);
       const still = presenceTargets(mode, { reducedMotion: true });
-      expect(still).toMatchObject({ breathAmp: 0, flow: 0, pitch: 0, yaw: 0, gaze: 0, sway: 0, life: false, fpsCap: 0 });
+      expect(still).toMatchObject({ breathAmp: 0, flow: 0, gaze: 0, life: false });
       expect(still.warn).toBe(full.warn);
       expect(still.lid).toBe(full.lid);
       expect(still.eyeGlow).toBe(full.eyeGlow);
     }
-  });
-
-  it("sways only while alive and settles for still poses; internal light only while working", () => {
-    expect(presenceTargets("idle").sway).toBe(1);
-    expect(presenceTargets("idle").fpsCap).toBeLessThanOrEqual(15);
-    for (const mode of ["offline", "acknowledging", "waiting", "blocked", "done", "error"] as const) expect(presenceTargets(mode).sway).toBe(0);
-    expect(presenceTargets("thinking").inner).toBeGreaterThan(0.5);
-    expect(presenceTargets("thinking").scan).toBe(0);
-    expect(presenceTargets("working").scan).toBe(1);
-    for (const mode of ["idle", "offline", "done", "error", "needs-user"] as const) expect(presenceTargets(mode).inner).toBe(0);
   });
 
   it("has idle life only while resting, attentive or waiting", () => {
@@ -67,12 +57,5 @@ describe("presence targets", () => {
     expect(vars["--p-lid"]).toBe("0.72");
     expect(vars["--p-dim"]).toBe(String(1 - 0.55));
     expect(poseVariables(presenceTargets("working"))["--p-flow-period"]).toBe("4.20s");
-  });
-
-  it("renders only on change once states that hold still have settled", () => {
-    for (const mode of ["offline", "acknowledging", "waiting", "blocked", "done", "error"] as const) {
-      expect(presenceTargets(mode).fpsCap).toBe(0);
-    }
-    expect(presenceTargets("using-computer").fpsCap).toBeLessThanOrEqual(20);
   });
 });
