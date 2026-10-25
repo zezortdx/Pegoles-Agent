@@ -2,7 +2,7 @@
   "source": {
     "file": "assets/brand/source/pegoles-mark-source.png",
     "size": 1254,
-    "sha256_prefix": "2c1660e1"
+    "sha256_prefix": "bbb538cb"
   },
   "target_iou": 0.97,
   "reference_masks": {
@@ -12,45 +12,45 @@
   "fit_residuals_px": {
     "outer": {
       "points": 3600,
-      "mean_px": 0.294,
-      "p95_px": 0.961,
-      "max_px": 1.342
+      "mean_px": 0.273,
+      "p95_px": 0.891,
+      "max_px": 1.344
     },
     "inner": {
       "points": 3600,
-      "mean_px": 0.276,
-      "p95_px": 0.762,
-      "max_px": 1.116
+      "mean_px": 0.196,
+      "p95_px": 0.59,
+      "max_px": 0.912
     },
     "eye_l": {
       "points": 1440,
-      "mean_px": 0.026,
-      "p95_px": 0.088,
-      "max_px": 0.277
+      "mean_px": 0.03,
+      "p95_px": 0.096,
+      "max_px": 0.215
     },
     "eye_r": {
       "points": 1440,
-      "mean_px": 0.037,
-      "p95_px": 0.101,
-      "max_px": 0.256
+      "mean_px": 0.042,
+      "p95_px": 0.103,
+      "max_px": 0.213
     }
   },
   "iou_python_renderer": {
-    "ring": 0.9858,
-    "silhouette": 0.9972,
-    "eyes": 0.9907,
-    "eye_left": 0.9954,
-    "eye_right": 0.9859
+    "ring": 0.9824,
+    "silhouette": 0.9973,
+    "eyes": 0.9891,
+    "eye_left": 0.9936,
+    "eye_right": 0.9845
   },
   "iou_chromium": {
-    "ring": 0.9852,
-    "eyes": 0.9889,
-    "eye_left": 0.9935,
-    "eye_right": 0.9843
+    "ring": 0.9827,
+    "eyes": 0.9841,
+    "eye_left": 0.9931,
+    "eye_right": 0.9752
   },
   "appearance_chromium": {
     "region": "source silhouette dilated by 12 px, rendered over #000",
-    "mean_abs_error_8bit": 9.88,
-    "psnr_db": 23.93
+    "mean_abs_error_8bit": 14.53,
+    "psnr_db": 22.14
   }
 }

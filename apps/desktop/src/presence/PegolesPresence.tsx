@@ -2,12 +2,10 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } f
 import { MARK_RING_MASK, observeOffscreen, useFluxGlass } from "@pegoles/ui";
 import { createThrottle, LifeScheduler, Timers } from "./life";
 import { GESTURE_MODES, PRESENCE_LABEL, WORK_MODES, type PresenceMode } from "./modes";
-import { glDisabledForSession, webgl2Available } from "./probe";
-import { usePresenceGpuShare, usePresenceQuality, wantsGl } from "./quality";
-import { PresenceSvg } from "./PresenceSvg";
-import * as svg from "./svgMotion";
+import { PresenceArt } from "./PresenceArt";
+import * as motion from "./motion";
+import type { PointerPose } from "./motion";
 import { poseVariables, presenceTargets } from "./targets";
-import type { GlHandle, PointerPose } from "./gl/types";
 import "./presence.css";
 
 export interface PegolesPresenceProps {
@@ -30,15 +28,11 @@ export interface PegolesPresenceProps {
   field?: boolean;
   /** aria-hidden when true; otherwise role="img" with a state label. */
   decorative?: boolean;
-  /** Another GPU-heavy surface is visible (the computer panel): the renderer caps its pixel ratio. */
-  gpuShare?: boolean;
   /** Overrides the default sentence for the mode. */
   label?: string;
   className?: string;
 }
 
-/** Let first paint land before loading and compiling the renderer. */
-const GL_DEFER_MS = 80;
 const NUDGE_INTERVAL_MS = 90;
 /** Pointer response (CSS px from the presence centre). */
 const NEAR_PX = 260;
@@ -71,24 +65,15 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 }
 
 /**
- * The single visual representation of Pegoles. The SVG renderer paints
- * first and is the fallback; the WebGL renderer is loaded lazily and
- * crossfades in when quality, capability and size allow. Idle life,
- * pointer tracking and reactions write CSS variables and GL uniforms
- * directly — none of them re-render React.
+ * The single visual representation of Pegoles: the official mark
+ * (PresenceArt) with its state expressed in light and in the eyes. Idle
+ * life, pointer tracking and reactions write CSS variables directly —
+ * none of them re-render React.
  */
-export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0, interactive = false, pressable = false, onPress, field, decorative = false, gpuShare: gpuShareProp = false, label, className }: PegolesPresenceProps) {
-  const sharedGpu = usePresenceGpuShare();
-  const gpuShare = gpuShareProp || sharedGpu;
-  const quality = usePresenceQuality();
-  const { tier, reducedMotion, ambient } = useFluxGlass();
+export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0, interactive = false, pressable = false, onPress, field, decorative = false, label, className }: PegolesPresenceProps) {
+  const { reducedMotion, ambient } = useFluxGlass();
   const showField = field ?? size >= 40;
-  const [glFailed, setGlFailed] = useState(false);
-  const [renderer, setRenderer] = useState<"svg" | "gl">("svg");
-  const eligible = !glFailed && wantsGl({ quality, tier, size, webgl2: webgl2Available(), disabled: glDisabledForSession() });
   const rootRef = useRef<HTMLDivElement>(null);
-  const hostRef = useRef<HTMLSpanElement>(null);
-  const handleRef = useRef<GlHandle | null>(null);
   const timers = useRef<Timers | null>(null);
   timers.current ??= new Timers();
   // Ripples and nudges answer what happens while mounted, not the history before.
@@ -99,61 +84,27 @@ export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0,
   const nudgeGate = useRef(createThrottle(NUDGE_INTERVAL_MS));
   const targets = presenceTargets(mode, { reducedMotion });
   const lively = targets.life;
-  const latest = useRef({ mode, reducedMotion, look, size, field: showField, gpuShare });
-  latest.current = { mode, reducedMotion, look, size, field: showField, gpuShare };
+  const latestLook = useRef(look);
+  latestLook.current = look;
+  const reducedRef = useRef(reducedMotion);
+  reducedRef.current = reducedMotion;
 
-  // Lazy WebGL: claim the shared canvas after first paint; release on unmount.
-  useEffect(() => {
-    if (!eligible) return;
-    let cancelled = false;
-    let handle: GlHandle | null = null;
-    const timer = window.setTimeout(() => {
-      import("./gl/presenceGl").then(({ claimPresenceGl }) => {
-        const host = hostRef.current;
-        if (cancelled || !host) return;
-        const now = latest.current;
-        handle = claimPresenceGl({
-          container: host, size: now.size, field: now.field, quality, ambient, gpuShare: now.gpuShare,
-          onActive: (active) => { if (!cancelled) setRenderer(active ? "gl" : "svg"); },
-          onFail: () => { if (!cancelled) { setRenderer("svg"); setGlFailed(true); } },
-        });
-        if (!handle) { setGlFailed(true); return; }
-        handle.setMode(now.mode, now.reducedMotion);
-        handle.setLook(now.look);
-        handleRef.current = handle;
-      }).catch(() => { if (!cancelled) setGlFailed(true); });
-    }, GL_DEFER_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-      handle?.release();
-      handleRef.current = null;
-      setRenderer("svg");
-    };
-  }, [eligible, quality, ambient]);
-
-  useEffect(() => { handleRef.current?.setMode(mode, reducedMotion); }, [mode, reducedMotion]);
-  useEffect(() => { handleRef.current?.setLook(look); }, [look]);
-  useEffect(() => { handleRef.current?.setSize(size, showField); }, [size, showField]);
-  useEffect(() => { handleRef.current?.setGpuShare(gpuShare); }, [gpuShare]);
-  useEffect(() => { if (ripple > 0) handleRef.current?.pulse(); }, [ripple]);
   useEffect(() => () => timers.current?.clear(), []);
 
-  // One-shot gestures for the SVG renderer answer a change of mode.
+  // One-shot gestures answer a change of mode.
   const previousMode = useRef(mode);
   useEffect(() => {
     const root = rootRef.current;
     if (!root || previousMode.current === mode) return;
     previousMode.current = mode;
-    svg.gesture(root, mode, reducedMotion);
+    motion.gesture(root, mode, reducedMotion);
   }, [mode, reducedMotion]);
 
   // Keystrokes: widen, lean, shimmer — at most one per 90 ms.
   useEffect(() => {
     const root = rootRef.current;
     if (!root || keystroke === 0 || !nudgeGate.current()) return;
-    svg.nudge(root, latest.current.look, timers.current ?? new Timers(), latest.current.reducedMotion);
-    handleRef.current?.nudge();
+    motion.nudge(root, latestLook.current, timers.current ?? new Timers(), reducedRef.current);
   }, [keystroke]);
 
   // Idle life: blinks and glances, paused with the ambient gate.
@@ -162,8 +113,8 @@ export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0,
     if (!root || !lively) return;
     const own = timers.current ?? new Timers();
     const life = new LifeScheduler({
-      blink: () => { svg.blink(root, own); handleRef.current?.blink(); },
-      glance: (offset) => { svg.glance(root, offset); handleRef.current?.glance(offset); },
+      blink: () => motion.blink(root, own),
+      glance: (offset) => motion.glance(root, offset),
     });
     const sync = () => {
       const snapshot = ambient?.snapshot();
@@ -200,12 +151,10 @@ export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0,
         const distance = Math.hypot(dx, dy);
         near = aware ? distance < AWARE_OUT_PX : distance < AWARE_IN_PX;
       }
-      svg.pointer(root, pose);
-      handleRef.current?.setPointer(pose);
+      motion.pointer(root, pose);
       if (near !== aware) {
         aware = near;
         root.toggleAttribute("data-aware", aware);
-        handleRef.current?.setAware(aware);
       }
     };
     const move = (event: PointerEvent) => {
@@ -222,17 +171,14 @@ export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0,
       window.removeEventListener("pointermove", move);
       document.documentElement.removeEventListener("pointerleave", leave);
       if (frame) window.cancelAnimationFrame(frame);
-      svg.pointer(root, null);
+      motion.pointer(root, null);
       root.removeAttribute("data-aware");
-      handleRef.current?.setPointer(null);
-      handleRef.current?.setAware(false);
     };
   }, [interactive, reducedMotion]);
 
   const press = () => {
     const root = rootRef.current;
-    if (root) svg.boop(root, timers.current ?? new Timers(), reducedMotion);
-    handleRef.current?.boop();
+    if (root) motion.boop(root, timers.current ?? new Timers(), reducedMotion);
     onPress?.();
   };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -250,15 +196,13 @@ export function PegolesPresence({ mode, size, look = null, pulse = 0, nudge = 0,
     "--p-ring-mask": MARK_RING_MASK,
   } as CSSProperties;
   const a11y = pressable
-    ? { role: "button", tabIndex: 0, "aria-label": label ?? "Pegoles", onClick: press, onKeyDown,
-      onPointerEnter: () => handleRef.current?.setHover(true), onPointerLeave: () => handleRef.current?.setHover(false) }
+    ? { role: "button", tabIndex: 0, "aria-label": label ?? "Pegoles", onClick: press, onKeyDown }
     : decorative
       ? { "aria-hidden": true as const }
       : { role: "img", "aria-label": label ?? PRESENCE_LABEL[mode] };
 
-  return <div ref={rootRef} className={className ? `presence ${className}` : "presence"} data-mode={mode} data-renderer={renderer} data-small={size < 28 || undefined}
+  return <div ref={rootRef} className={className ? `presence ${className}` : "presence"} data-mode={mode} data-small={size < 28 || undefined}
     data-pressable={pressable || undefined} style={style} {...a11y}>
-    <PresenceSvg pulse={ripple} field={showField} loopClass={loopClass} />
-    {eligible && <span ref={hostRef} className="presence__gl" aria-hidden="true" />}
+    <PresenceArt size={size} pulse={ripple} field={showField} loopClass={loopClass} />
   </div>;
 }

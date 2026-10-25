@@ -63,6 +63,8 @@ def palette(geo: dict) -> dict:
         # Hue of the source's own halo, normalized to full intensity.
         "glow": full_intensity(c["glow_outside"][0]["color"]),
         "opening": c["opening"],
+        # Hue of the halo around the eyes, normalized to full intensity.
+        "eyeGlow": full_intensity(c["eye_halo"]),
     }
 
 
@@ -145,7 +147,7 @@ def full_svg(geo: dict, p: dict[str, str], pal: dict, look: dict[str, float] | N
 <path d="{ring}" fill-rule="evenodd" fill="{pal["glow"]}" opacity="{f["glow_tight_opacity"]}" filter="url(#glow-tight)"/>
 </g>
 <g id="inner-shadow" clip-path="url(#open-clip)">
-<path d="{p["inner"]}" fill="#000617" opacity="{f["shade_opacity"]}" filter="url(#shade)" transform="translate(320 333) scale(0.9) translate(-320 -333)"/>
+<path d="{p["inner"]}" fill="{pal["opening"]}" opacity="{f["shade_opacity"]}" filter="url(#shade)" transform="translate(320 333) scale(0.9) translate(-320 -333)"/>
 </g>
 <g id="ring" clip-path="url(#ring-clip)">
 <path d="{ring}" fill-rule="evenodd" fill="url(#body)"/>
@@ -153,7 +155,7 @@ def full_svg(geo: dict, p: dict[str, str], pal: dict, look: dict[str, float] | N
 <path d="{p["outer"]}" fill="none" stroke="url(#rim)" stroke-width="{f["rim_width"]}" opacity="{f["rim_opacity"]}" filter="url(#rim-blur)"/>
 <path d="{p["inner"]}" fill="none" stroke="url(#edge)" stroke-width="{f["edge_width"]}" opacity="{f["edge_opacity"]}" filter="url(#rim-blur)"/>
 </g>
-<path id="eye-glow" d="{eyes}" fill="#169CFD" opacity="{f["eye_glow_opacity"]}" filter="url(#eye-glow)"/>
+<path id="eye-glow" d="{eyes}" fill="{pal["eyeGlow"]}" opacity="{f["eye_glow_opacity"]}" filter="url(#eye-glow)"/>
 <path id="eyes" d="{eyes}" fill="url(#eye)"/>
 </svg>
 """
