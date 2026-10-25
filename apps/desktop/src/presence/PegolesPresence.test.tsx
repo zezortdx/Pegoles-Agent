@@ -2,18 +2,24 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FluxGlassRoot } from "@pegoles/ui";
 import { PegolesPresence, pointerPose } from "./PegolesPresence";
-import { PresenceQualityProvider } from "./quality";
 
 afterEach(cleanup);
 
 describe("PegolesPresence", () => {
-  it("paints the SVG renderer without WebGL and names the state", () => {
-    render(<FluxGlassRoot tier="full"><PresenceQualityProvider quality="full"><PegolesPresence mode="thinking" size={152} /></PresenceQualityProvider></FluxGlassRoot>);
+  it("paints the official artwork, not a redrawn body, and names the state", () => {
+    render(<FluxGlassRoot tier="full"><PegolesPresence mode="thinking" size={152} /></FluxGlassRoot>);
     const presence = screen.getByRole("img", { name: "Pegoles is thinking" });
     expect(presence.getAttribute("data-mode")).toBe("thinking");
-    expect(presence.getAttribute("data-renderer")).toBe("svg");
-    expect(presence.querySelector(".presence__svg")).toBeTruthy();
+    const art = presence.querySelector<HTMLImageElement>("img.presence__art");
+    expect(art?.getAttribute("src")).toMatch(/body-512\.webp/);
+    expect(presence.querySelectorAll(".presence__eye-lid")).toHaveLength(2);
+    expect(presence.querySelector<HTMLElement>(".presence__eye-lid")?.style.backgroundImage).toMatch(/eye-left\.webp/);
     expect(presence.querySelector("canvas")).toBeNull();
+  });
+
+  it("uses the small artwork for small marks", () => {
+    const { container } = render(<PegolesPresence mode="idle" size={36} decorative />);
+    expect(container.querySelector("img.presence__art")?.getAttribute("src")).toMatch(/body-128\.webp/);
   });
 
   it("keeps an exact layout box and accepts a custom label", () => {

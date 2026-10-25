@@ -83,7 +83,7 @@ export function SettingsView(props: SettingsViewProps) {
       <IntelligenceSection id="settings-intelligence" native={props.native} intelligence={props.intelligence} model={props.model} />
 
       <Section id="settings-appearance" title="Appearance">
-        <Row label="Motion quality" hint={props.quality === "auto" ? `Auto is using ${props.resolvedQuality === "full" ? "Full" : "Reduced"} on this Mac.` : "Full renders Pegoles in 3D. Reduced keeps it light."}>
+        <Row label="Motion quality" hint={props.quality === "auto" ? `Auto is using ${props.resolvedQuality === "full" ? "Full" : "Reduced"} on this Mac.` : "Full adds deeper glass, glow and motion. Reduced keeps it light."}>
           <SegmentedControl id="quality" label="Motion quality" segments={QUALITY_SEGMENTS} value={props.quality} onChange={props.onQuality} />
         </Row>
         <Row label="Reduce motion" hint="Follows your system accessibility setting.">
